@@ -32,8 +32,8 @@
 .choice:has(input:checked) .choice-indicator::after{content:'';position:absolute;inset:4px;border-radius:var(--radius-pill);background:var(--accent)}
 .theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:44px}
 .theme-toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.skip-link{visibility:hidden;pointer-events:none}
-.skip-link:focus-visible{visibility:visible;pointer-events:auto}
+.skip-link{clip-path:inset(50%)}
+.skip-link:focus-visible{clip-path:inset(0)}
 @media(max-width:760px){
   .site-header .header-mentor{display:none}
   .site-header .header-action{margin-left:auto;font-size:13px;min-height:44px;padding-inline:12px}
