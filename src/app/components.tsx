@@ -1,0 +1,11 @@
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import { constellationSvg } from '@/lib/constellation';
+export function Constellation() {
+ const ref = useRef<HTMLDivElement>(null);
+ useEffect(() => { const el=ref.current; if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; let alive=true; let context: {revert:()=>void}|undefined;
+ import('gsap').then(({gsap}) => { if (!alive || !el) return; context=gsap.context(() => { const paths=Array.from(el.querySelectorAll<SVGPathElement>('.paths path')); const nodes=Array.from(el.querySelectorAll<SVGCircleElement>('.nodes circle')); paths.forEach(p=>gsap.set(p,{strokeDasharray:p.getTotalLength(),strokeDashoffset:p.getTotalLength()})); gsap.set(nodes,{autoAlpha:0,scale:.65,transformOrigin:'center center'}); gsap.timeline().to(nodes.slice(0,4),{autoAlpha:1,scale:1,stagger:.11,duration:.33}).to(paths.slice(0,2),{strokeDashoffset:0,stagger:.14,duration:.85},.30).to(nodes.slice(4),{autoAlpha:1,scale:1,stagger:.08,duration:.35},.55).to(paths.slice(2),{strokeDashoffset:0,stagger:.08,duration:.8},.90).fromTo('.hero-copy h1',{y:8,opacity:.92},{y:0,opacity:1,duration:.36},1.86).fromTo('.hero-cta',{y:8},{y:0,duration:.34},2.06); },el); });
+ return () => { alive=false; context?.revert(); }; },[]);
+ return <div ref={ref} className="constellation" role="img" aria-label="Trajetórias convergem em um ponto de encontro"><div className="art-label art-label-top">CAMINHOS DISTINTOS / UM PONTO DE ENCONTRO</div>{/* SVG literal gerado da referência local versionada; nenhuma entrada de usuário é interpolada. */}<div dangerouslySetInnerHTML={{__html:constellationSvg}}/><div className="art-label art-label-bottom">TECH WOMAN / CONEXÕES POSSÍVEIS</div></div>;
+}
+export function ThemeButton() { const [light,setLight]=useState(false); useEffect(()=>{ const saved=localStorage.getItem('tw-theme')==='light'; document.documentElement.dataset.theme=saved?'light':'dark'; setLight(saved); },[]); return <button className="theme-toggle" type="button" onClick={()=>{const next=!light;setLight(next);document.documentElement.dataset.theme=next?'light':'dark';localStorage.setItem('tw-theme',next?'light':'dark');}} aria-label={light?'Ativar tema escuro':'Ativar tema claro'}>{light?'◐ Escuro':'◑ Claro'}</button>; }

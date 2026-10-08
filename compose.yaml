@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/tech-woman.db
+      NODE_ENV: production
+      ALLOW_LOCAL_HTTP: "1"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
