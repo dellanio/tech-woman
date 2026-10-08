@@ -1,5 +1,6 @@
 import { db, sqlite, participants, mentors, tokenDigest, newToken, type Participant, type Mentor, verifyPassword } from './db';
 import { eq } from 'drizzle-orm';
+import { confirmRegistration, emailLabel } from './email';
 
 const tags = ['produto','dados','desenvolvimento','design'] as const;
 type Tag = typeof tags[number];
@@ -12,12 +13,18 @@ const list = (value: unknown): value is Tag[] => Array.isArray(value) && value.l
 const skills = ['comunicacao','analise','codigo','gestao'];
 const skillList = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 4 && new Set(value).size === value.length && value.every(v => skills.includes(v));
 export class Invalid extends Error { constructor(message: string, public status = 400) { super(message); } }
-export function createParticipant(input: Input) {
+export async function createParticipant(input: Input) {
   if (!emailValid(input.email) || !goals.includes(input.goal as typeof goals[number]) || !moments.includes(input.moment as typeof moments[number]) || !list(input.interests) || !skillList(input.skills) || input.consent !== true) throw new Invalid('Confira os campos e aceite o consentimento para continuar.');
   const token = newToken();
-  const entry = db.insert(participants).values({ email: String(input.email).trim().toLowerCase(), goal: String(input.goal), moment: String(input.moment), interests: JSON.stringify(input.interests), skills: JSON.stringify(input.skills), tokenHash: tokenDigest(token), consentVersion: 'v1', consentAt: new Date().toISOString() }).run();
-  sqlite.prepare('INSERT INTO email_attempt(participant_id,status) VALUES(?,?)').run(entry.lastInsertRowid, 'mock-not-sent');
-  return { protocol: `TW-${String(entry.lastInsertRowid).padStart(5,'0')}`, token, emailStatus: 'NÃO ENVIADA — simulação local, nenhum e-mail enviado' };
+  const email = String(input.email).trim().toLowerCase();
+  const participantId = sqlite.transaction(() => {
+    const entry = db.insert(participants).values({ email, goal: String(input.goal), moment: String(input.moment), interests: JSON.stringify(input.interests), skills: JSON.stringify(input.skills), tokenHash: tokenDigest(token), consentVersion: 'v1', consentAt: new Date().toISOString() }).run();
+    sqlite.prepare('INSERT INTO email_attempt(participant_id,status,updated_at) VALUES(?,?,?)').run(entry.lastInsertRowid, 'mock-not-sent', new Date().toISOString());
+    return Number(entry.lastInsertRowid);
+  })();
+  const protocol = `TW-${String(participantId).padStart(5,'0')}`;
+  const emailStatus = await confirmRegistration(participantId, email, protocol);
+  return { protocol, token, emailStatus };
 }
 export function createMentor(input: Input) {
   if (!emailValid(input.email) || !isText(input.trajectory, 1000) || !list(input.specialties) || !isText(input.availability, 300) || !Number.isInteger(input.capacity) || Number(input.capacity) < 1 || Number(input.capacity) > 50 || input.consent !== true) throw new Invalid('Preencha trajetória, especialidades, disponibilidade, capacidade e consentimento.');
@@ -29,7 +36,8 @@ export function stateFor(token: string) {
   const participant = db.select().from(participants).where(eq(participants.tokenHash, tokenDigest(token))).get();
   if (!participant) return null;
   const approved = sqlite.prepare("SELECT m.email,m.trajectory,x.reasons FROM match x JOIN mentor m ON m.id=x.mentor_id WHERE x.participant_id=? AND x.status='approved'").get(participant.id) as { email:string; trajectory:string; reasons:string } | undefined;
-  return { protocol: `TW-${String(participant.id).padStart(5,'0')}`, email: participant.email, status: approved ? 'Par aprovado' : 'Em análise', emailStatus: 'NÃO ENVIADA — simulação local, nenhum e-mail enviado', mentor: approved ? { email: approved.email, trajectory: approved.trajectory, reasons: JSON.parse(approved.reasons) as string[] } : null };
+  const attempt = sqlite.prepare('SELECT status FROM email_attempt WHERE participant_id=?').get(participant.id) as {status:string} | undefined;
+  return { protocol: `TW-${String(participant.id).padStart(5,'0')}`, email: participant.email, status: approved ? 'Par aprovado' : 'Em análise', emailStatus: emailLabel(attempt?.status || 'unavailable-not-sent'), mentor: approved ? { email: approved.email, trajectory: approved.trajectory, reasons: JSON.parse(approved.reasons) as string[] } : null };
 }
 const approvedCount = (mentorId: number) => (sqlite.prepare("SELECT COUNT(*) AS count FROM match WHERE mentor_id=? AND status='approved'").get(mentorId) as { count:number }).count;
 function ranking(participant: Participant, mentor: Mentor) {

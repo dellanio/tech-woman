@@ -1,7 +1,8 @@
 import { authenticate } from '@/lib/service';
-import { makeSession } from '@/lib/auth';
+import { makeSession, sameOrigin } from '@/lib/auth';
 export const runtime = 'nodejs';
 export async function POST(request: Request) {
+ if (!sameOrigin(request)) return Response.json({error:'Origem não autorizada.'},{status:403});
  const input: unknown = await request.json().catch(() => null);
  if (!input || typeof input !== 'object' || !('email' in input) || !('password' in input) || typeof input.email !== 'string' || typeof input.password !== 'string') return Response.json({error:'Credenciais inválidas.'},{status:401});
  const user = authenticate(input.email,input.password);

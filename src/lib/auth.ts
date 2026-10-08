@@ -18,3 +18,10 @@ export async function currentAdmin() {
   } catch { return null; }
 }
 export const unauthorized = () => Response.json({ error: 'Acesso administrativo necessário.' }, { status: 401 });
+export function adminCanWrite(admin: Awaited<ReturnType<typeof currentAdmin>>) { return admin?.role === 'owner'; }
+export function sameOrigin(request: Request) {
+  const origin = request.headers.get('origin');
+  if (!origin) return true; // SameSite=Strict cookie; non-browser clients do not set Origin.
+  const expected = process.env.APP_ORIGIN || new URL(request.url).origin;
+  return origin === expected;
+}

@@ -1,6 +1,6 @@
-# Tech Woman — protótipo local (WP-001)
+# Tech Woman — protótipo local (WP-001/002)
 
-Uma aplicação Next.js + SQLite para o evento presencial Tech Woman. A jornada participante → mentora → decisão admin → consulta individual funciona localmente. **E-mails não são enviados**: todo estado de e-mail é `NÃO ENVIADA — simulação local`.
+Uma aplicação Next.js + SQLite para o evento presencial Tech Woman. A jornada participante → mentora → decisão admin → consulta individual funciona localmente. **Localmente e-mails não são enviados**: o estado é `NÃO ENVIADA — simulação local`.
 
 ## Início rápido
 
@@ -19,4 +19,10 @@ Build de produção local: `BUILDING=1 NEXT_TELEMETRY_DISABLED=1 pnpm build`. O 
 3. `/admin`: use `ADMIN_EMAIL` e `ADMIN_PASSWORD` de `.env`, examine pontuação/motivos/vagas e aprove ou rejeite. Sem login a API nega dados e decisões; capacidade é rechecável transacionalmente.
 4. Abra o link individual da etapa 1; somente o token aleatório daquele cadastro revela seu estado e eventual par aprovado. A inscrição não reserva horário.
 
-O bootstrap admin usa hash scrypt e somente `LOCAL_SEED=1`. Para produção futura, desative `LOCAL_SEED`, não reutilize dados nem credenciais locais, configure HTTPS e segredo exclusivo. Não há SES, deploy, agenda automática, nem conteúdo do evento inventado neste pacote. Datas, duração, local, programação e palestrantes dependem da confirmação e do editor do WP-004.
+O bootstrap admin usa hash scrypt e somente `LOCAL_SEED=1`. Para produção futura, desative `LOCAL_SEED`, não reutilize dados nem credenciais locais, configure HTTPS e segredo exclusivo. Não há deploy, agenda automática, nem conteúdo do evento inventado neste pacote. Datas, duração, local, programação e palestrantes dependem da confirmação e do editor do WP-004.
+
+## Confirmação de inscrição / SES (WP-002)
+
+No ambiente local mantenha `EMAIL_MODE=mock` e `LOCAL_SEED=1`, inclusive no Compose. Inscrição válida grava `consent_version=v1`, `consent_at` UTC e uma tentativa `mock-not-sent`; a página de consulta lê a tentativa persistida. Sem consentimento explícito ou com campos inválidos nada é gravado. Mutações admin exigem sessão `owner`; leitura admite `owner` ou `member`. O cookie é HttpOnly/SameSite Strict e Secure em HTTPS (`ALLOW_LOCAL_HTTP=1` exclusivamente local).
+
+O operador já confirmou identidade do domínio `dellanio.com` e conta SES em produção na região `us-east-1`; **permissão IAM de envio no destino e credenciais do processo ainda não foram confirmadas**. Portanto não ativar envio aqui. No deploy autorizado, devops confirma acesso e política restrita a `ses:SendEmail`/From, provisiona credenciais do processo fora do git e configura `EMAIL_MODE=ses`, `SES_SEND_ENABLED=1`, `SES_IDENTITY_VERIFIED=1`, `SES_IAM_AUTHORIZED=1`, `SES_ACCOUNT_PRODUCTION=1`, `SES_REGION=us-east-1`, `SES_FROM=no-reply@dellanio.com`, `APP_ORIGIN=https://tech-woman.dellanio.com`, `LOCAL_SEED=0`, `ALLOW_LOCAL_HTTP=0`. Estes flags **não substituem** inspeção operacional da identidade/IAM/conta. Qualquer pré-requisito ausente deixa `unavailable-not-sent` e não chama AWS. A aceitação API armazena `MessageId` e mostra “ACEITA PELO SES — entrega ao destinatário não confirmada”; resposta de erro/ambígua mostra “ACEITE NÃO CONFIRMADO — o envio pode ter ocorrido”, sem repetir automaticamente. A prova de envio real fica para o devops em ambiente autorizado, sem usar credenciais do host no sandbox.

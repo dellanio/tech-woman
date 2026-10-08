@@ -18,13 +18,16 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS participant (id INTEGER PRIMARY KEY AUTO
 CREATE TABLE IF NOT EXISTS mentor (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, trajectory TEXT NOT NULL, specialties TEXT NOT NULL, availability TEXT NOT NULL, capacity INTEGER NOT NULL CHECK(capacity>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS match (id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL REFERENCES participant(id), mentor_id INTEGER NOT NULL REFERENCES mentor(id), score INTEGER NOT NULL, reasons TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('approved','rejected')));
 CREATE UNIQUE INDEX IF NOT EXISTS one_approved_match ON match(participant_id) WHERE status='approved';
-CREATE TABLE IF NOT EXISTS email_attempt (participant_id INTEGER PRIMARY KEY REFERENCES participant(id), status TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS email_attempt (participant_id INTEGER PRIMARY KEY REFERENCES participant(id), status TEXT NOT NULL, provider_id TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS admin_user (email TEXT PRIMARY KEY, password_hash TEXT NOT NULL, role TEXT NOT NULL);`);
+const emailColumns = sqlite.pragma('table_info(email_attempt)') as { name: string }[];
+if (!emailColumns.some(column => column.name === 'provider_id')) sqlite.exec('ALTER TABLE email_attempt ADD COLUMN provider_id TEXT');
+if (!emailColumns.some(column => column.name === 'updated_at')) sqlite.exec("ALTER TABLE email_attempt ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
 export const db = drizzle(sqlite);
 export const tokenDigest = (token: string) => createHash('sha256').update(token).digest('hex');
 export const newToken = () => randomBytes(32).toString('hex');
 export const hashPassword = (password: string) => { const salt = randomBytes(16).toString('hex'); return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`; };
-export const verifyPassword = (password: string, stored: string) => { const [salt, digest] = stored.split(':'); if (!salt || !digest || digest.length !== 128) return false; return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(digest, 'hex')); };
+export const verifyPassword = (password: string, stored: string) => { const [salt, digest] = stored.split(':'); if (!/^[a-f0-9]{32}$/.test(salt || '') || !/^[a-f0-9]{128}$/.test(digest || '')) return false; return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(digest, 'hex')); };
 if (process.env.LOCAL_SEED === '1') {
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
