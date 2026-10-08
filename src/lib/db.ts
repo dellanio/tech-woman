@@ -5,7 +5,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-export const participants = sqliteTable('participant', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), goal: text('goal').notNull(), moment: text('moment').notNull(), interests: text('interests').notNull(), skills: text('skills').notNull(), tokenHash: text('token_hash').notNull(), consentVersion: text('consent_version').notNull(), consentAt: text('consent_at').notNull() });
+export const participants = sqliteTable('participant', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), goal: text('goal').notNull(), moment: text('moment').notNull(), interests: text('interests').notNull(), skills: text('skills').notNull(), area: text('area'), tokenHash: text('token_hash').notNull(), consentVersion: text('consent_version').notNull(), consentAt: text('consent_at').notNull() });
 export const mentors = sqliteTable('mentor', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), trajectory: text('trajectory').notNull(), specialties: text('specialties').notNull(), availability: text('availability').notNull(), capacity: integer('capacity').notNull(), active: integer('active').notNull() });
 export type Participant = typeof participants.$inferSelect;
 export type Mentor = typeof mentors.$inferSelect;
@@ -19,8 +19,11 @@ CREATE TABLE IF NOT EXISTS mentor (id INTEGER PRIMARY KEY AUTOINCREMENT, email T
 CREATE TABLE IF NOT EXISTS match (id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL REFERENCES participant(id), mentor_id INTEGER NOT NULL REFERENCES mentor(id), score INTEGER NOT NULL, reasons TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('approved','rejected')));
 CREATE UNIQUE INDEX IF NOT EXISTS one_approved_match ON match(participant_id) WHERE status='approved';
 CREATE TABLE IF NOT EXISTS email_attempt (participant_id INTEGER PRIMARY KEY REFERENCES participant(id), status TEXT NOT NULL, provider_id TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS choice_email_attempt (participant_id INTEGER PRIMARY KEY REFERENCES participant(id), mentor_id INTEGER NOT NULL REFERENCES mentor(id), status TEXT NOT NULL, provider_id TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS admin_user (email TEXT PRIMARY KEY, password_hash TEXT NOT NULL, role TEXT NOT NULL);`);
 const emailColumns = sqlite.pragma('table_info(email_attempt)') as { name: string }[];
+const participantColumns = sqlite.pragma('table_info(participant)') as { name: string }[];
+if (!participantColumns.some(column => column.name === 'area')) sqlite.exec('ALTER TABLE participant ADD COLUMN area TEXT');
 if (!emailColumns.some(column => column.name === 'provider_id')) sqlite.exec('ALTER TABLE email_attempt ADD COLUMN provider_id TEXT');
 if (!emailColumns.some(column => column.name === 'updated_at')) sqlite.exec("ALTER TABLE email_attempt ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
 export const db = drizzle(sqlite);

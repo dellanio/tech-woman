@@ -19,6 +19,24 @@ function readyForSes() {
     process.env.SES_FROM === 'no-reply@dellanio.com' && process.env.LOCAL_SEED !== '1' &&
     process.env.BUILDING !== '1';
 }
+export async function confirmChoice(participantId:number, mentorId:number, email:string, protocol:string, mentorEmail:string):Promise<string> {
+  const update = sqlite.prepare('INSERT INTO choice_email_attempt(participant_id,mentor_id,status,provider_id,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(participant_id) DO UPDATE SET mentor_id=excluded.mentor_id,status=excluded.status,provider_id=excluded.provider_id,updated_at=excluded.updated_at');
+  const status:EmailStatus = !readyForSes() ? (process.env.EMAIL_MODE==='ses'?'unavailable-not-sent':'mock-not-sent') : 'pending';
+  update.run(participantId,mentorId,status,null,new Date().toISOString());
+  if (!readyForSes()) return emailLabel(status);
+  try {
+    const result=await new SESClient({region:'us-east-1',maxAttempts:1}).send(new SendEmailCommand({
+      Source:`Tech Woman <${process.env.SES_FROM}>`, Destination:{ToAddresses:[email]},
+      Message:{Subject:{Data:'Sua mentoria escolhida | Tech Woman',Charset:'UTF-8'},Body:{Text:{Data:`Protocolo ${protocol}. Você escolheu a mentora ${mentorEmail} para uma mentoria, sem horário definido. Consulte seu link individual para conferir o estado atualizado.`,Charset:'UTF-8'}}}
+    }));
+    if (!result.MessageId) throw new Error('Aceite sem identificador');
+    update.run(participantId,mentorId,'ses-accepted',result.MessageId,new Date().toISOString());
+    return emailLabel('ses-accepted');
+  } catch {
+    update.run(participantId,mentorId,'ses-unconfirmed',null,new Date().toISOString());
+    return emailLabel('ses-unconfirmed');
+  }
+}
 export async function confirmRegistration(participantId: number, email: string, protocol: string): Promise<string> {
   const update = sqlite.prepare('UPDATE email_attempt SET status=?, provider_id=?, updated_at=? WHERE participant_id=?');
   if (!readyForSes()) {
@@ -34,7 +52,7 @@ export async function confirmRegistration(participantId: number, email: string, 
       Destination: { ToAddresses: [email] },
       Message: {
         Subject: { Data: 'Inscrição recebida | Tech Woman', Charset: 'UTF-8' },
-        Body: { Text: { Data: `Recebemos sua inscrição no Tech Woman. Protocolo: ${protocol}. Sua conexão com uma mentora ainda depende de revisão da equipe.`, Charset: 'UTF-8' } },
+        Body: { Text: { Data: `Recebemos sua inscrição no Tech Woman. Protocolo: ${protocol}. Consulte suas opções de mentoria pelo link individual exibido após o cadastro; a escolha não define horário.`, Charset: 'UTF-8' } },
       },
     }));
     if (!result.MessageId) throw new Error('SES não retornou identificador de aceite');
