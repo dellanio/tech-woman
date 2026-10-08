@@ -1,0 +1,16 @@
+'use client';
+import { useEffect,useState,type FormEvent } from 'react';
+import Link from 'next/link';
+import { Frame } from '../../shared';
+type EventContent={description:string;venue:string;agenda:string;speakers:string;date:string;duration:string};
+const fields: {key:keyof EventContent;label:string;hint:string}[]=[
+ {key:'description',label:'Texto do encontro',hint:'Descrição pública do evento'},
+ {key:'venue',label:'Local',hint:'Vazio = local não publicado'},
+ {key:'agenda',label:'Agenda',hint:'Vazio = agenda não publicada'},
+ {key:'speakers',label:'Palestrantes',hint:'Vazio = palestrantes não publicados'},
+ {key:'date',label:'Data',hint:'Vazio = data a definir'},
+ {key:'duration',label:'Duração',hint:'Vazio = duração não publicada'}];
+export default function EventEditor(){const [content,setContent]=useState<EventContent|null>(null),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false);
+useEffect(()=>{fetch('/api/admin/event',{cache:'no-store'}).then(async r=>{if(!r.ok)throw new Error('Entre no painel para editar o evento.');setContent(await r.json() as EventContent)}).catch(e=>setError(e instanceof Error?e.message:'Falha ao carregar.'))},[]);
+async function submit(e:FormEvent){e.preventDefault();if(!content)return;setBusy(true);setError('');setNotice('');try{const response=await fetch('/api/admin/event',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(content)});const result:unknown=await response.json();if(!response.ok){if(result && typeof result==='object' && 'error' in result && typeof result.error==='string')throw new Error(result.error);throw new Error('Falha ao salvar.')}setContent(result as EventContent);setNotice('Alterações salvas. A página pública já mostra o conteúdo confirmado.')}catch(e){setError(e instanceof Error?e.message:'Falha ao salvar.')}finally{setBusy(false)}}
+return <Frame eyebrow="EQUIPE / CONTEÚDO"><section className="editor-intro"><p className="eyebrow">PUBLICAÇÃO / EVENTO</p><h1>O encontro, <em>em suas palavras.</em></h1><p>Campos vazios não são publicados. Você pode alterar ou remover a data confirmada quando necessário.</p><Link className="text-link" href="/admin">← Voltar ao painel</Link></section>{error&&<p role="alert" className="visible-error">{error} {!content&&<Link href="/admin">Acessar painel</Link>}</p>}{notice&&<p role="status" className="notice">{notice}</p>}{content&&<form className="form-panel event-editor" onSubmit={submit}>{fields.map(({key,label,hint})=><div key={key}><label className="field-label" htmlFor={`event-${key}`}>{label}</label><small className="field-hint">{hint}</small>{key==='date'?<input id={`event-${key}`} type="date" value={content[key]} onChange={e=>setContent({...content,[key]:e.target.value})}/>:key==='description'||key==='agenda'||key==='speakers'?<textarea id={`event-${key}`} maxLength={1500} value={content[key]} onChange={e=>setContent({...content,[key]:e.target.value})}/>:<input id={`event-${key}`} maxLength={1500} value={content[key]} onChange={e=>setContent({...content,[key]:e.target.value})}/>}</div>)}<button className="button-primary form-main-action" disabled={busy}>{busy?'Salvando…':'Salvar alterações ↗'}</button></form>}</Frame>}

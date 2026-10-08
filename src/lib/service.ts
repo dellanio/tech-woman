@@ -39,10 +39,10 @@ export function stateFor(token: string) {
   if (!/^[a-f0-9]{64}$/.test(token)) return null;
   const participant = db.select().from(participants).where(eq(participants.tokenHash, tokenDigest(token))).get();
   if (!participant) return null;
-  const approved = sqlite.prepare("SELECT m.email,m.trajectory,x.reasons FROM match x JOIN mentor m ON m.id=x.mentor_id WHERE x.participant_id=? AND x.status='approved'").get(participant.id) as { email:string; trajectory:string; reasons:string } | undefined;
+  const approved = sqlite.prepare("SELECT m.email,m.demo,m.demo_name,m.trajectory,x.reasons FROM match x JOIN mentor m ON m.id=x.mentor_id WHERE x.participant_id=? AND x.status='approved'").get(participant.id) as { email:string; demo:number; demo_name:string|null; trajectory:string; reasons:string } | undefined;
   const attempt = sqlite.prepare('SELECT status FROM email_attempt WHERE participant_id=?').get(participant.id) as {status:string} | undefined;
   const choiceAttempt = sqlite.prepare('SELECT status FROM choice_email_attempt WHERE participant_id=?').get(participant.id) as {status:string}|undefined;
-  return { protocol: `TW-${String(participant.id).padStart(5,'0')}`, email: participant.email, status: approved ? 'Mentoria reservada' : 'Aguardando escolha ou revisão da equipe', emailStatus: emailLabel(attempt?.status || 'unavailable-not-sent'), choiceEmailStatus: approved && choiceAttempt ? emailLabel(choiceAttempt.status) : null, mentor: approved ? { email: approved.email, trajectory: approved.trajectory, reasons: JSON.parse(approved.reasons) as string[] } : null };
+  return { protocol: `TW-${String(participant.id).padStart(5,'0')}`, email: participant.email, status: approved ? 'Mentoria reservada' : 'Aguardando escolha ou revisão da equipe', emailStatus: emailLabel(attempt?.status || 'unavailable-not-sent'), choiceEmailStatus: approved && choiceAttempt ? emailLabel(choiceAttempt.status) : null, mentor: approved ? { email: approved.demo ? approved.demo_name : approved.email, demo:!!approved.demo, trajectory: approved.trajectory, reasons: JSON.parse(approved.reasons) as string[] } : null };
 }
 const approvedCount = (mentorId: number) => (sqlite.prepare("SELECT COUNT(*) AS count FROM match WHERE mentor_id=? AND status='approved'").get(mentorId) as { count:number }).count;
 function ranking(participant: Participant, mentor: Mentor) {
@@ -65,10 +65,10 @@ export function adminOverview() {
   const suggestions = people.map(p => {
     const approved = sqlite.prepare("SELECT mentor_id FROM match WHERE participant_id=? AND status='approved'").get(p.id) as { mentor_id:number } | undefined;
     const rejected = sqlite.prepare("SELECT mentor_id FROM match WHERE participant_id=? AND status='rejected'").all(p.id) as { mentor_id:number }[];
-    const choices = allMentors.filter(m => m.active && approvedCount(m.id) < m.capacity && !rejected.some(r => r.mentor_id === m.id)).map(m => ({ mentorId:m.id, mentorEmail:m.email, capacity:m.capacity, occupied:approvedCount(m.id), ...ranking(p,m) })).filter(v => v.score > 0).sort((a,b) => b.score-a.score || a.mentorId-b.mentorId);
+    const choices = allMentors.filter(m => m.active && approvedCount(m.id) < m.capacity && !rejected.some(r => r.mentor_id === m.id)).map(m => ({ mentorId:m.id, mentorEmail:m.demo ? m.demoName || 'Mentora fictícia' : m.email, demo:!!m.demo, capacity:m.capacity, occupied:approvedCount(m.id), ...ranking(p,m) })).filter(v => v.score > 0).sort((a,b) => b.score-a.score || a.mentorId-b.mentorId);
     return { id:p.id, protocol:`TW-${String(p.id).padStart(5,'0')}`, email:p.email, area:p.area, goal:p.goal, moment:p.moment, interests:JSON.parse(p.interests) as string[], approvedMentorId:approved?.mentor_id || null, choices };
   });
-  return { participants:suggestions, mentors:allMentors.map(m => ({id:m.id,email:m.email,trajectory:m.trajectory,specialties:JSON.parse(m.specialties) as string[],availability:m.availability,capacity:m.capacity,occupied:approvedCount(m.id),active:!!m.active})) };
+  return { participants:suggestions, mentors:allMentors.map(m => ({id:m.id,email:m.demo ? m.demoName || 'Mentora fictícia' : m.email,demo:!!m.demo,trajectory:m.trajectory,specialties:JSON.parse(m.specialties) as string[],availability:m.availability,capacity:m.capacity,occupied:approvedCount(m.id),active:!!m.active})) };
 }
 export function decide(participantId: number, mentorId: number, action: string) {
   if (!Number.isInteger(participantId) || !Number.isInteger(mentorId) || !['approve','reject'].includes(action)) throw new Invalid('Decisão inválida.');
@@ -98,7 +98,7 @@ export function publicSuggestions(token: string) {
   const existing = sqlite.prepare("SELECT id FROM match WHERE participant_id=? AND status='approved'").get(p.id);
   if (existing) return {choices:[],assigned:true};
   const choices = db.select().from(mentors).all().filter(m => m.active && approvedCount(m.id)<m.capacity)
-    .map(m => ({mentorId:m.id,mentorEmail:m.email,trajectory:m.trajectory,specialties:JSON.parse(m.specialties) as string[],capacity:m.capacity,occupied:approvedCount(m.id),...ranking(p,m)}))
+    .map(m => ({mentorId:m.id,mentorEmail:m.demo ? m.demoName || 'Mentora fictícia' : m.email,demo:!!m.demo,trajectory:m.trajectory,specialties:JSON.parse(m.specialties) as string[],capacity:m.capacity,occupied:approvedCount(m.id),...ranking(p,m)}))
     .filter(m => m.score>0).sort((a,b)=>b.score-a.score || a.mentorId-b.mentorId).slice(0,3);
   return {choices,assigned:false};
 }
@@ -112,7 +112,7 @@ export function reserve(token: string, mentorId: number) {
     const {score,reasons}=ranking(p,m);
     if (!score) throw new Invalid('Não há compatibilidade positiva.',409);
     sqlite.prepare('INSERT INTO match(participant_id,mentor_id,score,reasons,status) VALUES(?,?,?,?,?)').run(p.id,mentorId,score,JSON.stringify(reasons),'approved');
-    return {protocol:`TW-${String(p.id).padStart(5,'0')}`,mentorEmail:m.email,participantEmail:p.email,participantId:p.id};
+    return {protocol:`TW-${String(p.id).padStart(5,'0')}`,mentorEmail:m.demo ? m.demoName || 'Mentora fictícia (demonstração)' : m.email,participantEmail:p.email,participantId:p.id};
   }).immediate();
 }
 export function adminChange(participantId:number, mentorId:number|null, action:'cancel'|'reassign') {
@@ -142,6 +142,10 @@ export function setMentorActive(id:number, active:boolean) {
   const result=sqlite.prepare('UPDATE mentor SET active=? WHERE id=?').run(active?1:0,id);
   if (!result.changes) throw new Invalid('Mentora inexistente.',404);
   return {status:active?'Mentora ativada':'Mentora desativada'};
+}
+export function removeDemoMentors(){
+  const result=sqlite.prepare('UPDATE mentor SET active=0 WHERE demo=1 AND active=1').run();
+  return {status:`${result.changes} mentoras de demonstração desativadas.`};
 }
 export function authenticate(email: string, password: string) {
   const user = sqlite.prepare('SELECT email,password_hash,role FROM admin_user WHERE email=?').get(email) as {email:string;password_hash:string;role:string} | undefined;

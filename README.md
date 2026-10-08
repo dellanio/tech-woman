@@ -1,4 +1,4 @@
-# Tech Woman — protótipo local (WP-001/002)
+# Tech Woman Bradesco — protótipo local
 
 Uma aplicação Next.js + SQLite para o evento presencial Tech Woman. A jornada participante → mentora → decisão admin → consulta individual funciona localmente. **Localmente e-mails não são enviados**: o estado é `NÃO ENVIADA — simulação local`.
 
@@ -19,7 +19,11 @@ Build de produção local: `BUILDING=1 NEXT_TELEMETRY_DISABLED=1 pnpm build`. O 
 3. `/admin`: use `ADMIN_EMAIL` e `ADMIN_PASSWORD` de `.env`, examine pontuação/motivos/vagas e aprove ou rejeite. Sem login a API nega dados e decisões; capacidade é rechecável transacionalmente.
 4. Abra o link individual da etapa 1; somente o token aleatório daquele cadastro revela seu estado e eventual par aprovado. A inscrição não reserva horário.
 
-O bootstrap admin usa hash scrypt e somente `LOCAL_SEED=1`. Para produção futura, desative `LOCAL_SEED`, não reutilize dados nem credenciais locais, configure HTTPS e segredo exclusivo. Não há deploy, agenda automática, nem conteúdo do evento inventado neste pacote. Datas, duração, local, programação e palestrantes dependem da confirmação e do editor do WP-004.
+O bootstrap admin usa hash scrypt e somente `LOCAL_SEED=1`. Em produção, desative `LOCAL_SEED`, configure HTTPS e segredo exclusivo. A equipe edita texto, local, agenda, palestrantes, data e duração em `/admin/evento`; a home só exibe valores publicados. A data confirmada começa em 14/11/2026 e pode ser limpa no editor. Cadastro de mentoras encerra em 30/10/2026 às 23h59 (Brasília): `MENTOR_DEADLINE=2026-10-31T02:59:59.999Z`; atualize qualquer `.env` antigo que ainda use outro valor.
+
+## Mentoras fictícias de demonstração
+
+`DEMO_MENTORS=1` cria no primeiro boot oito perfis fictícios (dados, desenvolvimento, produto, UX, segurança, infraestrutura/cloud, liderança e carreira), três vagas cada. É independente de `LOCAL_SEED`: pode ficar ligado em produção com `LOCAL_SEED=0` sem desligar SES. Cada perfil tem nome marcado como fictício, e-mail `@exemplo.invalid` (não há envio de e-mail para mentoras) e selo **Demonstração** nas sugestões, na consulta e no admin. O botão **Remover mentoras de demonstração** na aba Mentoras as desativa em lote; reservas já realizadas ficam registradas, perfis desativados deixam de ser sugeridos. O seed não se repete no reinício nem reativa perfis removidos. Não configure `LOCAL_SEED=1` no servidor: essa flag é exclusiva da demonstração local e interfere no envio SES.
 
 ## Confirmação de inscrição / SES (WP-002)
 

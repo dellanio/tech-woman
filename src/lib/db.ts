@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 export const participants = sqliteTable('participant', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), goal: text('goal').notNull(), moment: text('moment').notNull(), interests: text('interests').notNull(), skills: text('skills').notNull(), area: text('area'), tokenHash: text('token_hash').notNull(), consentVersion: text('consent_version').notNull(), consentAt: text('consent_at').notNull() });
-export const mentors = sqliteTable('mentor', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), trajectory: text('trajectory').notNull(), specialties: text('specialties').notNull(), availability: text('availability').notNull(), capacity: integer('capacity').notNull(), active: integer('active').notNull() });
+export const mentors = sqliteTable('mentor', { id: integer('id').primaryKey({ autoIncrement: true }), email: text('email').notNull(), trajectory: text('trajectory').notNull(), specialties: text('specialties').notNull(), availability: text('availability').notNull(), capacity: integer('capacity').notNull(), active: integer('active').notNull(), demo: integer('demo').notNull().default(0), demoName: text('demo_name') });
 export type Participant = typeof participants.$inferSelect;
 export type Mentor = typeof mentors.$inferSelect;
 const location = resolve(process.env.DATABASE_PATH || './data/tech-woman.db');
@@ -23,9 +23,31 @@ CREATE TABLE IF NOT EXISTS choice_email_attempt (participant_id INTEGER PRIMARY 
 CREATE TABLE IF NOT EXISTS admin_user (email TEXT PRIMARY KEY, password_hash TEXT NOT NULL, role TEXT NOT NULL);`);
 const emailColumns = sqlite.pragma('table_info(email_attempt)') as { name: string }[];
 const participantColumns = sqlite.pragma('table_info(participant)') as { name: string }[];
+const mentorColumns = sqlite.pragma('table_info(mentor)') as { name: string }[];
+if (!mentorColumns.some(column => column.name === 'demo')) sqlite.exec('ALTER TABLE mentor ADD COLUMN demo INTEGER NOT NULL DEFAULT 0');
+if (!mentorColumns.some(column => column.name === 'demo_name')) sqlite.exec('ALTER TABLE mentor ADD COLUMN demo_name TEXT');
 if (!participantColumns.some(column => column.name === 'area')) sqlite.exec('ALTER TABLE participant ADD COLUMN area TEXT');
 if (!emailColumns.some(column => column.name === 'provider_id')) sqlite.exec('ALTER TABLE email_attempt ADD COLUMN provider_id TEXT');
 if (!emailColumns.some(column => column.name === 'updated_at')) sqlite.exec("ALTER TABLE email_attempt ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+sqlite.exec('CREATE TABLE IF NOT EXISTS demo_seed_state (id INTEGER PRIMARY KEY CHECK(id=1))');
+if (process.env.DEMO_MENTORS === '1' && process.env.BUILDING !== '1') {
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT id FROM demo_seed_state WHERE id=1').get()) return;
+    const examples = [
+      ['Ana Exemplo (fictícia)','ana-dados','dados','Dados e análise de informação em projetos fictícios.'],
+      ['Bia Exemplo (fictícia)','bia-codigo','desenvolvimento','Desenvolvimento de software e programação em cenários de demonstração.'],
+      ['Clara Exemplo (fictícia)','clara-produto','produto','Produto digital e descoberta de necessidades fictícias.'],
+      ['Dani Exemplo (fictícia)','dani-ux','design','UX e design de experiências em projetos de exemplo.'],
+      ['Eva Exemplo (fictícia)','eva-seguranca','desenvolvimento','Segurança de aplicações em exemplos de tecnologia.'],
+      ['Fabi Exemplo (fictícia)','fabi-cloud','dados','Infraestrutura e cloud para projetos simulados.'],
+      ['Gabi Exemplo (fictícia)','gabi-lideranca','produto','Liderança de equipes e produto em cenários fictícios.'],
+      ['Helo Exemplo (fictícia)','helo-carreira','design','Carreira em tecnologia e transição profissional em simulações.']
+    ] as const;
+    const insert=sqlite.prepare('INSERT INTO mentor(email,trajectory,specialties,availability,capacity,active,demo,demo_name) VALUES(?,?,?,?,3,1,1,?)');
+    for (const [name,mail,tag,trajectory] of examples) insert.run(`${mail}@exemplo.invalid`,trajectory,JSON.stringify([tag]),'Disponibilidade ilustrativa, sem horário definido.',name);
+    sqlite.prepare('INSERT INTO demo_seed_state(id) VALUES(1)').run();
+  }).immediate();
+}
 export const db = drizzle(sqlite);
 export const tokenDigest = (token: string) => createHash('sha256').update(token).digest('hex');
 export const newToken = () => randomBytes(32).toString('hex');
