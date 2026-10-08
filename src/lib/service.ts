@@ -4,7 +4,7 @@ import { confirmRegistration, emailLabel } from './email';
 
 const tags = ['produto','dados','desenvolvimento','design'] as const;
 export const areas = [...tags, 'outra'] as const;
-export const mentorDeadline = process.env.MENTOR_DEADLINE || '2026-11-01T02:59:59.999Z';
+export const mentorDeadline = process.env.MENTOR_DEADLINE || '2026-10-31T02:59:59.999Z';
 export const mentorRegistrationOpen = () => !Number.isNaN(Date.parse(mentorDeadline)) && Date.now() <= Date.parse(mentorDeadline);
 type Tag = typeof tags[number];
 type Input = Record<string, unknown>;
