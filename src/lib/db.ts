@@ -32,6 +32,8 @@ if (!emailColumns.some(column => column.name === 'updated_at')) sqlite.exec("ALT
 sqlite.exec('CREATE TABLE IF NOT EXISTS demo_seed_state (id INTEGER PRIMARY KEY CHECK(id=1))');
 if (process.env.DEMO_MENTORS === '1' && process.env.BUILDING !== '1') {
   sqlite.transaction(() => {
+    sqlite.prepare("UPDATE mentor SET specialties=? WHERE demo=1 AND email=? AND specialties=? AND trajectory=?")
+      .run(JSON.stringify(['desenvolvimento']), 'fabi-cloud@exemplo.invalid', JSON.stringify(['dados']), 'Infraestrutura e cloud para projetos simulados.');
     if (sqlite.prepare('SELECT id FROM demo_seed_state WHERE id=1').get()) return;
     const examples = [
       ['Ana Exemplo (fictícia)','ana-dados','dados','Dados e análise de informação em projetos fictícios.'],
@@ -39,7 +41,7 @@ if (process.env.DEMO_MENTORS === '1' && process.env.BUILDING !== '1') {
       ['Clara Exemplo (fictícia)','clara-produto','produto','Produto digital e descoberta de necessidades fictícias.'],
       ['Dani Exemplo (fictícia)','dani-ux','design','UX e design de experiências em projetos de exemplo.'],
       ['Eva Exemplo (fictícia)','eva-seguranca','desenvolvimento','Segurança de aplicações em exemplos de tecnologia.'],
-      ['Fabi Exemplo (fictícia)','fabi-cloud','dados','Infraestrutura e cloud para projetos simulados.'],
+      ['Fabi Exemplo (fictícia)','fabi-cloud','desenvolvimento','Infraestrutura e cloud para projetos simulados.'],
       ['Gabi Exemplo (fictícia)','gabi-lideranca','produto','Liderança de equipes e produto em cenários fictícios.'],
       ['Helo Exemplo (fictícia)','helo-carreira','design','Carreira em tecnologia e transição profissional em simulações.']
     ] as const;

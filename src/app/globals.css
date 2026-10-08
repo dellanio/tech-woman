@@ -10,3 +10,33 @@
 .editor-intro{max-width:780px;margin-bottom:36px;animation:arrive .34s var(--ease-out) both}.editor-intro h1{font-size:clamp(48px,5vw,72px)}.editor-intro>p:not(.eyebrow){color:var(--muted);font-size:17px}.event-editor{max-width:850px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 24px}.event-editor>div:first-child,.event-editor>div:nth-child(3),.event-editor>div:nth-child(4),.event-editor>button{grid-column:1/-1}.event-editor textarea{min-height:106px;resize:vertical;white-space:pre-wrap}.event-facts p{white-space:pre-line}.sidebar-link{display:block;padding:12px;color:var(--accent);font-weight:700;transition:color .18s var(--ease-out),transform .18s var(--ease-out)}.sidebar-link:hover{color:var(--ink);transform:translateX(3px)}.remove-demo{margin:0 0 20px}
 @media(max-width:760px){.event-editor{grid-template-columns:1fr}.event-editor>div,.event-editor>button{grid-column:1/-1}.editor-intro h1{font-size:clamp(44px,10vw,60px)}}
 @media(prefers-reduced-motion:reduce){.editor-intro{animation:none}.sidebar-link:hover{transform:none}}
+
+/* Polimento do diagnóstico: arte semântica à esquerda, decisões à direita. */
+@media(min-width:761px){
+  .inner-page:has(.wizard-grid){padding-top:24px}
+  .inner-page:has(.wizard-grid) .inner-meta{margin-bottom:30px}
+  .inner-page:has(.wizard-grid) .progress-track{margin:12px 0 26px}
+  .wizard-grid.form-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);gap:clamp(32px,4vw,64px);min-height:0}
+  .wizard-grid .wizard-intro h2{font-size:clamp(48px,4.2vw,64px);margin-bottom:16px}
+  .wizard-grid .wizard-intro .section-index{margin-bottom:14px}
+  .wizard-grid .thread-illustration{order:2;width:100%;max-width:none;margin:16px 0;padding:12px 0;border-block:var(--border)}
+  .wizard-grid .thread-illustration svg{width:100%;height:clamp(220px,20vw,280px)}
+  .wizard-grid .wizard-intro>p:not(.honesty){order:3}
+  .wizard-grid .honesty{order:4}
+  .wizard-grid .form-panel{padding:clamp(24px,2.5vw,36px)}
+  .wizard-grid .form-panel fieldset{margin-bottom:14px}
+  .wizard-grid .form-panel .choice{min-height:72px;padding:10px 16px}
+  .wizard-grid .form-panel .form-main-action{margin-top:10px}
+}
+.choice-indicator{display:block;width:20px;height:20px;border:2px solid var(--accent);border-radius:var(--radius-pill);position:relative}
+.choice:has(input:checked) .choice-indicator::after{content:'';position:absolute;inset:4px;border-radius:var(--radius-pill);background:var(--accent)}
+.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:44px}
+.theme-toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.skip-link{visibility:hidden;pointer-events:none}
+.skip-link:focus-visible{visibility:visible;pointer-events:auto}
+@media(max-width:760px){
+  .site-header .header-mentor{display:none}
+  .site-header .header-action{margin-left:auto;font-size:13px;min-height:44px;padding-inline:12px}
+  .form-grid .thread-illustration{width:100%;max-width:none}
+  .form-grid .thread-illustration svg{width:100%;height:auto}
+}
