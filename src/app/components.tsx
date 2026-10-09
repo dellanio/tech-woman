@@ -1,11 +1,15 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import { constellationSvg } from '@/lib/constellation';
-export function Constellation() {
- const ref = useRef<HTMLDivElement>(null);
- useEffect(() => { const el=ref.current; if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; let alive=true; let context: {revert:()=>void}|undefined;
- import('gsap').then(({gsap}) => { if (!alive || !el) return; context=gsap.context(() => { const paths=Array.from(el.querySelectorAll<SVGPathElement>('.paths path')); const nodes=Array.from(el.querySelectorAll<SVGCircleElement>('.nodes circle')); paths.forEach(p=>gsap.set(p,{strokeDasharray:p.getTotalLength(),strokeDashoffset:p.getTotalLength()})); gsap.set(nodes,{autoAlpha:0,scale:.65,transformOrigin:'center center'}); gsap.timeline().to(nodes.slice(0,4),{autoAlpha:1,scale:1,stagger:.11,duration:.33}).to(paths.slice(0,2),{strokeDashoffset:0,stagger:.14,duration:.85},.30).to(nodes.slice(4),{autoAlpha:1,scale:1,stagger:.08,duration:.35},.55).to(paths.slice(2),{strokeDashoffset:0,stagger:.08,duration:.8},.90).fromTo('.hero-copy h1',{y:8,opacity:.92},{y:0,opacity:1,duration:.36},1.86).fromTo('.hero-cta',{y:8},{y:0,duration:.34},2.06); },el); });
- return () => { alive=false; context?.revert(); }; },[]);
- return <div ref={ref} className="constellation" role="img" aria-label="Trajetórias convergem em um ponto de encontro"><div className="art-label art-label-top">CAMINHOS DISTINTOS / UM PONTO DE ENCONTRO</div>{/* SVG literal gerado da referência local versionada; nenhuma entrada de usuário é interpolada. */}<div dangerouslySetInnerHTML={{__html:constellationSvg}}/><div className="art-label art-label-bottom">TECH WOMAN / CONEXÕES POSSÍVEIS</div></div>;
+import { useEffect, useState } from 'react';
+type ArtProps = { eager?: boolean; className?: string };
+/* Arte decorativa Perfil 1 (Contorno): uma imagem por tema, alternadas por CSS (data-theme). */
+export function ProfileArt({ eager = false, className = 'profile-img' }: ArtProps) {
+  const loading = eager ? 'eager' : 'lazy';
+  return <>
+    <picture className="art-dark"><source srcSet="/arte/perfil-1.webp" type="image/webp"/><img className={className} src="/arte/perfil-1.png" alt="" aria-hidden="true" width={1400} height={1400} loading={loading} decoding="async"/></picture>
+    <picture className="art-light"><source srcSet="/arte/perfil-1-claro.webp" type="image/webp"/><img className={className} src="/arte/perfil-1-claro.png" alt="" aria-hidden="true" width={1400} height={1400} loading="lazy" decoding="async"/></picture>
+  </>;
+}
+export function HeroArt() {
+  return <div className="profile-art" aria-hidden="true"><div className="art-label art-label-top">MULHERES EM TECNOLOGIA / TRAJETÓRIAS QUE CONECTAM</div><ProfileArt eager/><div className="art-label art-label-bottom">UMA TRAJETÓRIA. INFINITAS POSSIBILIDADES.</div></div>;
 }
 export function ThemeButton() { const [light,setLight]=useState(false); useEffect(()=>{ const saved=localStorage.getItem('tw-theme')==='light'; document.documentElement.dataset.theme=saved?'light':'dark'; setLight(saved); },[]); return <button className="theme-toggle" type="button" onClick={()=>{const next=!light;setLight(next);document.documentElement.dataset.theme=next?'light':'dark';localStorage.setItem('tw-theme',next?'light':'dark');}} aria-label={light?'Ativar tema escuro':'Ativar tema claro'}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={light?'M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.461.402.805a6.5 6.5 0 0 0 8.267 8.266c.345-.214.826-.003.804.401Z':'M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z'}/></svg><span>{light?'Escuro':'Claro'}</span></button>; }

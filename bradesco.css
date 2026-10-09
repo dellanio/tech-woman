@@ -11,3 +11,17 @@
 @media(max-width:760px){.hero{height:auto}.constellation{height:440px}}
 @media(max-width:360px){.hero-brand h1{font-size:41px}}
 @media(max-width:360px){.site-header{padding-inline:12px;gap:8px}.site-header .wordmark{font-size:18px}.site-header .header-action{font-size:13px;padding-inline:10px}.site-header .header-action span{display:none}}
+/* Arte Perfil 1 (Contorno) — substitui a constelação; fade-in CSS 0,6 s */
+.art-light{display:none!important}:root[data-theme='light'] .art-dark{display:none!important}:root[data-theme='light'] .art-light{display:block!important}
+.profile-art{position:relative;min-height:0;height:100%;border-left:var(--border);overflow:hidden;display:grid;place-items:center;background:#1a0a0e}
+:root[data-theme='light'] .profile-art{background:oklch(97% .012 70)}
+.profile-art picture{position:absolute;inset:0;display:block}
+.profile-img{display:block;width:100%;height:100%;object-fit:contain;padding:20px;animation:profile-enter .6s var(--ease-out,ease-out) both}
+.profile-art .art-label{position:absolute;z-index:1;color:var(--muted);pointer-events:none;font-size:11px}
+.profile-art .art-label-top{top:32px;left:32px;right:24px}.profile-art .art-label-bottom{bottom:28px;right:32px}
+.thread-illustration picture,.mentor-art picture{display:block}
+.thread-illustration .profile-img,.mentor-art .profile-img{position:static;height:auto;max-height:360px;padding:0}
+.mentor-art{margin-top:36px;max-width:420px}
+@keyframes profile-enter{from{opacity:0}to{opacity:1}}
+@media(max-width:760px){.profile-art{height:390px;border-left:0;border-top:var(--border)}.profile-img{padding:20px 10px}:root[data-theme='dark'] .profile-art .profile-img{filter:brightness(1.25)}.profile-art .art-label-top{left:20px;top:17px;right:20px}.profile-art .art-label-bottom{right:20px;bottom:16px}.mentor-art{display:none}}
+@media(prefers-reduced-motion:reduce){.profile-img{animation:none}}
