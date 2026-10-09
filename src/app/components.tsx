@@ -9,6 +9,12 @@ export function ProfileArt({ eager = false, className = 'profile-img' }: ArtProp
     <picture className="art-light"><source srcSet="/arte/perfil-1-claro.webp" type="image/webp"/><img className={className} src="/arte/perfil-1-claro.png" alt="" aria-hidden="true" width={1400} height={1400} loading="lazy" decoding="async"/></picture>
   </>;
 }
+export function SectionArt({ name }: { name: 'secao02' | 'secao03' }) {
+  return <>
+    <picture className="art-dark"><source srcSet={`/arte/${name}.webp`} type="image/webp"/><img src={`/arte/${name}.png`} alt="" aria-hidden="true" width={2048} height={2048} loading="lazy" decoding="async"/></picture>
+    <picture className="art-light"><source srcSet={`/arte/${name}-claro.webp`} type="image/webp"/><img src={`/arte/${name}-claro.png`} alt="" aria-hidden="true" width={2048} height={2048} loading="lazy" decoding="async"/></picture>
+  </>;
+}
 export function HeroArt() {
   return <div className="profile-art" aria-hidden="true"><div className="art-label art-label-top">MULHERES EM TECNOLOGIA / TRAJETÓRIAS QUE CONECTAM</div><ProfileArt eager/><div className="art-label art-label-bottom">UMA TRAJETÓRIA. INFINITAS POSSIBILIDADES.</div></div>;
 }

@@ -25,3 +25,27 @@
 @keyframes profile-enter{from{opacity:0}to{opacity:1}}
 @media(max-width:760px){.profile-art{height:390px;border-left:0;border-top:var(--border)}.profile-img{padding:20px 10px}:root[data-theme='dark'] .profile-art .profile-img{filter:brightness(1.25)}.profile-art .art-label-top{left:20px;top:17px;right:20px}.profile-art .art-label-bottom{right:20px;bottom:16px}.mentor-art{display:none}}
 @media(prefers-reduced-motion:reduce){.profile-img{animation:none}}
+/* Artes das seções 02 e 03 (Contorno) — fade-in CSS 0,6 s */
+.method{grid-template-columns:minmax(0,1fr) minmax(0,2fr);grid-template-rows:auto 1fr;column-gap:8vw;row-gap:var(--space-6)}
+.method>.eyebrow{grid-column:1;grid-row:1;margin:var(--space-2) 0 0}
+.method-copy{grid-column:2;grid-row:1 / span 2}
+.method-art{grid-column:1;grid-row:2;align-self:center;width:min(432px,calc(100% + 4vw))}
+.section-art{min-width:0;pointer-events:none}
+.section-art picture{display:block}
+.section-art img{display:block;width:100%;height:auto;object-fit:contain;animation:section-art-enter .6s var(--ease-out,ease-out) both}
+.method-art img{max-height:480px}
+.mentor-cta{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);column-gap:var(--space-12);align-items:center}
+.mentor-copy>p:not(.eyebrow){color:var(--muted);max-width:550px;font-size:18px}
+.mentor-section-art{width:min(100%,490px);justify-self:end}
+.mentor-section-art img{max-height:490px}
+@keyframes section-art-enter{from{opacity:0}to{opacity:1}}
+@media(max-width:760px){
+ .method,.mentor-cta{display:flex;flex-direction:column;align-items:stretch;gap:var(--space-6)}
+ .method>.eyebrow{order:0;margin:0}.method-copy{order:1}.method-art{order:2}
+ .section-art{width:min(100%,340px);align-self:center;margin-top:var(--space-2)}
+ .method-art img{max-height:340px}
+ .mentor-section-art{width:min(100%,300px)}
+ .mentor-section-art img{max-height:300px}
+ .mentor-copy{order:0}.mentor-section-art{order:1}
+}
+@media(prefers-reduced-motion:reduce){.section-art img{animation:none}}
