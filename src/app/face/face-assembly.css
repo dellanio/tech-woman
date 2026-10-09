@@ -1,0 +1,12 @@
+/* Inserir dentro de .profile-art, que já reserva a altura do hero.
+   Não inclui layout, cores, fontes, CTA nem os estilos globais da prévia. */
+.face-stage{position:absolute;inset:20px;pointer-events:none}
+.face-final,.face-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.face-final{object-fit:contain;animation:none}
+.face-light{display:none}
+:root[data-theme='light'] .face-dark{display:none}
+:root[data-theme='light'] .face-light{display:block}
+.face-canvas[hidden]{display:none}
+@media(max-width:760px){.face-stage{inset:20px 10px}}
+@media(prefers-reduced-motion:reduce){.face-canvas{display:none!important}.face-final{opacity:1!important}}
+@media(max-width:760px){:root[data-theme='dark'] .face-final{filter:brightness(1.25)}}
