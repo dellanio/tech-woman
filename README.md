@@ -1,32 +1,94 @@
-# Tech Woman Bradesco — protótipo local
+# Tech Woman — plataforma do evento
 
-Uma aplicação Next.js + SQLite para o evento presencial Tech Woman. A jornada participante → mentora → decisão admin → consulta individual funciona localmente. **Localmente e-mails não são enviados**: o estado é `NÃO ENVIADA — simulação local`.
+Plataforma web do **Tech Woman**, encontro presencial para mulheres em tecnologia (14/11/2026). Conecta participantes a mentoras de acordo com trajetória e objetivos de carreira:
 
-## Início rápido
+- **Landing** (`/`) com informações do evento, agenda e palestrantes publicados pela equipe.
+- **Inscrição de participantes** (`/inscricao`): diagnóstico de carreira em etapas (objetivo, momento, interesses, habilidades), consentimento explícito e não pré-marcado, e sugestão de mentoras compatíveis com vaga. A reserva respeita a capacidade de cada mentora.
+- **Cadastro de mentoras** (`/mentora`): trajetória, especialidades (mesmo vocabulário da inscrição), disponibilidade e capacidade. Prazo configurável por `MENTOR_DEADLINE`.
+- **Consulta individual**: cada inscrição recebe um link com token aleatório (só o hash fica no banco) que mostra o estado e o par escolhido/aprovado.
+- **Painel da equipe** (`/admin`): inscrições, mentoras, pontuação e motivos do match, vagas, aprovar/rejeitar/reatribuir; edição do evento em `/admin/evento`.
 
-Na pasta `repo/`, configure `.env` a partir de `.env.example`: substitua `ADMIN_PASSWORD` (mínimo de 16 caracteres, única para o ambiente) e `SESSION_SECRET` (mínimo de 32 caracteres), sem deixar os placeholders. Exemplo: `cp .env.example .env` e edite os dois campos. `.env` e o banco `data/` não são versionados. Nunca use estas credenciais/dados sintéticos em produção.
+Status: **prova de conceito (POC)** para demonstração. Demo publicada: https://tech-woman.dellanio.com
 
-Com Docker disponível: `docker compose up --build`. Acesse `http://localhost:3000`. O único serviço é a aplicação; SQLite fica em `repo/data/`. Esta opção não foi executada no sandbox do builder porque o comando `docker` não está instalado aqui.
+Stack: Next.js 15 (App Router) + React 19, SQLite (better-sqlite3 + Drizzle), e-mail opcional via Amazon SES. Nenhum serviço externo é obrigatório para rodar.
 
-Sem Docker: `pnpm install && pnpm dev` (Node 24 recomendado). Também sobe em `http://localhost:3000`. Após instalar, `pnpm dev` é o único comando necessário. Se o pnpm bloquear scripts nativos, o projeto inclui `pnpm-workspace.yaml` autorizando somente `better-sqlite3` e `sharp`; execute `pnpm rebuild better-sqlite3`.
+## Como rodar localmente
 
-Build de produção local: `BUILDING=1 NEXT_TELEMETRY_DISABLED=1 pnpm build`. O `BUILDING=1` usa SQLite apenas em memória durante a pré-renderização concorrente, sem gerar inscrições. Para iniciar o standalone: copie `.next/static` para `.next/standalone/.next/static` e `public` para `.next/standalone/public`, depois exporte as variáveis de `.env` (em especial `DATABASE_PATH` absoluto, `LOCAL_SEED=1`, `ALLOW_LOCAL_HTTP=1` somente em localhost, `HOSTNAME=0.0.0.0`, `PORT=3000`) e rode `node .next/standalone/server.js`. No Compose isso já está configurado.
+Pré-requisitos: Node.js 24 (recomendado) e pnpm 10 (`corepack enable` ou `npm i -g pnpm`).
 
-## Jornada demonstrável
+```bash
+cp .env.example .env
+# edite .env: troque ADMIN_PASSWORD (mín. 16 caracteres) e SESSION_SECRET (mín. 32 caracteres)
+pnpm i
+pnpm dev
+```
 
-1. Landing `/` → “Quero participar” → `/inscricao`: escolha objetivo e momento, depois interesses, habilidades, e-mail e consentimento não pré-marcado. Protocolo e link de consulta aparecem na tela; nenhum e-mail foi enviado.
-2. `/mentora`: informe e-mail, trajetória, especialidades do mesmo vocabulário, disponibilidade descritiva, capacidade e consentimento.
-3. `/admin`: use `ADMIN_EMAIL` e `ADMIN_PASSWORD` de `.env`, examine pontuação/motivos/vagas e aprove ou rejeite. Sem login a API nega dados e decisões; capacidade é rechecável transacionalmente.
-4. Abra o link individual da etapa 1; somente o token aleatório daquele cadastro revela seu estado e eventual par aprovado. A inscrição não reserva horário.
+Abra http://localhost:3000. O login de `/admin` usa `ADMIN_EMAIL` e `ADMIN_PASSWORD` do seu `.env` (o usuário é criado no boot quando `LOCAL_SEED=1`, com hash scrypt).
 
-O bootstrap admin usa hash scrypt e somente `LOCAL_SEED=1`. Em produção, desative `LOCAL_SEED`, configure HTTPS e segredo exclusivo. A equipe edita texto, local, agenda, palestrantes, data e duração em `/admin/evento`; a home só exibe valores publicados. A data confirmada começa em 14/11/2026 e pode ser limpa no editor. Cadastro de mentoras encerra em 30/10/2026 às 23h59 (Brasília): `MENTOR_DEADLINE=2026-10-31T02:59:59.999Z`; atualize qualquer `.env` antigo que ainda use outro valor.
+O banco SQLite é criado em `./data/` (não versionado). Para recomeçar do zero, apague a pasta `data/`.
 
-## Mentoras fictícias de demonstração
+Se o pnpm bloquear scripts nativos, o `pnpm-workspace.yaml` já autoriza apenas `better-sqlite3` e `sharp`; rode `pnpm rebuild better-sqlite3`.
 
-`DEMO_MENTORS=1` cria no primeiro boot oito perfis fictícios (dados, desenvolvimento, produto, UX, segurança, infraestrutura/cloud, liderança e carreira), três vagas cada. É independente de `LOCAL_SEED`: pode ficar ligado em produção com `LOCAL_SEED=0` sem desligar SES. Cada perfil tem nome marcado como fictício, e-mail `@exemplo.invalid` (não há envio de e-mail para mentoras) e selo **Demonstração** nas sugestões, na consulta e no admin. O botão **Remover mentoras de demonstração** na aba Mentoras as desativa em lote; reservas já realizadas ficam registradas, perfis desativados deixam de ser sugeridos. O seed não se repete no reinício nem reativa perfis removidos. Não configure `LOCAL_SEED=1` no servidor: essa flag é exclusiva da demonstração local e interfere no envio SES.
+### Com Docker
 
-## Confirmação de inscrição / SES (WP-002)
+```bash
+cp .env.example .env   # e edite as duas credenciais
+docker compose up --build
+```
 
-No ambiente local mantenha `EMAIL_MODE=mock` e `LOCAL_SEED=1`, inclusive no Compose. Inscrição válida grava `consent_version=v1`, `consent_at` UTC e uma tentativa `mock-not-sent`; a página de consulta lê a tentativa persistida. Sem consentimento explícito ou com campos inválidos nada é gravado. Mutações admin exigem sessão `owner`; leitura admite `owner` ou `member`. O cookie é HttpOnly/SameSite Strict e Secure em HTTPS (`ALLOW_LOCAL_HTTP=1` exclusivamente local).
+Sobe em http://localhost:3000 com o banco em `./data/`.
 
-O operador já confirmou identidade do domínio `dellanio.com` e conta SES em produção na região `us-east-1`; **permissão IAM de envio no destino e credenciais do processo ainda não foram confirmadas**. Portanto não ativar envio aqui. No deploy autorizado, devops confirma acesso e política restrita a `ses:SendEmail`/From, provisiona credenciais do processo fora do git e configura `EMAIL_MODE=ses`, `SES_SEND_ENABLED=1`, `SES_IDENTITY_VERIFIED=1`, `SES_IAM_AUTHORIZED=1`, `SES_ACCOUNT_PRODUCTION=1`, `SES_REGION=us-east-1`, `SES_FROM=no-reply@dellanio.com`, `APP_ORIGIN=https://tech-woman.dellanio.com`, `LOCAL_SEED=0`, `ALLOW_LOCAL_HTTP=0`. Estes flags **não substituem** inspeção operacional da identidade/IAM/conta. Qualquer pré-requisito ausente deixa `unavailable-not-sent` e não chama AWS. A aceitação API armazena `MessageId` e mostra “ACEITA PELO SES — entrega ao destinatário não confirmada”; resposta de erro/ambígua mostra “ACEITE NÃO CONFIRMADO — o envio pode ter ocorrido”, sem repetir automaticamente. A prova de envio real fica para o devops em ambiente autorizado, sem usar credenciais do host no sandbox.
+### Build de produção sem Docker
+
+```bash
+BUILDING=1 NEXT_TELEMETRY_DISABLED=1 pnpm build
+```
+
+`BUILDING=1` usa SQLite em memória durante a pré-renderização (não grava nada). Para iniciar o standalone, copie `.next/static` para `.next/standalone/.next/static` e `public` para `.next/standalone/public`, exporte as variáveis do `.env` (com `DATABASE_PATH` absoluto) e rode `node .next/standalone/server.js`.
+
+## Variáveis de ambiente (`.env.example`)
+
+| Variável | Padrão no exemplo | Para que serve |
+|---|---|---|
+| `DATABASE_PATH` | `./data/tech-woman.db` | Caminho do arquivo SQLite. |
+| `LOCAL_SEED` | `1` | Cria o usuário admin a partir de `ADMIN_EMAIL`/`ADMIN_PASSWORD`. Só para uso local; em servidor use `0` (também bloqueia o envio por SES). |
+| `ADMIN_EMAIL` | `admin@techwoman.local` | Login da equipe no `/admin`. |
+| `ADMIN_PASSWORD` | placeholder | **Obrigatório trocar** (≥ 16 caracteres). A aplicação recusa o placeholder. |
+| `SESSION_SECRET` | placeholder | **Obrigatório trocar** (≥ 32 caracteres aleatórios). Assina o cookie de sessão. |
+| `EMAIL_MODE` | `mock` | `mock` = nenhum e-mail é enviado; a tela mostra “NÃO ENVIADA — simulação local”. `ses` só envia se todas as flags `SES_*` estiverem configuradas; faltando qualquer uma, registra `unavailable-not-sent` e não chama a AWS. |
+| `SES_*`, `APP_ORIGIN` | comentadas | Envio real via Amazon SES (região, remetente e flags de verificação de identidade/IAM/conta). Deixe comentadas no desenvolvimento. |
+| `ANALYTICS_PROVIDER` | `none` | Sem analytics. |
+| `MENTOR_DEADLINE` | `2026-10-31T02:59:59.999Z` | Fim do cadastro de mentoras (30/10 23h59, horário de Brasília). |
+| `DEMO_MENTORS` | `0` | `1` cria oito mentoras **fictícias** rotuladas “Demonstração” (e-mails `@exemplo.invalid`, três vagas cada); o admin pode desativá-las em lote. |
+
+Opcionais fora do exemplo: `ALLOW_LOCAL_HTTP=1` (permite cookie de sessão sem HTTPS em `NODE_ENV=production` — só em localhost), `PORT`, `HOSTNAME`.
+
+Nunca versione `.env` nem a pasta `data/` (já estão no `.gitignore`). Todos os dados de exemplo são sintéticos.
+
+## Estrutura
+
+```
+src/app/            páginas e rotas de API (Next.js App Router)
+  admin/            painel da equipe e editor do evento
+  inscricao/        diagnóstico, sugestões e consulta individual
+  mentora/          cadastro de mentoras
+  api/              endpoints (participant, mentor, choice, state, admin/*)
+  face/             animação de abertura da arte "Perfil 1"
+src/lib/            banco (db.ts), autenticação, regras de match/reserva (service.ts), e-mail, evento
+public/arte/        ilustrações em traço geradas para o projeto
+public/fonts/       DM Sans, Lora e Oswald (Google Fonts, SIL OFL) autohospedadas
+reference.css       tokens de design; bradesco.css aplica o tema vermelho institucional
+scripts/            gerador das variantes claras da arte (lê o arquivo-mestre do design, que não está neste repositório)
+```
+
+## Como contribuir
+
+1. Abra uma *issue* descrevendo o problema ou a melhoria antes de mudanças grandes.
+2. Crie um branch a partir de `main` (`feat/...`, `fix/...`) e faça commits pequenos com mensagens claras, em português, no estilo `feat: ...`, `fix: ...`, `docs: ...`.
+3. Antes de abrir o *pull request*, confira que o build passa (`BUILDING=1 pnpm build`) e teste a jornada: inscrição → cadastro de mentora → escolha → painel admin, em desktop e mobile.
+4. Não inclua dados reais de participantes/mentoras, `.env`, bancos `.db` ou credenciais em commits, issues ou capturas de tela.
+5. Abra o PR para `main` dizendo o que mudou e como testou (prints ajudam em mudanças visuais).
+
+## Licença
+
+Ainda **sem licença definida**: por enquanto todos os direitos são reservados ao autor. Uma licença será adicionada quando o responsável pelo projeto decidir.
