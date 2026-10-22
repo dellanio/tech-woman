@@ -13,8 +13,32 @@ concurrency:
   group: production-tech-woman
   cancel-in-progress: false
 jobs:
-  deploy:
+  gate:
     if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      deploy: ${{ steps.signal.outputs.deploy }}
+    steps:
+      # A skipped merger (e.g. main push CI) is not a successful merge signal.
+      - id: signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != workflow_run ]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            merged=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" --jq 'any(.jobs[]; .name == "merge" and .conclusion == "success")')
+            echo "deploy=$merged" >> "$GITHUB_OUTPUT"
+          fi
+  deploy:
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-24.04-arm
     environment: production
     timeout-minutes: 30

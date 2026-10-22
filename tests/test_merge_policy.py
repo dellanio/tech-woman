@@ -13,6 +13,8 @@ class MergePolicyTests(unittest.TestCase):
         self.assertIn('workflows: [Beatriz auto-merge]', text)
         self.assertIn('ref: main', text)
         self.assertNotIn('workflow_run.head_sha', text)
+        self.assertIn("needs.gate.outputs.deploy == 'true'", text)
+        self.assertIn('.name == "merge" and .conclusion == "success"', text)
 
     def test_actual_inline_policy_with_api_fixtures(self):
         text = (ROOT / '.github/workflows/approved-merge.yml').read_text()
