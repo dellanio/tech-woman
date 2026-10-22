@@ -10,6 +10,7 @@ test('v1: DTOs fechados e IDs bigint sem perda, instantes com offset obrigatóri
  assert.throws(()=>parseCohort({startsAt:'2027-02-30T09:00:00Z',endsAt:'2027-03-04T10:00:00Z',capacity:20,status:'open'}));
  assert.throws(()=>parseCohort({startsAt:'2027-11-14T09:00:00Z',endsAt:'2027-11-14T08:00:00Z',capacity:21,status:'draft'}));
  assert.equal(parseEnrollment({cohortId:'9007199254740993'}).cohortId,'9007199254740993');
+ assert.throws(()=>parseCohort({startsAt:'2027-11-14T24:00:00Z',endsAt:'2027-11-16T00:00:00Z',capacity:1,status:'open'}));
  assert.throws(()=>parseEnrollment({cohortId:9007199254740992}));
  assert.throws(()=>parseEnrollment({cohortId:'9223372036854775808'}));
  assert.throws(()=>parseEnrollment({cohortId:'1',participantId:'2'}));
