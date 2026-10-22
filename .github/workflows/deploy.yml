@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   # GITHUB_TOKEN auto-merges do not emit push workflows. workflow_run does.
   workflow_run:
-    workflows: [Approved auto-merge]
+    workflows: [Beatriz auto-merge]
     types: [completed]
 permissions:
   contents: read
