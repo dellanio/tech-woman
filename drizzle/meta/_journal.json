@@ -5,8 +5,29 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1792706941866,
+      "when": 1792706941000,
       "tag": "20261022220901_wp001_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792707000000,
+      "tag": "20261022221000_wp001_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792710394000,
+      "tag": "20261022230634_wp001_restrict",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792710395000,
+      "tag": "20261022230635_wp001_archive_constraints",
       "breakpoints": true
     }
   ]

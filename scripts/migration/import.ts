@@ -57,7 +57,7 @@ export async function importSnapshot(snapshot:Snapshot,options:{url?:string;dryR
  const report:ImportReport={dryRun:!!options.dryRun,idempotent:false,runId:null,status:issues.length?'pending':'imported',issues:issues.length,counts};
  if(options.dryRun)return report;
  const url=options.url||process.env.MIGRATION_DATABASE_URL;if(!url)throw new Error('Conexão migradora obrigatória.');
- const pool=new Pool({connectionString:url,max:1}),client=await pool.connect();
+ const pool=new Pool({connectionString:url,max:1,connectionTimeoutMillis:3000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000}),client=await pool.connect();
  try{
   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(741001)');
   const previous=await client.query('SELECT id,status FROM public.migration_run WHERE source_checksum=$1',[snapshot.checksum]);

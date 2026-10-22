@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 
 export async function migrate(url=process.env.MIGRATION_DATABASE_URL){
  if(!url) throw new Error('MIGRATION_DATABASE_URL é obrigatória, nunca usar a credencial web.');
- const pool=new Pool({connectionString:url,max:1});const client=await pool.connect();
+ const pool=new Pool({connectionString:url,max:1,connectionTimeoutMillis:3000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000});const client=await pool.connect();
  try {
   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(741001)');
   await client.query('CREATE SCHEMA IF NOT EXISTS internal');
@@ -17,6 +17,7 @@ export async function migrate(url=process.env.MIGRATION_DATABASE_URL){
    if(old.rowCount){if(old.rows[0].checksum!==checksum) throw new Error('Migration aplicada diverge da versão registrada.');continue;}
    await client.query(source);await client.query('INSERT INTO internal.schema_migration(name,checksum) VALUES($1,$2)',[name,checksum]);
   }
+  if(process.env.LOCAL_ROLE_SETUP==='1') await client.query(await readFile(resolve('scripts/migration/grants-local.sql'),'utf8'));
   await client.query('COMMIT');
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();await pool.end();}
 }
