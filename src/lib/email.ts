@@ -1,5 +1,6 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { sqlite } from './db';
+import { getDb, emailAttempts, choiceEmailAttempts } from './db';
+import { eq } from 'drizzle-orm';
 
 export type EmailStatus = 'mock-not-sent' | 'unavailable-not-sent' | 'pending' | 'ses-accepted' | 'ses-unconfirmed';
 const labels: Record<EmailStatus, string> = {
@@ -19,10 +20,10 @@ function readyForSes() {
     process.env.SES_FROM === 'no-reply@dellanio.com' && process.env.LOCAL_SEED !== '1' &&
     process.env.BUILDING !== '1';
 }
-export async function confirmChoice(participantId:number, mentorId:number, email:string, protocol:string, mentorEmail:string):Promise<string> {
-  const update = sqlite.prepare('INSERT INTO choice_email_attempt(participant_id,mentor_id,status,provider_id,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(participant_id) DO UPDATE SET mentor_id=excluded.mentor_id,status=excluded.status,provider_id=excluded.provider_id,updated_at=excluded.updated_at');
+export async function confirmChoice(participantId:string, mentorId:string, email:string, protocol:string, mentorEmail:string):Promise<string> {
+  const update = async (pid:string,mid:string,status:string,providerId:string|null,updatedAt:string) => { const entry={participantId:BigInt(pid),mentorId:BigInt(mid),status,providerId,updatedAt};await getDb().insert(choiceEmailAttempts).values(entry).onConflictDoUpdate({target:choiceEmailAttempts.participantId,set:entry}); };
   const status:EmailStatus = !readyForSes() ? (process.env.EMAIL_MODE==='ses'?'unavailable-not-sent':'mock-not-sent') : 'pending';
-  update.run(participantId,mentorId,status,null,new Date().toISOString());
+  await update(participantId,mentorId,status,null,new Date().toISOString());
   if (!readyForSes()) return emailLabel(status);
   try {
     const result=await new SESClient({region:'us-east-1',maxAttempts:1}).send(new SendEmailCommand({
@@ -30,21 +31,21 @@ export async function confirmChoice(participantId:number, mentorId:number, email
       Message:{Subject:{Data:'Sua mentoria escolhida | Tech Woman',Charset:'UTF-8'},Body:{Text:{Data:`Protocolo ${protocol}. Você escolheu a mentora ${mentorEmail} para uma mentoria, sem horário definido. Consulte seu link individual para conferir o estado atualizado.`,Charset:'UTF-8'}}}
     }));
     if (!result.MessageId) throw new Error('Aceite sem identificador');
-    update.run(participantId,mentorId,'ses-accepted',result.MessageId,new Date().toISOString());
+    await update(participantId,mentorId,'ses-accepted',result.MessageId,new Date().toISOString());
     return emailLabel('ses-accepted');
   } catch {
-    update.run(participantId,mentorId,'ses-unconfirmed',null,new Date().toISOString());
+    await update(participantId,mentorId,'ses-unconfirmed',null,new Date().toISOString());
     return emailLabel('ses-unconfirmed');
   }
 }
-export async function confirmRegistration(participantId: number, email: string, protocol: string): Promise<string> {
-  const update = sqlite.prepare('UPDATE email_attempt SET status=?, provider_id=?, updated_at=? WHERE participant_id=?');
+export async function confirmRegistration(participantId: string, email: string, protocol: string): Promise<string> {
+  const update=async(status:string,providerId:string|null,updatedAt:string,pid:string)=>{await getDb().update(emailAttempts).set({status,providerId,updatedAt}).where(eq(emailAttempts.participantId,BigInt(pid)));};
   if (!readyForSes()) {
     const status: EmailStatus = process.env.EMAIL_MODE === 'ses' ? 'unavailable-not-sent' : 'mock-not-sent';
-    update.run(status, null, new Date().toISOString(), participantId);
+    await update(status, null, new Date().toISOString(), participantId);
     return emailLabel(status);
   }
-  update.run('pending', null, new Date().toISOString(), participantId);
+  await update('pending', null, new Date().toISOString(), participantId);
   try {
     const client = new SESClient({ region: 'us-east-1', maxAttempts: 1 });
     const result = await client.send(new SendEmailCommand({
@@ -56,10 +57,10 @@ export async function confirmRegistration(participantId: number, email: string, 
       },
     }));
     if (!result.MessageId) throw new Error('SES não retornou identificador de aceite');
-    update.run('ses-accepted', result.MessageId, new Date().toISOString(), participantId);
+    await update('ses-accepted', result.MessageId, new Date().toISOString(), participantId);
     return emailLabel('ses-accepted');
   } catch {
-    update.run('ses-unconfirmed', null, new Date().toISOString(), participantId);
+    await update('ses-unconfirmed', null, new Date().toISOString(), participantId);
     return emailLabel('ses-unconfirmed');
   }
 }

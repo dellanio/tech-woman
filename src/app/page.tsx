@@ -3,8 +3,8 @@ import { HeroArt, SectionArt, ThemeButton } from './components';
 import { eventDate, getEvent } from '@/lib/event';
 
 export const dynamic='force-dynamic';
-export default function Home(){
-  const event=getEvent();
+export default async function Home(){
+  const event=await getEvent();
   const date=eventDate(event.date);
   return <>
     <header className="site-header"><Link className="wordmark" href="/">TECH<span>WOMAN</span><i aria-hidden="true"/></Link><nav aria-label="Navegação principal"><a href="#sobre">O encontro</a><a href="#metodo">Como funciona</a><Link href="/mentora">Para mentoras</Link></nav><ThemeButton/><Link className="header-mentor" href="/mentora">Quero ser mentora</Link><Link className="header-action" href="/inscricao">Quero participar <span aria-hidden="true">↗</span></Link></header>

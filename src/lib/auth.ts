@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
-import { sqlite } from './db';
+import { adminForEmail } from './service';
 
 type User = { email: string; role: string; password_hash: string };
 const secret = () => { const value = process.env.SESSION_SECRET; if (!value || value.length < 32 || value.startsWith('replace-')) throw new Error('Configure SESSION_SECRET em .env'); return value; };
@@ -14,7 +14,7 @@ export async function currentAdmin() {
   try {
     const data: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString());
     if (!data || typeof data !== 'object' || !('email' in data) || !('expires' in data) || typeof data.email !== 'string' || typeof data.expires !== 'number' || data.expires < Date.now()) return null;
-    return sqlite.prepare('SELECT email,role FROM admin_user WHERE email=?').get(data.email) as Pick<User,'email'|'role'> | undefined || null;
+    return await adminForEmail(data.email);
   } catch { return null; }
 }
 export const unauthorized = () => Response.json({ error: 'Acesso administrativo necessário.' }, { status: 401 });
