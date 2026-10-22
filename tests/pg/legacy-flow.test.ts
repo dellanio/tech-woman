@@ -1,0 +1,34 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+const input = {email:'participant-flow@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
+test('T01/T02: runtime exclusivamente PG, fluxo legado completo assíncrono e schema v1', async () => {
+  const sources = (dir:string):string[] => readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?sources(join(dir,e.name)):[join(dir,e.name)]);
+  for (const file of sources('src').filter(f=>/\.[tj]sx?$/.test(f))) assert.doesNotMatch(readFileSync(file,'utf8'), /better-sqlite3|sqlite-core|sqlite\.prepare/,file);
+  const {getDb,closeDb,hashPassword,verifyPassword} = await import('../../src/lib/db');
+  const {migrate} = await import('../../scripts/migration/migrate');
+  const {seedDemo} = await import('../../scripts/seed-demo');
+  await migrate();
+  const db=getDb();
+  const {sql}=await import('drizzle-orm');
+  assert.match(String((await db.execute(sql`select version()`)).rows[0].version),/PostgreSQL 16\./);
+  await seedDemo();
+  const service=await import('../../src/lib/service');
+  const registration=await service.createParticipant(input);
+  assert.match(registration.protocol,/^TW-/);
+  assert.match(registration.emailStatus,/NÃO ENVIADA/);
+  const choices=await service.publicSuggestions(registration.token);
+  assert.ok(choices.choices.length>0);
+  assert.equal(typeof choices.choices[0].mentorId,'string');
+  await service.reserve(registration.token,choices.choices[0].mentorId);
+  assert.equal((await service.stateFor(registration.token))?.status,'Mentoria reservada');
+  assert.ok((await service.adminOverview()).participants.some(p=>p.protocol===registration.protocol));
+  const hash=await hashPassword('synthetic-password-only');
+  assert.equal(await verifyPassword('synthetic-password-only',hash),true);
+  assert.equal(await verifyPassword('wrong',hash),false);
+  const tables=(await db.execute(sql`select table_name from information_schema.tables where table_schema='public'`)).rows.map(r=>r.table_name);
+  for(const table of ['app_user','user_role','participant','mentor','match','topic','mentor_topic','cohort','enrollment','auth_session','password_reset_token','email_job','email_delivery_attempt','email_attempt','choice_email_attempt','event_content','demo_seed_state','audit_event','api_idempotency','auth_rate_bucket','migration_run','migration_identity_link','migration_issue']) assert.ok(tables.includes(table),table);
+  await closeDb();
+});
