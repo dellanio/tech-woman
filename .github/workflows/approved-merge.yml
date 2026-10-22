@@ -1,0 +1,33 @@
+name: Approved auto-merge
+on:
+  pull_request_review:
+    types: [submitted]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  merge:
+    if: github.event.review.state == 'approved' && github.event.review.user.login == 'dellanio' && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # No checkout or execution of PR code. IDs arrive via env, never shell source.
+      - name: Enable native auto-merge for the exact approved HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          APPROVED: ${{ github.event.review.commit_id }}
+        run: |
+          set -euo pipefail
+          head=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+          test "$head" = "$APPROVED"
+          gh pr merge "$PR" --auto --squash --match-head-commit "$APPROVED"
+          for attempt in $(seq 1 140); do
+            state=$(gh pr view "$PR" --json state --jq .state)
+            if [ "$state" = MERGED ]; then exit 0; fi
+            test "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$APPROVED"
+            sleep 10
+          done
+          echo 'PR remains blocked; inspect required checks/reviews' >&2
+          exit 1
