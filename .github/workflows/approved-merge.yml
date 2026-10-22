@@ -1,33 +1,47 @@
-name: Approved auto-merge
+name: Beatriz auto-merge
 on:
-  pull_request_review:
-    types: [submitted]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 permissions:
   contents: write
   pull-requests: write
+  actions: read
+concurrency:
+  group: beatriz-auto-merge
+  cancel-in-progress: false
 jobs:
   merge:
-    if: github.event.review.state == 'approved' && github.event.review.user.login == 'dellanio' && github.event.pull_request.base.ref == 'main'
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
     steps:
-      # No checkout or execution of PR code. IDs arrive via env, never shell source.
-      - name: Enable native auto-merge for the exact approved HEAD
+      # Trusted default-branch workflow only. No checkout, artifacts or PR code.
+      # Event IDs enter via env; PR metadata is data, never shell source.
+      - name: Merge only the authorized author's tested current HEAD
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          APPROVED: ${{ github.event.review.commit_id }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
         run: |
           set -euo pipefail
-          head=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
-          test "$head" = "$APPROVED"
-          gh pr merge "$PR" --auto --squash --match-head-commit "$APPROVED"
-          for attempt in $(seq 1 140); do
-            state=$(gh pr view "$PR" --json state --jq .state)
-            if [ "$state" = MERGED ]; then exit 0; fi
-            test "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$APPROVED"
-            sleep 10
-          done
-          echo 'PR remains blocked; inspect required checks/reviews' >&2
-          exit 1
+          node <<'JS'
+          const {execFileSync} = require('node:child_process');
+          const repo = process.env.GH_REPO;
+          const api = (path, body) => JSON.parse(execFileSync('gh', ['api', `repos/${repo}/${path}`, ...(body ? ['--method', 'PUT', '--input', '-'] : [])], {input: body ? JSON.stringify(body) : undefined, encoding: 'utf8'}));
+          const run = api(`actions/runs/${process.env.RUN_ID}`);
+          if (!(run.event == 'pull_request' && run.conclusion == 'success' && run.path == '.github/workflows/ci.yml' && run.repository.full_name == repo)) throw Error('Untrusted CI run');
+          const candidates = api('pulls?state=open&base=main&per_page=100');
+          const eligible = pr => pr.user.login == 'beatrizbenz' && pr.base.ref == 'main' && pr.base.repo.full_name == repo && pr.head.sha == run.head_sha && !pr.draft && pr.state == 'open';
+          const candidate = candidates.find(eligible);
+          if (!candidate) throw Error('No authorized open PR at this tested HEAD; nothing merged');
+          const pr = api(`pulls/${candidate.number}`);
+          if (!eligible(pr)) throw Error('PR changed since CI');
+          // Atomic SHA guard; GitHub enforces strict required checks and protection.
+          const result = api(`pulls/${pr.number}/merge`, {'sha': run.head_sha, 'merge_method': 'squash'});
+          if (!result.merged) throw Error('GitHub did not merge');
+          const merged = api(`pulls/${pr.number}`);
+          if (!merged.merged || merged.head.sha !== run.head_sha || merged.merge_commit_sha !== result.sha) throw Error('Merge readback mismatch');
+          console.log(`Merged PR #${pr.number} at ${result.sha}`);
+          JS
