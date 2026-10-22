@@ -24,6 +24,7 @@ function consent(value:unknown):true{if(value!==true)throw new ContractError(['c
 export function parseSqlId(value:unknown):SqlId{if(typeof value!=='string'||!/^([1-9]\d*)$/.test(value)||value.length>19||BigInt(value)>BigInt('9223372036854775807'))throw new ContractError(['id']);return value;}
 export function parseInstant(value:unknown):string{
  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value))throw new ContractError(['datetime']);
+ if(Number(value.slice(11,13))>23||Number(value.slice(14,16))>59||Number(value.slice(17,19))>59)throw new ContractError(['datetime']);
  const date=value.slice(0,10);const civil=new Date(date+'T12:00:00Z');if(Number.isNaN(civil.valueOf())||civil.toISOString().slice(0,10)!==date||Number.isNaN(Date.parse(value)))throw new ContractError(['datetime']);return new Date(value).toISOString();
 }
 const tags=['produto','dados','desenvolvimento','design'] as const;
