@@ -27,6 +27,7 @@ O seed só existe no comando explícito; não roda no import/build/boot e não �
 ## Testes e build
 
 - `pnpm test:pg` exige MIGRATION_DATABASE_URL de uma **instância sintética de teste PG16** cujo usuário possa criar bases/roles isoladas; nunca usar o runtime ou produção. Testes criam bases com prefixos tw_/wp1_, preservadas para diagnóstico. Também requer Python3, pg_dump/pg_restore e Docker CLI/Compose para validar a configuração (sem daemon para esse teste).
+- `TEST_STANDALONE=1 pnpm test:pg` reaproveita o build standalone para os mesmos contratos HTTP (executar build antes; static/public copiados como no e2e). Sem a flag, usa Next dev; prontidão pode levar até300s em mount Windows9p frio. Nenhuma assertion é removida.
 - `pnpm typecheck`; `pnpm test:unit` executa os testes Python existentes. Checkout Windows CRLF causa falha herdada em `ops/deploy.sh` quando Bash Linux lê os bytes; mesmos blobs Git LF passam4/4. Não se alterou ops/política fora de ownership. WP-005/INT deve tratar portabilidade/checkout sem desativar testes.
 - `DATABASE_URL=<endereço indisponível> NEXT_TELEMETRY_DISABLED=1 pnpm build` não consulta PG, não faz DDL nem seed.
 - `MIGRATION_DATABASE_URL=<PG sintético> EVIDENCE_DIR=<pasta durável> pnpm test:e2e` exercita standalone real com Playwright (instalar Chromium antes). Opcional WP001_PG_DATA aponta **somente cluster descartável do sandbox**, porta55431, para provar restartPG; nunca apontar a host/produção. Sem logs de tokens/credenciais. Capturas incluem home desktop/mobile claro/escuro e fluxo.

@@ -19,14 +19,14 @@ test('T01/T02/R2: cada handler aguarda DTO real; senha errada 401 sem cookie, pÃ
  const password=randomBytes(24).toString('base64url'),adminEmail='admin-http@example.invalid';
  process.env.DATABASE_URL=url.toString();process.env.ADMIN_EMAIL=adminEmail;process.env.ADMIN_PASSWORD=password;
  await migrate(url.toString());await seedDemo();await closeDb();
- const app=spawn(process.execPath,['node_modules/next/dist/bin/next','dev','--hostname','127.0.0.1','--port',new URL(origin).port],{stdio:'ignore',env:{...process.env,DATABASE_URL:url.toString(),MIGRATION_DATABASE_URL:undefined,SESSION_SECRET:randomBytes(48).toString('hex'),APP_ORIGIN:origin,EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',NEXT_TELEMETRY_DISABLED:'1'}});
+ const app=spawn(process.execPath,process.env.TEST_STANDALONE==='1'?['.next/standalone/server.js']:['node_modules/next/dist/bin/next','dev','--hostname','127.0.0.1','--port',new URL(origin).port],{stdio:'ignore',env:{...process.env,PORT:new URL(origin).port,HOSTNAME:'127.0.0.1',DATABASE_URL:url.toString(),MIGRATION_DATABASE_URL:undefined,SESSION_SECRET:randomBytes(48).toString('hex'),APP_ORIGIN:origin,EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',NEXT_TELEMETRY_DISABLED:'1'}});
  let cookie='';
  const call=async(path:string,method='GET',body?:unknown)=>{
   const response=await fetch(origin+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
   const result=await response.json();assert.ok(result&&typeof result==='object'&&Object.keys(result).length>0,'Promise serializada/vazio em '+path.replace(/\/[a-f0-9]{64}/g,'/<redacted>'));return {response,result};
  };
  try{
-  let ready=false;for(let i=0;i<120;i++){if(app.exitCode!==null)throw new Error('Next encerrou antes do smoke');try{const res=await fetch(origin+'/api/mentor');if(res.ok){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,500));}assert.ok(ready,'Next deve subir');
+  let ready=false;for(let i=0;i<600;i++){if(app.exitCode!==null)throw new Error('Next encerrou antes do smoke');try{const res=await fetch(origin+'/api/mentor',{signal:AbortSignal.timeout(3000)});if(res.ok){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,500));}assert.ok(ready,'Next deve subir');
   const home=await fetch(origin+'/');assert.equal(home.status,200);assert.match(await home.text(),/em Recife, PE/);
   let reply=await call('/api/admin/login','POST',{email:adminEmail,password:'wrong'});assert.equal(reply.response.status,401);assert.equal(reply.response.headers.get('set-cookie'),null);
   reply=await call('/api/admin/login','POST',{email:adminEmail,password});assert.equal(reply.response.status,200);assert.equal(reply.result.role,'owner');cookie=reply.response.headers.get('set-cookie')!.split(';')[0];
