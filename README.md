@@ -77,7 +77,7 @@ src/app/            páginas e rotas de API (Next.js App Router)
 src/lib/            banco (db.ts), autenticação, regras de match/reserva (service.ts), e-mail, evento
 public/arte/        ilustrações em traço geradas para o projeto
 public/fonts/       DM Sans, Lora e Oswald (Google Fonts, SIL OFL) autohospedadas
-reference.css       tokens de design; bradesco.css aplica o tema vermelho institucional
+reference.css       tokens de design; theme.css aplica o tema visual do evento
 scripts/            gerador das variantes claras da arte (lê o arquivo-mestre do design, que não está neste repositório)
 ```
 
