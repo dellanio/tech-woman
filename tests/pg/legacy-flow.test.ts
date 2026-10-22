@@ -10,7 +10,9 @@ test('T01/T02: runtime exclusivamente PG, fluxo legado completo assíncrono e sc
   const {getDb,closeDb,hashPassword,verifyPassword} = await import('../../src/lib/db');
   const {migrate} = await import('../../scripts/migration/migrate');
   const {seedDemo} = await import('../../scripts/seed-demo');
-  await migrate();
+  const {Pool}=await import('pg');const {randomUUID}=await import('node:crypto');
+  const base=process.env.MIGRATION_DATABASE_URL;assert.ok(base,'PG16 real obrigatório');const control=new Pool({connectionString:base});const name='tw_flow_'+randomUUID().replace(/-/g,'');await control.query(`create database ${name}`);await control.end();const url=new URL(base);url.pathname='/'+name;process.env.DATABASE_URL=url.toString();
+  await migrate(url.toString());
   const db=getDb();
   const {sql}=await import('drizzle-orm');
   assert.match(String((await db.execute(sql`select version()`)).rows[0].version),/PostgreSQL 16\./);
@@ -25,6 +27,9 @@ test('T01/T02: runtime exclusivamente PG, fluxo legado completo assíncrono e sc
   await service.reserve(registration.token,choices.choices[0].mentorId);
   assert.equal((await service.stateFor(registration.token))?.status,'Mentoria reservada');
   assert.ok((await service.adminOverview()).participants.some(p=>p.protocol===registration.protocol));
+  const {scryptSync}=await import('node:crypto');const salt='0123456789abcdef0123456789abcdef';const legacyHash=salt+':'+scryptSync('legacy-fixture-only',salt,64).toString('hex');
+  assert.equal(await verifyPassword('legacy-fixture-only',legacyHash),true,'salt hex como string UTF-8, não bytes decodificados');
+  assert.equal(await verifyPassword('wrong',legacyHash),false);
   const hash=await hashPassword('synthetic-password-only');
   assert.equal(await verifyPassword('synthetic-password-only',hash),true);
   assert.equal(await verifyPassword('wrong',hash),false);
