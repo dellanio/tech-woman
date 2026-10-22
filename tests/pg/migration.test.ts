@@ -32,9 +32,9 @@ CREATE TABLE event_content(id INTEGER PRIMARY KEY,description TEXT,venue TEXT,ag
 CREATE TABLE demo_seed_state(id INTEGER PRIMARY KEY);
 CREATE TABLE unknown_technical(id INTEGER,payload BLOB,big_id INTEGER,odd REAL);
 ''')
-c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(41,' ADMIN@example.invalid ','growth','working','["dados"]','["analise"]','dados',sys.argv[4],'v1','','literal  whitespace  '))
-c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(42,'solo@example.invalid','growth','working','["dados"]','["analise"]',None,sys.argv[5],'v1','2026-10-01T10:00:00-03:00',None))
-c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(43,'SOLO@example.invalid','growth','working','["dados"]','["analise"]',None,sys.argv[6],'v1','invalid-date',None))
+c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?)',(41,' ADMIN@example.invalid ','growth','working','["dados"]','["analise"]','dados',sys.argv[4],'v1','','literal  whitespace  '))
+c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?)',(42,'solo@example.invalid','growth','working','["dados"]','["analise"]',None,sys.argv[5],'v1','2026-10-01T10:00:00-03:00',None))
+c.execute('INSERT INTO participant VALUES(?,?,?,?,?,?,?,?,?,?,?)',(43,'SOLO@example.invalid','growth','working','["dados"]','["analise"]',None,sys.argv[6],'v1','invalid-date',None))
 c.execute('INSERT INTO mentor VALUES(7,?,?,?,?,?,?,?,?)',('admin@example.invalid','Trajetória fictícia','["dados"]','texto',50,1,0,None))
 c.execute('INSERT INTO match VALUES(9,41,7,9,?,?)',('["razão"]','approved'))
 c.executemany('INSERT INTO admin_user VALUES(?,?,?)',[('admin@example.invalid',sys.argv[2],'owner'),(' ADMIN@example.invalid ',sys.argv[3],'owner'),('team@example.invalid',sys.argv[2],'member')])
@@ -73,7 +73,12 @@ c.close()
   const team=(await db.query("select password_hash from app_user where email_key='team@example.invalid'")).rows[0];assert.equal(team.password_hash,hash1);assert.equal(await verifyPassword('synthetic-admin-one',team.password_hash),true);
   assert.equal((await db.query("select * from participant where user_id is not null")).rowCount,0,'não inferir posse');
   const resolutions=(await db.query('select resolution from migration_identity_link')).rows.map(r=>r.resolution);assert.ok(resolutions.includes('credential_conflict'));assert.ok(resolutions.includes('privileged_candidate'));
-  for(const [table,expected] of [['participant',900],['mentor',800],['match',700]] as const){const seq=await db.query("select nextval(pg_get_serial_sequence($1,'id'))::text as id",[table]);assert.ok(BigInt(seq.rows[0].id)>BigInt(expected));}
+  const newParticipant=await db.query("insert into participant(email,goal,moment,interests,skills,token_hash,consent_version) values('new@example.invalid','growth','working','[]','[]',$1,'v1') returning id",[tokenDigest(randomUUID())]);assert.ok(BigInt(newParticipant.rows[0].id)>BigInt(900));
+  const newMentor=await db.query("insert into mentor(email,trajectory,specialties,availability,capacity) values('new-mentor@example.invalid','texto','[]','texto',1) returning id");assert.ok(BigInt(newMentor.rows[0].id)>BigInt(800));
+  const newMatch=await db.query("insert into match(participant_id,mentor_id,score,reasons,status) values($1,$2,1,'[]','rejected') returning id",[newParticipant.rows[0].id,newMentor.rows[0].id]);assert.ok(BigInt(newMatch.rows[0].id)>BigInt(700));
+  const dump=`data/fixtures/${name}.dump`;execFileSync('pg_dump',['--dbname',url.toString(),'-Fc','--file',dump]);
+  const restoreName=name+'_restore';await control.query(`CREATE DATABASE ${restoreName}`);const restoreUrl=new URL(url);restoreUrl.pathname='/'+restoreName;execFileSync('pg_restore',['--dbname',restoreUrl.toString(),'--no-owner','--no-acl',dump]);const restored=new Pool({connectionString:restoreUrl.toString()});
+  try{for(const table of ['participant','mentor','match','email_attempt','choice_email_attempt','event_content','demo_seed_state','app_user','user_role','migration_run','migration_identity_link','migration_issue']){const source=await db.query(`select to_jsonb(t) as row from ${table} t order by to_jsonb(t)::text`);const target=await restored.query(`select to_jsonb(t) as row from ${table} t order by to_jsonb(t)::text`);assert.deepEqual(target.rows,source.rows);}assert.deepEqual((await restored.query('select * from legacy_snapshot.source_row order by table_name,row_number')).rows,(await db.query('select * from legacy_snapshot.source_row order by table_name,row_number')).rows);}finally{await restored.end();} 
   await assert.rejects(importSnapshot({...snapshot,checksum:'f'.repeat(64)},{url:url.toString()}),/destino|vazio|isolado/i);
  }finally{await db.end();await control.end();}
 });
