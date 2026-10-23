@@ -1,3 +1,13 @@
-// RED stub (WP-002 Task 3 slice B): sem comportamento.
+import { enforceRate, handle, hourlyRules, idempotencyKey, ok, publicIdempotencyScope, readJson, requireOrigin } from '@/lib/auth';
+import { parseMentorRegistration } from '@/lib/contracts';
+import { mentorRegistrationOpen, registerMentor, RegistrationClosedError } from '@/lib/registration';
 export const runtime = 'nodejs';
-export async function POST(): Promise<Response> { return new Response(null, { status: 501 }); }
+/** Prazo fechado → 403 antes de qualquer consulta (nem corpo, nem limite, nem banco). */
+export const POST = handle(async request => {
+  requireOrigin(request);
+  if (!mentorRegistrationOpen()) throw new RegistrationClosedError();
+  const body = parseMentorRegistration(await readJson(request));
+  const key = idempotencyKey(request);
+  await enforceRate(hourlyRules('register-mentor', request, body.email));
+  return ok(await registerMentor(body, { key, scope: publicIdempotencyScope('mentor', request, body.email) }), 202);
+});

@@ -77,3 +77,9 @@ export async function enqueueAdminTemporaryPassword(userId:string,idempotencyKey
   const [row]=await rows(sql`select job_id from internal.enqueue_admin_temporary(${userId}::uuid,${idempotencyKey})`);
   return row?{jobId:String(row.job_id),status:'queued'}:null;
 }
+
+/** Incremento atômico de balde (função SECURITY DEFINER). Falha fechada: sem resposta do banco, nega. */
+export async function rateHit(bucketKey:string,limit:number,windowSeconds:number):Promise<{allowed:boolean;retryAfter:number}>{
+  const [row]=await rows(sql`select * from internal.rate_hit(${bucketKey},${limit},${windowSeconds})`);
+  return row?{allowed:row.o_allowed===true,retryAfter:Number(row.o_retry)}:{allowed:false,retryAfter:1};
+}

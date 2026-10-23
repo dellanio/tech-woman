@@ -1,7 +1,8 @@
 /** Cliente de teste dos handlers de rota (Request/Response reais, sem servidor). Sem testes próprios. */
 import assert from 'node:assert/strict';
 
-type Handler=(request:Request,context?:{params:Promise<Record<string,string>>})=>Promise<Response>;
+type Handler=(request:Request,context?:never)=>Promise<Response>;
+type WithContext=(request:Request,context?:{params:Promise<Record<string,string>>})=>Promise<Response>;
 export type Opts={method?:string;body?:unknown;raw?:string;headers?:Record<string,string|null>;cookie?:string;csrf?:string;key?:string;params?:Record<string,string>};
 export type Reply={status:number;json:any;text:string;headers:Headers};
 export const origin=()=>String(process.env.APP_ORIGIN);
@@ -16,7 +17,7 @@ export async function call(handler:Handler,path:string,o:Opts={}):Promise<Reply>
  if(o.key)headers.set('Idempotency-Key',o.key);
  for(const [k,v] of Object.entries(o.headers??{})){if(v===null)headers.delete(k);else headers.set(k,v);}
  const method=o.method??(hasBody?'POST':'GET');
- const response=await handler(new Request(origin()+path,{method,headers,...(hasBody?{body:o.raw??JSON.stringify(o.body)}:{})}),o.params?{params:Promise.resolve(o.params)}:undefined);
+ const response=await (handler as unknown as WithContext)(new Request(origin()+path,{method,headers,...(hasBody?{body:o.raw??JSON.stringify(o.body)}:{})}),o.params?{params:Promise.resolve(o.params)}:undefined);
  const text=await response.text();
  return {status:response.status,json:text?JSON.parse(text):null,text,headers:response.headers};
 }

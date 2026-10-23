@@ -7,7 +7,7 @@ export type CohortStatus='draft'|'open'|'closed'|'cancelled';
 export type EmailJobStatus='queued'|'sending'|'accepted'|'unconfirmed'|'failed'|'simulated'|'cancelled';
 export type Tag='produto'|'dados'|'desenvolvimento'|'design';
 export type Skill='comunicacao'|'analise'|'codigo'|'gestao';
-export type ErrorCode='INVALID_JSON'|'INVALID_INPUT'|'AUTH_REQUIRED'|'INVALID_CREDENTIALS'|'FORBIDDEN'|'PASSWORD_CHANGE_REQUIRED'|'CSRF_REJECTED'|'NOT_FOUND'|'EMAIL_UNAVAILABLE'|'IDENTITY_RECONCILIATION_REQUIRED'|'COHORT_FULL'|'SCHEDULE_CONFLICT'|'COHORT_IN_USE'|'COHORT_NOT_OPEN'|'TOPIC_LIMIT'|'ALREADY_ENROLLED'|'IDEMPOTENCY_CONFLICT'|'RETRY_TRANSACTION'|'VERSION_MISMATCH'|'PRECONDITION_REQUIRED'|'RATE_LIMITED'|'MAINTENANCE'|'DEPENDENCY_UNAVAILABLE'|'INVALID_RESET';
+export type ErrorCode='INVALID_JSON'|'INVALID_INPUT'|'AUTH_REQUIRED'|'INVALID_CREDENTIALS'|'FORBIDDEN'|'PASSWORD_CHANGE_REQUIRED'|'CSRF_REJECTED'|'NOT_FOUND'|'EMAIL_UNAVAILABLE'|'IDENTITY_RECONCILIATION_REQUIRED'|'COHORT_FULL'|'SCHEDULE_CONFLICT'|'COHORT_IN_USE'|'COHORT_NOT_OPEN'|'TOPIC_LIMIT'|'ALREADY_ENROLLED'|'IDEMPOTENCY_CONFLICT'|'RETRY_TRANSACTION'|'VERSION_MISMATCH'|'PRECONDITION_REQUIRED'|'RATE_LIMITED'|'MAINTENANCE'|'DEPENDENCY_UNAVAILABLE'|'INVALID_RESET'|'PROFILE_EXISTS';
 export type ApiSuccess<T>={data:T;requestId:string};
 export type ApiCollection<T>=ApiSuccess<T[]>&{page:{nextCursor:string|null}};
 export type ApiError={error:{code:ErrorCode;message:string;fields:string[]};requestId:string};
@@ -45,7 +45,7 @@ function mentorFields(p:Record<string,unknown>):MentorFields{return {displayName
 const MENTOR_KEYS=['displayName','trajectory','specialties','availability','legacyCapacity','consent'];
 export function parseMentorRegistration(value:unknown):MentorRegistration{const p=object(value,['email',...MENTOR_KEYS]);return {email:email(p.email),...mentorFields(p)};}
 export function parseMentorProfile(value:unknown):MentorFields{return mentorFields(object(value,MENTOR_KEYS));}
-export function parseLogin(value:unknown){const p=object(value,['email','password']);if(typeof p.password!=='string'||p.password.length<1||p.password.length>128)throw new ContractError(['password']);return {email:email(p.email),password:p.password};}
+export function parseLogin(value:unknown){const p=object(value,['email','password']);if(typeof p.password!=='string'||p.password.length<1||p.password.length>1024)throw new ContractError(['password']);return {email:email(p.email),password:p.password};}
 export function parseTopic(value:unknown){const p=object(value,['slug','name','description']);const slug=text(p.slug,'slug',1,80);if(!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug))throw new ContractError(['slug']);return {slug,name:text(p.name,'name',1,120),description:p.description===undefined?'':text(p.description,'description',0,1000)};}
 export function parseMentorTopic(value:unknown){const p=object(value,['topicId','position']);return {topicId:parseSqlId(p.topicId),position:integer(p.position,1,2,'position') as 1|2};}
 export function parseCohort(value:unknown){const p=object(value,['startsAt','endsAt','capacity','status']);const startsAt=parseInstant(p.startsAt),endsAt=parseInstant(p.endsAt);if(endsAt<=startsAt)throw new ContractError(['endsAt']);return {startsAt,endsAt,capacity:integer(p.capacity,1,20,'capacity'),status:enumeration(p.status,['draft','open'],'status')};}
@@ -115,3 +115,7 @@ export function parseListQuery(query:{cursor?:unknown;limit?:unknown}):{after:st
 const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,v])=>[k,canonical(v)])):value;
 /** Hash do corpo canônico (chaves ordenadas) para idempotência. */
 export const canonicalHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+
+export const parsePasswordChange=(value:unknown)=>{const p=object(value,['currentPassword','newPassword']);if(typeof p.currentPassword!=='string'||p.currentPassword.length<1||p.currentPassword.length>1024)throw new ContractError(['currentPassword']);if(typeof p.newPassword!=='string'||[...p.newPassword].length<12||[...p.newPassword].length>128)throw new ContractError(['newPassword']);return {currentPassword:p.currentPassword,newPassword:p.newPassword};};
+export const parseIdempotencyKey=(value:string|null):string=>{if(!isUuid(value))throw new ContractError(['Idempotency-Key']);return value.toLowerCase();};
+export type SessionPublicDto=SessionDto|{state:'password_change_required';expiresAt:string};

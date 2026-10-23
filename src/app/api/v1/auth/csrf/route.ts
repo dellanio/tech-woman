@@ -1,3 +1,7 @@
-// RED stub (WP-002 Task 3 slice B): sem comportamento.
+import { csrfToken, handle, ok, requireSession } from '@/lib/auth';
 export const runtime = 'nodejs';
-export async function GET(): Promise<Response> { return new Response(null, { status: 501 }); }
+/** Token CSRF ligado (HMAC) à sessão atual, inclusive a limitada de troca de senha. */
+export const GET = handle(async request => {
+  const { token } = await requireSession(request, { full: false });
+  return ok({ csrfToken: csrfToken(token) });
+});
