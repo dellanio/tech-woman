@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseMentorPatch, parseMentorRegistration, parseParticipantPatch, parseParticipantRegistration, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseMatchCreate, parseMatchPatch, parseMentorPatch, parseMentorRegistration, parseParticipantPatch, parseParticipantRegistration, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -178,3 +178,18 @@ export function updateDomain<K extends DomainKind>(token: string, kind: K, id: s
 /** DELETE = desativar (soft); reservas ativas → 409 até cancelamento explícito. */
 export const deactivateDomain = <K extends DomainKind>(token: string, kind: K, id: string, version: string) =>
   invoke<AdminDomainDto<K>>(sql`select internal.api_admin_domain_update(${digestOf(token)}, ${newRequestId()}::uuid, ${kind}, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${'{"active":false}'}::jsonb, 'deactivate') as r`);
+
+// ---- Cruzamentos administrativos (score/razões sempre do servidor) ----
+export type AdminMatchDto = { id: string; participantId: string; mentorId: string; score: number; reasons: string[]; status: 'approved' | 'rejected' | 'suggested' | 'selected' | 'cancelled'; origin: 'legacy' | 'current'; enrollmentId: string | null; version: string };
+export const listMatches = (token: string, query: ListQuery) => page<AdminMatchDto>(query, (after, limit) => sql`select internal.api_match_list(${digestOf(token)}, ${after}::bigint, ${limit}) as r`);
+export const getMatch = (token: string, id: string) => invoke<AdminMatchDto>(sql`select internal.api_match_get(${digestOf(token)}, ${routeId(id)}::bigint) as r`);
+export function createMatch(token: string, idem: Idempotent, body: unknown) {
+  const dto = parseMatchCreate(body);
+  return invoke<AdminMatchDto>(sql`select internal.api_match_create(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${JSON.stringify(dto)}::jsonb) as r`);
+}
+export function updateMatch(token: string, id: string, version: string, body: unknown) {
+  const patch = parseMatchPatch(body);
+  return invoke<AdminMatchDto>(sql`select internal.api_match_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${JSON.stringify(patch)}::jsonb, 'update') as r`);
+}
+export const cancelMatch = (token: string, id: string, version: string) =>
+  invoke<AdminMatchDto>(sql`select internal.api_match_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${null}::jsonb, 'cancel') as r`);
