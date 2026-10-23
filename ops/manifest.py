@@ -30,6 +30,43 @@ def migrations(directory):
     return {'count': len(files), 'aggregate_sha256': _aggregate(files), 'files': files}
 
 
+MAX_MIGRATION_BYTES = 1024 * 1024
+MAX_TAR_BYTES = 20 * 1024 * 1024
+
+
+def migrations_from_tar(stream):
+    """Hash migrations straight from a tar stream (docker's view of /tools/drizzle); nothing is extracted."""
+    import io, tarfile
+    if len(stream) > MAX_TAR_BYTES:
+        raise ManifestError(74, 'migrations archive too large')
+    files, total = [], 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(stream), mode='r:') as archive:
+            for member in archive:
+                name = member.name[2:] if member.name.startswith('./') else member.name
+                if member.isdir() and name in ('', '.'):
+                    continue
+                if name.startswith('/') or '..' in name.split('/') or not (member.isreg() or member.isdir()):
+                    raise ManifestError(74, 'unsafe entry in the migrations archive')
+                if member.isdir():
+                    continue
+                if '/' in name:
+                    if name.endswith('.sql'):
+                        raise ManifestError(74, 'nested migration in the archive')
+                    continue
+                if not name.endswith('.sql'):
+                    continue
+                if member.size > MAX_MIGRATION_BYTES or total + member.size > MAX_TAR_BYTES:
+                    raise ManifestError(74, 'migration too large')
+                total += member.size
+                data = archive.extractfile(member).read()
+                files.append({'name': name, 'sha256': _sha256(data.replace(b'\r\n', b'\n'))})
+    except tarfile.TarError:
+        raise ManifestError(74, 'migrations archive is not a valid tar')
+    files.sort(key=lambda f: f['name'])
+    return {'count': len(files), 'aggregate_sha256': _aggregate(files), 'files': files}
+
+
 def script_sha(path):
     return {'sha256': _sha256(pathlib.Path(path).read_bytes())}
 
@@ -221,6 +258,9 @@ def main(argv):
 def _run(cmd, args):
     if cmd == 'migrations' and len(args) == 1:
         print(json.dumps(migrations(args[0])))
+        return 0
+    if cmd == 'migrations-tar' and not args:
+        print(json.dumps(migrations_from_tar(sys.stdin.buffer.read(MAX_TAR_BYTES + 1))))
         return 0
     if cmd == 'script-sha' and len(args) == 1:
         print(json.dumps(script_sha(args[0])))
