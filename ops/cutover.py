@@ -630,6 +630,68 @@ def cmd_smoke(paths, flags):
     print(json.dumps({'phase': 'smoke_ok'}))
 
 
+BASELINE_SCRIPT = (
+    "const {Client}=require('pg');(async()=>{const c=new Client({connectionString:process.env.MIGRATION_DATABASE_URL});"
+    "await c.connect();const out={};for(const t of ['participant','enrollment','match','audit_event','app_user'])"
+    "{out[t]=Number((await c.query('select count(*) n from public.'+t)).rows[0].n)}"
+    "out.audit_max_id=Number((await c.query('select coalesce(max(id),0) n from public.audit_event')).rows[0].n);"
+    "console.log(JSON.stringify(out));await c.end()})().catch(()=>process.exit(1))")
+BASELINE_KEYS = ['app_user', 'audit_event', 'audit_max_id', 'enrollment', 'match', 'participant']
+
+
+def _baseline(text):
+    try:
+        lines = [line for line in text.splitlines() if line.strip()]
+        data = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        raise ValueError('baseline query printed no JSON')
+    if type(data) is not dict or sorted(data) != BASELINE_KEYS or not all(_is_int(v) and v >= 0 for v in data.values()):
+        raise ValueError('baseline has an unexpected shape')
+    return data
+
+
+def cmd_open_writes(paths, flags):
+    """smoke_ok -> pg_write_open: baseline, public traffic to the PG web (same IP/alias), then the mailer."""
+    manifest = _manifest()
+    state, candidate = _sealed_state(paths, manifest, 'smoke_ok')
+    hostops = _sibling('hostops')
+    runner = hostops.Runner(paths)
+    now = _now()
+    window = candidate['window']
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    image, network = _staged_image(state), paths['TW_NETWORK']
+    env_dir, web = pathlib.Path(paths['TW_ENV_DIR']), state.data['activation']['container']
+    base = ['docker', 'run', '--rm', '--network', network, '--env-file', str(env_dir / 'migrator.env'), '--workdir',
+            '/tools', '--memory', '256m', '--cpus', '0.5', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
+            '--entrypoint', 'node', image, '-e', BASELINE_SCRIPT]
+    try:
+        baseline = _baseline(runner.run(base, error='baseline query failed').stdout)
+    except hostops.HostError as error:
+        raise StateError(82, str(error))
+    except ValueError as error:
+        raise StateError(82, str(error))
+    ip = state.data['freeze']['ip']
+    try:
+        runner.run(['docker', 'rm', '-f', 'tech-woman'], error='cannot remove the maintenance container')
+        runner.run(['docker', 'network', 'disconnect', network, web], error='cannot detach the PG web')
+        runner.run(['docker', 'network', 'connect', '--ip', ip, '--alias', 'app', network, web],
+                   error='cannot attach the PG web to the public address')
+        runner.run(['docker', 'rename', web, 'tech-woman'], error='cannot rename the PG web')
+        runner.run(['docker', 'run', '-d', '--name', 'tech-woman-mailer', '--restart', 'unless-stopped', '--network',
+                    network, '--env-file', str(env_dir / 'mailer.env'), '--workdir', '/tools', '--memory', '256m',
+                    '--cpus', '0.25', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--entrypoint', 'node',
+                    image, '--import', 'tsx', 'scripts/email-worker.ts'], error='the mailer could not start')
+        runner.run(['docker', 'exec', 'tech-woman', 'node', '-e', SMOKE_SCRIPT], error='internal smoke after the switch failed')
+    except hostops.HostError as error:
+        raise StateError(error.code, 'the switch to PostgreSQL stopped (never back to SQLite): %s' % error)
+    digest = state.data['staged']['digest']
+    state.transition('pg_write_open', now, known_pg_images=[digest], last_good_pg_image=digest,
+                     schema_migrations={'aggregate_sha256': candidate['migrations']['aggregate_sha256']},
+                     first_pg_write={'at': None, 'kind': None, 'baseline': baseline})
+    print(json.dumps({'phase': 'pg_write_open'}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -641,6 +703,7 @@ COMMANDS = {
     'abort': cmd_abort,
     'activate': cmd_activate,
     'smoke': cmd_smoke,
+    'open-writes': cmd_open_writes,
 }
 FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason']}
 
