@@ -201,3 +201,36 @@ test('reset: token de link (query ou #) some da URL/DOM, inválido é recusado s
   assert.equal(readFileSync(ui.appLog,'utf8').includes(linked),false,'token de fragmento nunca chega ao servidor');
  }finally{await context.close();}
 });
+
+test('Frame: Conta e tema alcançáveis em 390×844 nos dois temas; falha de rede vira mensagem segura',{timeout:240_000},async()=>{
+ const {page,context}=await ui.newPage({viewport:{width:390,height:844}});
+ try{
+  for(const route of ['/login','/inscricao']){
+   await page.goto(ui.origin+route);
+   const header=page.locator('header.site-header');
+   const account=header.getByRole('link',{name:'Conta',exact:true});await account.waitFor();
+   assert.equal(await account.getAttribute('href'),'/login');
+   const toggle=header.getByRole('button',{name:/Ativar tema/});await toggle.waitFor();
+   for(const target of [account,toggle]){const box=await target.boundingBox();assert.ok(box&&box.x>=0&&box.x+box.width<=390&&box.height>=24,`${route}: alvo dentro da tela`);}
+   for(const theme of ['light','dark']){
+    const before=await page.evaluate(()=>document.documentElement.dataset.theme);
+    await toggle.click();
+    const after=await page.evaluate(()=>document.documentElement.dataset.theme);
+    assert.notEqual(after,before);
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`${route} ${theme}: sem overflow horizontal`);
+   }
+  }
+  // teclado: Conta recebe foco visível no header
+  await page.goto(ui.origin+'/login');
+  await page.locator('header.site-header').getByRole('link',{name:'Conta',exact:true}).focus();
+  assert.notEqual(await page.evaluate(()=>getComputedStyle(document.activeElement as Element).outlineStyle),'none');
+  // falha de rede: mensagem própria, nada técnico, e-mail preservado
+  await page.route('**/api/v1/auth/login',r=>r.abort('internetdisconnected'));
+  const email=unique('offline');
+  await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill('qualquer-coisa-123');
+  await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  const text=await alertText(page,/Sem conexão/);
+  assert.doesNotMatch(text,/TypeError|Failed to fetch|NetworkError|stack/i);
+  assert.equal(await page.getByLabel('E-mail').inputValue(),email);
+ }finally{await context.close();}
+});
