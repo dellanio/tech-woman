@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Candidate identity: migration hashes, release tree checks, sealed candidate.json. Stdlib only."""
-import hashlib, json, pathlib, sys
+import datetime, hashlib, json, pathlib, re, sys
+
+HEX40 = re.compile(r'\A[0-9a-f]{40}\Z')
+HEX64 = re.compile(r'\A[0-9a-f]{64}\Z')
+RFC3339Z = re.compile(r'\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z')
+GATES = ('GATE-001', 'GATE-002', 'GATE-003')
+
+
+class ManifestError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 def _sha256(data):
@@ -45,7 +56,57 @@ IMAGE = {
 }
 
 
+def _is_hex(value, pattern):
+    return type(value) is str and pattern.match(value) is not None
+
+
+def _is_text(value, limit=200):
+    return type(value) is str and 0 < len(value) <= limit
+
+
+def _closed(obj, keys, code, where):
+    if type(obj) is not dict or sorted(obj) != sorted(keys):
+        raise ManifestError(code, '%s: unexpected shape' % where)
+
+
+def _moment(value):
+    if not _is_hex(value, RFC3339Z):
+        raise ValueError(value)
+    return datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ')
+
+
+def validate_facts(facts):
+    _closed(facts, ['tested_head', 'tested_tree', 'base_main', 'ci', 'gates', 'window',
+                    'recovery_evidence_sha256', 'rpo_declared'], 70, 'facts')
+    for key in ('tested_head', 'tested_tree', 'base_main'):
+        if not _is_hex(facts[key], HEX40):
+            raise ManifestError(70, '%s must be a 40-hex object id' % key)
+    ci = facts['ci']
+    _closed(ci, ['run_id', 'conclusion', 'head_sha', 'tree'], 70, 'ci')
+    if not (_is_text(ci['run_id'], 40) and ci['conclusion'] == 'success'
+            and ci['head_sha'] == facts['tested_head'] and ci['tree'] == facts['tested_tree']):
+        raise ManifestError(71, 'CI proof does not cover the tested head and tree')
+    gates = facts['gates']
+    if type(gates) is not dict or set(gates) - set(GATES):
+        raise ManifestError(70, 'gates: unexpected shape')
+    if any(gates.get(g) != 'green' for g in GATES):
+        raise ManifestError(71, 'a required gate is not green')
+    window = facts['window']
+    _closed(window, ['decision_ref', 'authorized_at', 'expires_at', 'measured_seconds'], 73, 'window')
+    try:
+        ok = (_is_text(window['decision_ref'], 80) and type(window['measured_seconds']) is int
+              and window['measured_seconds'] > 0
+              and _moment(window['authorized_at']) < _moment(window['expires_at']))
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ManifestError(73, 'window is missing, unmeasured or not ordered')
+    if not _is_hex(facts['recovery_evidence_sha256'], HEX64) or not _is_text(facts['rpo_declared']):
+        raise ManifestError(78, 'recovery evidence and declared RPO are required')
+
+
 def seal(facts, migrations_dir, ops_dir):
+    validate_facts(facts)
     package = ops_package(ops_dir)
     deploy = [f for f in package['files'] if f['name'] == 'deploy.sh'][0]
     return {
@@ -85,6 +146,14 @@ def main(argv):
     if cmd == 'ops-package' and len(args) == 1:
         print(json.dumps(ops_package(args[0])))
         return 0
+    try:
+        return _run(cmd, args)
+    except ManifestError as error:
+        print('manifest: %s' % error, file=sys.stderr)
+        return error.code
+
+
+def _run(cmd, args):
     if cmd == 'seal':
         flags = _flags(args, ['facts', 'migrations-dir', 'ops-dir', 'out'])
         facts = json.loads(pathlib.Path(flags['facts']).read_text())
