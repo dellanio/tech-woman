@@ -9,7 +9,7 @@ import {startUi,type Ui} from './ui-harness';
 
 let ui:Ui;
 // Next dev compila cada rota no primeiro acesso: aquece antes dos testes para que o timeout de navegação meça a UI.
-before(async()=>{ui=await startUi('ui-reservation');for(const route of ['/conta','/login','/troca-senha','/inscricao','/'])await fetch(ui.origin+route);},{timeout:420_000});
+before(async()=>{ui=await startUi('ui-reservation');for(const route of ['/conta','/login','/troca-senha','/inscricao','/','/inscricao/estado/'+'0'.repeat(64)])await fetch(ui.origin+route);},{timeout:420_000});
 after(async()=>{await ui?.stop();});
 
 const unique=(label:string)=>`ui-${label}-${randomBytes(4).toString('hex')}@example.invalid`;
@@ -322,4 +322,65 @@ test('estados: turma encerrada antes de abrir vira vazio com volta; falha de red
   await main(page).getByRole('group',{name:'Dados na prática'}).getByRole('radio').first().waitFor();
   assert.equal(await main(page).getByRole('alert').count(),0);
  }finally{await context.close();}
+});
+
+/**
+ * Participante do cadastro anterior (sem conta) com link individual. O token sintético fica só em memória; por ser o caminho da URL antiga,
+ * a linha de requisição do Next dev o registra (logging fora do WP-004, como o ?token= da tarefa 1) — por isso não entra em ui.secrets.
+ */
+async function legacyParticipant(){
+ const token=randomBytes(32).toString('hex');
+ const email=`legado-${randomBytes(4).toString('hex')}@example.invalid`;
+ const id=await one("insert into participant(email,goal,moment,interests,skills,area,token_hash,consent_version,user_id) values($1,'growth','working','[\"dados\"]','[\"analise\"]','dados',encode(sha256(convert_to($2::text,'UTF8')),'hex'),'v0',null) returning id",[email,token]);
+ return {id,token,email};
+}
+const legacyMatch=(participantId:string,mentorId:string,status='approved')=>ui.db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,9,'[\"Interesses em comum: dados (+2)\"]',$3,'legacy')",[participantId,mentorId,status]);
+
+test('histórico anterior: link antigo mostra a mentoria legada sem turma/data/hora e orienta a ativação; sem match não promete fila; token inválido não revela conta; Sua conta lista o histórico',{timeout:300_000},async()=>{
+ const mentorEmail=`fernanda-${randomBytes(4).toString('hex')}@example.invalid`;
+ const mentorId=await one("insert into mentor(email,trajectory,specialties,availability,capacity,active,display_name) values($1,'Vinte anos em dados no Recife.','[\"dados\"]','No evento.',2,true,'Fernanda Legado') returning id",[mentorEmail]);
+ const approved=await legacyParticipant();await legacyMatch(approved.id,mentorId);
+ const alone=await legacyParticipant();
+ const before=(await ui.db.query<{n:number}>("select (select count(*) from enrollment)+(select count(*) from match) n")).rows[0].n;
+ const {page,context}=await ui.newPage();
+ const choiceCalls:string[]=[];page.on('request',r=>{if(r.url().includes('/api/choice/'))choiceCalls.push(r.method());});
+ try{
+  await page.goto(`${ui.origin}/inscricao/estado/${approved.token}`);
+  const card=main(page).locator('section.state-card');
+  await card.getByText('Histórico anterior — sem turma/data/hora registrados').waitFor();
+  const text=await card.innerText();
+  assert.match(text,/TW-\d{5}/,'protocolo recebido mantido');assert.match(text,/Fernanda Legado/i);assert.match(text,/decisão anterior foi preservada/);
+  assert.equal(text.includes(mentorEmail),false,'nenhum e-mail de terceiro');assert.equal(text.includes(approved.email),false,'nem o e-mail do cadastro');
+  assert.doesNotMatch(text,/\b\d{1,2}:\d{2}\b/,'nenhum horário inventado para o legado');
+  assert.equal(await main(page).getByRole('link',{name:/Ativar ou recuperar acesso/}).getAttribute('href'),'/recuperar-senha');
+  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login');
+  assert.equal(await main(page).getByRole('button',{name:/Agendar|Reservar|Escolher/}).count(),0,'o link não escolhe nem reserva');
+  assert.equal(await page.locator('meta[name="referrer"]').getAttribute('content'),'no-referrer');
+  const html=await page.content();assert.equal(html.includes(mentorEmail),false);assert.equal(text.includes(approved.token),false,'token não é exibido');
+  await capture(page,'historico-legado-aprovado');
+  // sem match: estado honesto, sem fila, aprovação ou revisão prometidas
+  await page.goto(`${ui.origin}/inscricao/estado/${alone.token}`);
+  await main(page).getByText('Sem mentoria registrada').waitFor();
+  const lone=await main(page).locator('section.state-card').innerText();
+  assert.doesNotMatch(lone,/fila|aprova|revis|aguard/i);
+  assert.equal(await main(page).getByRole('link',{name:/Ativar ou recuperar acesso/}).getAttribute('href'),'/recuperar-senha');
+  await capture(page,'historico-legado-sem-mentoria');
+  // token inválido: mesma página genérica, sem protocolo nem dado de conta
+  await page.goto(`${ui.origin}/inscricao/estado/${randomBytes(32).toString('hex')}`);
+  await main(page).getByRole('heading',{name:/Não foi possível abrir este histórico/}).waitFor();
+  assert.doesNotMatch(await main(page).innerText(),/TW-\d|@/);
+  assert.deepEqual(choiceCalls,[],'a página antiga não consulta nem tenta escolha por token');
+  assert.equal((await ui.db.query<{n:number}>("select (select count(*) from enrollment)+(select count(*) from match) n")).rows[0].n,before,'nada criado pelo link');
+ }finally{await context.close();}
+ // conta ativa com histórico anterior vinculado: aparece em Suas reservas sem turma/data/hora
+ const account=await participantOnAccount('legacy-own');
+ try{
+  await ui.db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) select p.id,$2,3,'[]','approved','legacy' from participant p where p.email=$1",[account.email,mentorId]);
+  await account.page.reload();
+  const item=main(account.page).locator('.enrollment-legacy');await item.waitFor();
+  const own=await item.innerText();
+  assert.match(own,/Histórico anterior — sem turma\/data\/hora registrados/);assert.match(own,/Aprovada no cadastro anterior/);
+  assert.doesNotMatch(own,/\b\d{1,2}:\d{2}\b/);
+  ui.assertNoLeak();
+ }finally{await account.context.close();}
 });
