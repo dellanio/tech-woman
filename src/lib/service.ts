@@ -1,4 +1,5 @@
-import { getDb, participants, mentors, matches, emailAttempts, choiceEmailAttempts, users, userRoles, tokenDigest, newToken, verifyPassword, type Participant, type Mentor } from './db';
+import { getDb, participants, mentors, matches, emailAttempts, choiceEmailAttempts, tokenDigest, newToken, type Participant, type Mentor } from './db';
+import { identitySession, login, logout } from './identity';
 import { eq, and, sql } from 'drizzle-orm';
 import { confirmRegistration, emailLabel } from './email';
 
@@ -48,9 +49,21 @@ function ranking(p:Participant,m:Mentor){
  const score=goalMatches.length*3+shared.length*2+skillMatches.length+areaMatch*3;
  const reasons=[areaMatch&&`Área de atuação em comum: ${p.area} (+3)`,goalMatches.length&&`Objetivo e especialidades: ${goalMatches.join(', ')} (+${goalMatches.length*3})`,shared.length&&`Interesses em comum: ${shared.join(', ')} (+${shared.length*2})`,skillMatches.length&&`Habilidades relacionadas: ${skillMatches.join(', ')} (+${skillMatches.length})`].filter((v):v is string=>typeof v==='string');return {score,reasons};
 }
+/** Predicado comum de proteção (internal.domain_protected): linhas de domínio de admin/team/privilegiado ficam fora de qualquer operação administrativa antiga. */
+async function visibleIds(table:'participant'|'mentor'){
+ const result=await getDb().execute(table==='participant'?sql`select id::text as id from participant where not internal.domain_protected('participant',id)`:sql`select id::text as id from mentor where not internal.domain_protected('mentor',id)`);
+ return new Set((result.rows as {id:string}[]).map(r=>r.id));
+}
+/** Trava o(s) dono(s) da linha (mesmo lock da elevação offline) e só então avalia a proteção; use dentro da transação da escrita. */
+async function isProtected(table:'participant'|'mentor',id:bigint,store:Store=getDb()){
+ await store.execute(sql`select internal.lock_domain_owner(${table},${id.toString()}::bigint)`);
+ const result=await store.execute(sql`select internal.domain_protected(${table},${id.toString()}::bigint) as p`);
+ return (result.rows[0] as {p?:boolean}|undefined)?.p===true;
+}
 const compareIds=(a:string,b:string)=>BigInt(a)<BigInt(b)?-1:BigInt(a)>BigInt(b)?1:0;
 export async function adminOverview(){
- const people=await getDb().select().from(participants);const allMentors=await getDb().select().from(mentors);
+ const [visibleParticipants,visibleMentors]=await Promise.all([visibleIds('participant'),visibleIds('mentor')]);
+ const people=(await getDb().select().from(participants)).filter(p=>visibleParticipants.has(String(p.id)));const allMentors=(await getDb().select().from(mentors)).filter(m=>visibleMentors.has(String(m.id)));
  const counts=new Map(await Promise.all(allMentors.map(async m=>[m.id,await approvedCount(m.id)] as const)));
  const suggestions=await Promise.all(people.map(async p=>{const reviews=await getDb().select().from(matches).where(eq(matches.participantId,p.id));const approved=reviews.find(v=>v.status==='approved'&&v.origin==='legacy');
  const choices=allMentors.filter(m=>m.active&&(counts.get(m.id)||0)<m.capacity&&!reviews.some(r=>r.status==='rejected'&&r.mentorId===m.id)).map(m=>({mentorId:String(m.id),mentorEmail:m.demo?m.demoName||'Mentora fictícia':m.email,demo:m.demo,capacity:m.capacity,occupied:counts.get(m.id)||0,...ranking(p,m)})).filter(v=>v.score>0).sort((a,b)=>b.score-a.score||compareIds(a.mentorId,b.mentorId));
@@ -68,7 +81,7 @@ export async function publicSuggestions(token:string){
 async function lockLegacy(tx:Store){await tx.execute(sql`select pg_advisory_xact_lock(741002)`);}
 export async function decide(participantId:string|number,mentorId:string|number,action:string){
  const pid=legacyId(participantId),mid=legacyId(mentorId);if(!['approve','reject'].includes(action))throw new Invalid('Decisão inválida.');
- return getDb().transaction(async tx=>{await lockLegacy(tx);const [p]=await tx.select().from(participants).where(eq(participants.id,pid));const [m]=await tx.select().from(mentors).where(eq(mentors.id,mid));if(!p||!m||!m.active)throw new Invalid('Inscrição ou mentora indisponível.',404);
+ return getDb().transaction(async tx=>{await lockLegacy(tx);const [p]=await tx.select().from(participants).where(eq(participants.id,pid));const [m]=await tx.select().from(mentors).where(eq(mentors.id,mid));if(!p||!m||!m.active||await isProtected('participant',pid,tx)||await isProtected('mentor',mid,tx))throw new Invalid('Inscrição ou mentora indisponível.',404);
  if((await tx.select().from(matches).where(approvedCondition(pid))).length)throw new Invalid('Esta participante já tem um par aprovado.',409);
  if((await tx.select().from(matches).where(and(eq(matches.participantId,pid),eq(matches.mentorId,mid)))).length)throw new Invalid('Esta sugestão já foi revisada.',409);
  if(await approvedCount(mid,tx)>=m.capacity)throw new Invalid('Sem vaga: capacidade atingida.',409);const {score,reasons}=ranking(p,m);if(!score)throw new Invalid('Não há compatibilidade positiva.',409);
@@ -82,12 +95,20 @@ export async function reserve(token:string,mentorId:string|number){
 }
 export async function adminChange(participantId:string|number,mentorId:string|number|null,action:'cancel'|'reassign'){
  const pid=legacyId(participantId),mid=mentorId===null?null:legacyId(mentorId);return getDb().transaction(async tx=>{await lockLegacy(tx);
- const [p]=await tx.select().from(participants).where(eq(participants.id,pid));if(!p)throw new Invalid('Inscrição inexistente.',404);const [previous]=await tx.select().from(matches).where(approvedCondition(pid));
+ const [p]=await tx.select().from(participants).where(eq(participants.id,pid));if(!p||await isProtected('participant',pid,tx)||(mid!==null&&await isProtected('mentor',mid,tx)))throw new Invalid('Inscrição inexistente.',404);const [previous]=await tx.select().from(matches).where(approvedCondition(pid));
  if(action==='cancel'&&!previous)throw new Invalid('Não há par para cancelar.',409);if(action==='reassign'&&previous?.mentorId===mid)throw new Invalid('Esta mentora já está atribuída.',409);
  let m:Mentor|undefined;if(action==='reassign'){if(!mid)throw new Invalid('Mentora inválida.');[m]=await tx.select().from(mentors).where(eq(mentors.id,mid));if(!m||!m.active||await approvedCount(m.id,tx)>=m.capacity)throw new Invalid('Mentora sem vaga disponível.',409);if(!ranking(p,m).score)throw new Invalid('Não há compatibilidade positiva.',409);}
  await tx.update(matches).set({status:'rejected'}).where(approvedCondition(pid));if(m){const {score,reasons}=ranking(p,m);await tx.insert(matches).values({participantId:pid,mentorId:m.id,score,reasons,status:'approved',origin:'legacy'});}return {status:action==='cancel'?'Reserva cancelada':'Mentora realocada'};});
 }
-export async function setMentorActive(id:string|number,active:boolean){const rows=await getDb().update(mentors).set({active}).where(eq(mentors.id,legacyId(id))).returning({id:mentors.id});if(!rows.length)throw new Invalid('Mentora inexistente.',404);return {status:active?'Mentora ativada':'Mentora desativada'};}
-export async function removeDemoMentors(){const rows=await getDb().update(mentors).set({active:false}).where(and(eq(mentors.demo,true),eq(mentors.active,true))).returning({id:mentors.id});return {status:`${rows.length} mentoras de demonstração desativadas.`};}
-export async function adminForEmail(email:string){const rows=await getDb().select({email:users.email,role:userRoles.role}).from(users).innerJoin(userRoles,eq(userRoles.userId,users.id)).where(and(eq(users.emailKey,email.trim().toLowerCase()),eq(users.status,'active'),sql`${userRoles.role} in ('admin','team')`));const row=rows.find(r=>r.role==='admin')||rows[0];return row?{email:row.email,role:row.role==='admin'?'owner':'member'}:null;}
-export async function authenticate(email:string,password:string){const [user]=await getDb().select().from(users).where(eq(users.emailKey,email.trim().toLowerCase()));if(!user||user.status!=='active'||user.mustChangePassword||!user.passwordHash||!await verifyPassword(password,user.passwordHash))return null;return adminForEmail(email);}
+export async function setMentorActive(id:string|number,active:boolean){const mid=legacyId(id);return getDb().transaction(async tx=>{if(await isProtected('mentor',mid,tx))throw new Invalid('Mentora inexistente.',404);const rows=await tx.update(mentors).set({active}).where(eq(mentors.id,mid)).returning({id:mentors.id});if(!rows.length)throw new Invalid('Mentora inexistente.',404);return {status:active?'Mentora ativada':'Mentora desativada'};});}
+export async function removeDemoMentors(){return getDb().transaction(async tx=>{const demo=await tx.select({id:mentors.id}).from(mentors).where(and(eq(mentors.demo,true),eq(mentors.active,true))).orderBy(mentors.id);let removed=0;
+ for(const {id} of demo){if(await isProtected('mentor',id,tx))continue;removed+=(await tx.update(mentors).set({active:false}).where(and(eq(mentors.id,id),eq(mentors.demo,true),eq(mentors.active,true))).returning({id:mentors.id})).length;}
+ return {status:`${removed} mentoras de demonstração desativadas.`};});}
+/** Compatibilidade: autentica pela identidade nova e não deixa sessão (a rota antiga já cria a própria). Sem sessão stateless. */
+export async function authenticate(email:string,password:string){
+ const result=await login(email,password);if(!result)return null;
+ const session=await identitySession(result.token);await logout(result.token);
+ if(!session||session.scope!=='full')return null;
+ const role=session.roles.includes('admin')?'owner' as const:session.roles.includes('team')?'member' as const:null;
+ return role?{email:session.email,role}:null;
+}
