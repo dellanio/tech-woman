@@ -62,6 +62,13 @@ CREATE OR REPLACE FUNCTION internal.agenda_reject(p_name text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN RAISE EXCEPTION '%', p_name USING ERRCODE = 'check_violation', CONSTRAINT = p_name; END $$;
 --> statement-breakpoint
+-- Elegibilidade de turma criada/reaberta: mentora e tema ativos (FK inexistente fica para a constraint).
+CREATE OR REPLACE FUNCTION internal.agenda_mentor_topic_active(p_mentor_topic bigint) RETURNS boolean
+LANGUAGE sql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
+ SELECT NOT EXISTS (SELECT 1 FROM public.mentor_topic mt JOIN public.mentor m ON m.id = mt.mentor_id JOIN public.topic t ON t.id = mt.topic_id
+  WHERE mt.id = p_mentor_topic AND NOT (m.active AND t.active));
+$$;
+--> statement-breakpoint
 -- BEFORE ROW (depois do guard do statement): imutabilidade de id/FK/slug e transições exatas de cohort.
 -- Exigência de início futuro só na criação, reabertura e mudança de horário; cancelar após o início é permitido.
 CREATE OR REPLACE FUNCTION internal.agenda_row_check() RETURNS trigger
@@ -81,6 +88,7 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
    IF NEW.status NOT IN ('draft','open') THEN PERFORM internal.agenda_reject('agenda_invalid_transition'); END IF;
    IF NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+   IF NOT internal.agenda_mentor_topic_active(NEW.mentor_topic_id) THEN PERFORM internal.agenda_reject('agenda_inactive'); END IF;
   ELSE
    IF OLD.status = 'cancelled' AND (NEW.status, NEW.mentor_topic_id, NEW.starts_at, NEW.ends_at, NEW.capacity) IS DISTINCT FROM (OLD.status, OLD.mentor_topic_id, OLD.starts_at, OLD.ends_at, OLD.capacity) THEN
     PERFORM internal.agenda_reject('agenda_invalid_transition');
@@ -88,7 +96,10 @@ BEGIN
    IF NEW.status <> OLD.status AND NOT ((OLD.status = 'draft' AND NEW.status IN ('open','cancelled')) OR (OLD.status = 'open' AND NEW.status IN ('closed','cancelled')) OR (OLD.status = 'closed' AND NEW.status IN ('open','cancelled'))) THEN
     PERFORM internal.agenda_reject('agenda_invalid_transition');
    END IF;
-   IF NEW.status = 'open' AND OLD.status <> 'open' AND NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+   IF NEW.status = 'open' AND OLD.status <> 'open' THEN
+    IF NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+    IF NOT internal.agenda_mentor_topic_active(NEW.mentor_topic_id) THEN PERFORM internal.agenda_reject('agenda_inactive'); END IF;
+   END IF;
    IF (NEW.mentor_topic_id, NEW.starts_at, NEW.ends_at) IS DISTINCT FROM (OLD.mentor_topic_id, OLD.starts_at, OLD.ends_at) THEN
     IF EXISTS (SELECT 1 FROM public.enrollment e WHERE e.cohort_id = OLD.id AND e.status = 'active') THEN PERFORM internal.agenda_reject('agenda_cohort_in_use'); END IF;
     IF NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
@@ -98,7 +109,7 @@ BEGIN
  RETURN NEW;
 END $$;
 --> statement-breakpoint
-REVOKE ALL ON FUNCTION internal.agenda_reject(text), internal.agenda_row_check() FROM PUBLIC;
+REVOKE ALL ON FUNCTION internal.agenda_reject(text), internal.agenda_mentor_topic_active(bigint), internal.agenda_row_check() FROM PUBLIC;
 --> statement-breakpoint
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['topic','mentor_topic','cohort','enrollment','mentor','participant'] LOOP
@@ -130,6 +141,7 @@ ALTER FUNCTION internal.acquire_agenda_guard() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.validate_agenda_state() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.agenda_row_check() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.agenda_reject(text) OWNER TO techwoman_owner;
+ALTER FUNCTION internal.agenda_mentor_topic_active(bigint) OWNER TO techwoman_owner;
 REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
 --> statement-breakpoint
 -- Editora (Beatriz/pgAdmin): role de domínio, nunca dona de objeto. Criada NOLOGIN se ausente e permitido; LOGIN/senha só pelo operador.

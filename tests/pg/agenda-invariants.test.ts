@@ -118,7 +118,7 @@ test('capacidade 1..20, ocupação ≤ capacidade, redução abaixo da ocupaçã
  await db.query('update participant set active=false where id=$1',[p1]);
 }));
 
-const AGENDA_FUNCTIONS=['acquire_agenda_guard','validate_agenda_state','agenda_row_check','agenda_reject'];
+const AGENDA_FUNCTIONS=['acquire_agenda_guard','validate_agenda_state','agenda_row_check','agenda_reject','agenda_mentor_topic_active'];
 test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, search_path fixo, VOLATILE, sem EXECUTE para PUBLIC/runtime', ()=>withDb(async ({db})=>{
  const role=(await db.query('select rolcanlogin,rolbypassrls,rolsuper,rolcreaterole,rolcreatedb,rolreplication from pg_roles where rolname=$1',[OWNER])).rows[0];
  assert.deepEqual(role,{rolcanlogin:false,rolbypassrls:false,rolsuper:false,rolcreaterole:false,rolcreatedb:false,rolreplication:false});
@@ -131,7 +131,7 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
   assert.equal(f.owner,OWNER,`${f.proname} owner`);assert.equal(f.provolatile,'v',`${f.proname} VOLATILE`);
   assert.equal(f.proconfig[0],'search_path=pg_catalog, pg_temp',`${f.proname} search_path`);
   assert.deepEqual(f.grantees,[],`${f.proname} sem EXECUTE concedido (inclusive PUBLIC)`);assert.equal(f.runtime,false);
-  if(f.proname!=='agenda_reject')assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
+  if(!['agenda_reject','agenda_mentor_topic_active'].includes(f.proname))assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
  }
  assert.equal((await db.query("select count(*)::int n from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) and prosrc ~* 'execute\\s'",[AGENDA_FUNCTIONS])).rows[0].n,0,'sem SQL dinâmico');
 }));
