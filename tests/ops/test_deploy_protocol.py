@@ -33,6 +33,15 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result.stderr, '')
         self.assertEqual(result.calls(), [])
 
+    def test_well_formed_deploy_is_accepted_by_the_parser_and_fails_closed_without_marker(self):
+        for token in (SECRET, 'ghp_AbC123_dEf456', 'github_pat_11ABC_xyz-0.9', 'a/b+c=='):
+            with self.subTest(token=token):
+                result = harness.run_script(DEPLOY, request(*deploy_lines(token=token)))
+                self.assertEqual(result.returncode, 70, result.stderr)
+                self.assertIn('state marker', result.stderr)
+                self.assertNotIn(token, result.stdout + result.stderr)
+                self.assertEqual(result.calls(), [])
+
     def test_previous_script_rejects_the_v2_probe_without_effect(self):
         legacy = subprocess.run(['git', 'show', 'aadb3cb:ops/deploy.sh'], cwd=ROOT, capture_output=True,
                                 check=True).stdout
