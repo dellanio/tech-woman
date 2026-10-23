@@ -133,6 +133,9 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
   assert.deepEqual(f.grantees,[],`${f.proname} sem EXECUTE concedido (inclusive PUBLIC)`);assert.equal(f.runtime,false);
   if(!['agenda_reject','agenda_mentor_topic_active'].includes(f.proname))assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
  }
+ const helper=(await db.query(`select pg_get_userbyid(proowner)::text owner,prosecdef,proconfig,has_function_privilege('techwoman_beatriz',oid,'EXECUTE') editor,
+   has_function_privilege('techwoman_runtime',oid,'EXECUTE') runtime,has_function_privilege('techwoman_mailer',oid,'EXECUTE') mailer from pg_proc where oid='internal.agenda_editor_visible(text,bigint)'::regprocedure`)).rows[0];
+ assert.deepEqual(helper,{owner:OWNER,prosecdef:true,proconfig:['search_path=pg_catalog, pg_temp'],editor:true,runtime:false,mailer:false},'helper booleano de visibilidade só para a editora');
  assert.equal((await db.query("select count(*)::int n from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) and prosrc ~* 'execute\\s'",[AGENDA_FUNCTIONS])).rows[0].n,0,'sem SQL dinâmico');
 }));
 
