@@ -205,7 +205,10 @@ async function legacyFixture(db:Pool){
  const mentor=(id:number,email:string)=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity) values($1,$2,'t','[]','a',2)",[id,email]);
  return {link,participant,mentor};
 }
-const temporaryLogin=async(db:Pool,userId:string,email:string)=>{const t=identity.generateTemporaryPassword();await db.query('select internal.issue_temporary_credential($1::uuid,$2)',[userId,await hashPassword(t)]);const s=await identity.login(email,t);assert.ok(s);return {temp:t,session:s};};
+/** `direct` grava o temporário como dono do banco (fixture de conta privilegiada, que a função de emissão recusa). */
+const temporaryLogin=async(db:Pool,userId:string,email:string,direct=false)=>{const t=identity.generateTemporaryPassword();
+ if(direct)await db.query("update app_user set temporary_password_hash=$2,temporary_expires_at=now()+interval '24 hours',must_change_password=true,credential_generation=credential_generation+1 where id=$1",[userId,await hashPassword(t)]);
+ else await db.query('select internal.issue_temporary_credential($1::uuid,$2)',[userId,await hashPassword(t)]);const s=await identity.login(email,t);assert.ok(s);return {temp:t,session:s};};
 
 test('ativação legada: só a troca inicial comprovada liga perfis do mapa privado e revoga o token legado',async()=>withDb(async({db})=>{
  const {link,participant,mentor}=await legacyFixture(db);
@@ -246,7 +249,7 @@ test('ativação legada recusa ambiguidade, candidato privilegiado, e-mail diver
  const own=await addUser(db,{email:'own@example.invalid',status:'pending_activation',roles:['participant']});
  await participant(141,'own@example.invalid',own.id);await participant(142,'own@example.invalid');await mentor(241,'own@example.invalid');
  await link('participant','142',own.id,'awaiting_email_proof');await link('mentor','241',own.id,'awaiting_email_proof');
- for(const u of [amb,priv,mis,own]){const {temp,session}=await temporaryLogin(db,u.id,u.email);await identity.changePassword(session.token,temp,synthetic());}
+ for(const u of [amb,priv,mis,own]){const {temp,session}=await temporaryLogin(db,u.id,u.email,u===priv);await identity.changePassword(session.token,temp,synthetic());}
  const rows=(await db.query('select id::int,user_id,legacy_access_revoked_at is not null revoked from participant order by id')).rows;
  const linked=Object.fromEntries(rows.map(r=>[r.id,r.user_id]));
  assert.deepEqual([linked[111],linked[112],linked[121],linked[122],linked[131],linked[142]],[null,null,null,null,null,null],'nenhum registro ambíguo, privilegiado, divergente ou duplicado é ligado');

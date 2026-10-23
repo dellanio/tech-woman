@@ -258,12 +258,12 @@ test('crash após commit da emissão: lease expira, segredo nunca está no banco
 
 test('fronteira do mailer: só funções de fila; formato de hash e posse do lease são exigidos; runtime não toca a fila',async()=>withDb(async({db,mailer})=>{
  const as=async(role:string,sql:string,params:unknown[]=[])=>{const c=await db.connect();try{await c.query(`set role ${role}`);await c.query(sql,params);return true}catch{return false}finally{await c.query('reset role').catch(()=>undefined);c.release()}};
+ assert.equal(await as('techwoman_mailer','select * from internal.email_claim(gen_random_uuid())'),true);
  await register('prv@example.invalid');const uid=await idByEmail(db,'prv@example.invalid');
  for(const sql of ['select * from app_user','update app_user set status=\'active\'','select * from user_role','select * from auth_session','select * from password_reset_token','insert into user_role(user_id,role) values(gen_random_uuid(),\'admin\')',"select internal.register_participant_account('a@example.invalid','growth','working','[]','[]','x')",'select * from internal.identity_login_begin(\'a@example.invalid\')'])
   assert.equal(await as('techwoman_mailer',sql),false,'mailer: '+sql);
  for(const sql of ['select * from internal.email_claim(gen_random_uuid())','select * from internal.email_emit_begin(gen_random_uuid(),gen_random_uuid(),\'x\')','select internal.email_emit_finish(gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),\'accepted\',null,null)','select * from email_job','update email_job set status=\'queued\''])
   assert.equal(await as('techwoman_runtime',sql),false,'runtime: '+sql);
- assert.equal(await as('techwoman_mailer','select * from internal.email_claim(gen_random_uuid())'),true);
  const defs=(await db.query("select p.proname,p.prosecdef,p.proconfig::text cfg,has_function_privilege('public',p.oid,'execute') pub from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='internal' and p.proname in ('email_claim','email_emit_begin','email_emit_finish','request_password_forgot','enqueue_admin_temporary')")).rows;
  assert.equal(defs.length,5);for(const d of defs){assert.deepEqual([d.prosecdef,/search_path=pg_catalog, pg_temp/.test(d.cfg),d.pub],[true,true,false],d.proname);}
  const owner=randomUUID();const claim=(await mailer.query('select * from internal.email_claim($1::uuid)',[owner])).rows[0];assert.ok(claim);
