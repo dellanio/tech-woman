@@ -14,7 +14,8 @@ ORIGINAL = 'tech-woman-sqlite-original'
 MAINTENANCE_SCRIPT = (
     "require('http').createServer((q,r)=>{r.writeHead(503,{'Retry-After':'600','Content-Type':'text/plain'});"
     "r.end('Manutencao programada. Tente novamente em alguns minutos.')}).listen(3000,'0.0.0.0')")
-WRITERS = ['app-container', 'mailer-containers', 'timers', 'cron', 'file-handles', 'quiet-window']
+WRITERS = ['app-container', 'mailer-containers', 'timers', 'systemd-services', 'cron', 'cron-files', 'file-handles',
+           'quiet-window']
 
 
 class Refusal(Exception):
@@ -32,6 +33,21 @@ def _sample(db_path, connection):
             parts.append((suffix, info.st_size, info.st_mtime_ns))
     digest = hashlib.sha256(pathlib.Path(db_path).read_bytes()).hexdigest()
     return parts, connection.execute('PRAGMA data_version').fetchone()[0], digest
+
+
+def _scan_cron(paths):
+    """Any cron file (system, drop-ins, every user's spool) naming tech-woman. Reads files, never prints them."""
+    for location in paths['TW_CRON_PATHS'].split(','):
+        root = pathlib.Path(location)
+        try:
+            files = [root] if root.is_file() else sorted(p for p in root.rglob('*') if p.is_file())
+            if not root.exists():
+                raise OSError('missing')
+            for path in files:
+                if re.search(rb'tech-woman', path.read_bytes()[:1_000_000], re.I):
+                    raise Refusal(80, 'a cron file mentions tech-woman: %s' % path.name)
+        except OSError:
+            raise Refusal(83, 'cannot read the cron location %s, so it cannot be proven free of writers' % root.name)
 
 
 def _restore(runner, raised):
@@ -84,9 +100,14 @@ def freeze(paths, quiet_seconds):
         timers = runner.run(['systemctl', 'list-timers', '--all', '--no-pager']).stdout
         if re.search('tech-woman', timers, re.I):
             raise Refusal(80, 'a systemd timer mentions tech-woman')
+        for listing in ('list-unit-files', 'list-units'):
+            services = runner.run(['systemctl', listing, '--all', '--no-pager']).stdout
+            if re.search('tech-woman', services, re.I):
+                raise Refusal(80, 'a systemd unit mentions tech-woman (%s)' % listing)
         cron = runner.run(['crontab', '-l'], ok=(0, 1)).stdout
         if re.search('tech-woman', cron, re.I):
             raise Refusal(80, 'a crontab entry mentions tech-woman')
+        _scan_cron(paths)
         holders = runner.run(['fuser', '-v', str(db), str(db) + '-wal', str(db) + '-shm'], ok=(0, 1))
         if holders.returncode == 0:
             raise Refusal(80, 'a process still holds the database files')
