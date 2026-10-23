@@ -63,7 +63,9 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   await denied(runtime,'select * from app_user');await denied(runtime,'select * from topic');await denied(mailer,'select * from email_job');
   await migrator.query('set role techwoman_owner');await denied(migrator,'select * from app_user');await migrator.query('reset role');
   // 4. matriz do OPS: o mesmo arquivo, executado de verdade
-  let r=psql(urlFor(db),MATRIX);assert.equal(r.status,0,r.out);assert.match(r.out,/MATRIX OK/);
+  let r=psql(urlFor(db),MATRIX);assert.equal(r.status,0,r.out);
+  const counts=/MATRIX OK: (\d+) negações por privilégio executadas, (\d+) execuções permitidas, (\d+) verificações/.exec(r.out);assert.ok(counts,r.out);
+  assert.ok(Number(counts[1])>=300&&Number(counts[2])>=10&&Number(counts[3])>=40,`matriz executa as negações de verdade: ${counts[0]}`);console.log(counts[0]);
   for(const [grant,revoke] of [
    ['grant select (email) on public.participant to techwoman_beatriz','revoke select (email) on public.participant from techwoman_beatriz'],
    ['grant truncate on public.enrollment to techwoman_beatriz','revoke truncate on public.enrollment from techwoman_beatriz'],
