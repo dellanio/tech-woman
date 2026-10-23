@@ -130,3 +130,50 @@ test('esqueci a senha: 202 neutro idêntico para conta existente e inexistente, 
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+test('reset: token da query some da URL/DOM, inválido é recusado sem exposição; código válido 204 → login',{timeout:240_000},async()=>{
+ const email=unique('reset');const temp=await ui.temporaryPassword(email);const first=strong();ui.secrets.add(first);
+ const {page,context,console:lines}=await ui.newPage();
+ try{
+  // ativa a conta pela UI (temporária → definitiva)
+  await page.goto(ui.origin+'/login');await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(temp);await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  await page.waitForURL(u=>u.pathname==='/troca-senha');
+  await page.getByLabel('Senha atual ou temporária').fill(temp);await page.getByLabel('Nova senha',{exact:true}).fill(first);await page.getByLabel('Confirme a nova senha').fill(first);
+  await page.getByRole('button',{name:/Salvar nova senha/}).click();await page.getByRole('heading',{name:/Sua conta/}).waitFor();
+  await context.clearCookies();
+  // token inválido na query: removido da barra de endereço e nunca renderizado
+  const bogus=randomBytes(32).toString('base64url');
+  await page.goto(ui.origin+'/redefinir-senha?token='+bogus);
+  await page.getByRole('heading',{name:/Redefinir senha/}).waitFor();
+  await page.waitForFunction(()=>!location.search.includes('token'));
+  assert.equal(page.url(),ui.origin+'/redefinir-senha');
+  assert.equal(await page.getByLabel('Código de redefinição').count(),0,'código veio do link: sem campo com o valor');
+  assert.equal((await page.content()).includes(bogus),false);
+  const next=strong();ui.secrets.add(next);
+  const fresh=page.getByLabel('Nova senha',{exact:true});assert.deepEqual([await fresh.getAttribute('minlength'),await fresh.getAttribute('maxlength'),await fresh.getAttribute('autocomplete')],['12','128','new-password']);
+  await fresh.fill(next);await page.getByLabel('Confirme a nova senha').fill(next);
+  const [bad]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/auth/password/reset')),page.getByRole('button',{name:/Redefinir senha/}).click()]);
+  assert.equal(bad.status(),400);
+  await alertText(page,/inválido, já foi usado ou venceu/);
+  assert.equal(await page.getByRole('main').getByRole('link',{name:/Solicitar novo código/}).getAttribute('href'),'/recuperar-senha');
+  assert.equal((await page.content()).includes(bogus),false);
+  // código real (fake em memória) digitado manualmente → 204 → login com a nova senha
+  const forgot=await fetch(ui.origin+'/api/v1/auth/password/forgot',{method:'POST',headers:{'Content-Type':'application/json',Origin:ui.origin,'Sec-Fetch-Site':'same-origin'},body:JSON.stringify({email})});
+  assert.equal(forgot.status,202);
+  const mail=(await ui.drain()).filter(m=>m.kind==='password_reset'&&m.to.toLowerCase()===email.toLowerCase());assert.equal(mail.length,1);const code=mail[0].secret;
+  await page.goto(ui.origin+'/redefinir-senha');
+  const codeField=page.getByLabel('Código de redefinição');assert.equal(await codeField.getAttribute('autocomplete'),'one-time-code');
+  await codeField.fill(code);await page.getByLabel('Nova senha',{exact:true}).fill(next);await page.getByLabel('Confirme a nova senha').fill(next);
+  const [okReset]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/auth/password/reset')),page.getByRole('button',{name:/Redefinir senha/}).click()]);
+  assert.equal(okReset.status(),204);
+  await page.waitForURL(u=>u.pathname==='/login');
+  await page.getByRole('main').getByRole('status').filter({hasText:/Senha redefinida/}).waitFor();
+  assert.equal((await page.content()).includes(code),false);
+  await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(first);await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  await alertText(page,/E-mail ou senha não conferem/);
+  await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(next);await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  await page.getByRole('heading',{name:/Sua conta/}).waitFor();assert.equal(await sessionState(page),'authenticated');
+  assert.equal(lines.some(l=>l.includes(bogus)||l.includes(code)),false);
+  ui.assertNoLeak([bogus]);
+ }finally{await context.close();}
+});
