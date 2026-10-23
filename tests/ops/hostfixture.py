@@ -15,8 +15,9 @@ def stamp(offset_seconds):
     return moment.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def run_py(*args, stdin=None):
-    return subprocess.run([sys.executable, '-I', *map(str, args)], input=stdin, text=True, capture_output=True)
+def run_py(*args, stdin=None, env=None):
+    return subprocess.run([sys.executable, '-I', *map(str, args)], input=stdin, text=True, capture_output=True,
+                          env=env)
 
 
 class Host:
@@ -49,8 +50,9 @@ class Host:
         os.chmod(self.state_dir / 'candidate.json', 0o644)
         return json.loads((self.state_dir / 'candidate.json').read_text())
 
-    def cutover(self, *args):
-        return run_py(self.ops.ops / 'cutover.py', *args)
+    def cutover(self, *args, stdin=None):
+        env = dict(os.environ, TW_FAKE_DIR=harness._posix(self.ops.fake), TW_FAKE_LOG=str(self.work / 'cutover-calls.jsonl'))
+        return run_py(self.ops.ops / 'cutover.py', *args, stdin=stdin, env=env)
 
     def migrations(self):
         return json.loads(run_py(self.ops.ops / 'manifest.py', 'migrations', self.mig).stdout)

@@ -1,6 +1,10 @@
 import json, unittest
 
+from tests.ops import harness
+
 from tests.ops.hostfixture import COMMIT, DIGEST, IMAGE_REF, MIGRATIONS, SECRET, TREE, Host
+
+cutover = harness.load_ops_module('cutover')
 
 
 def sub_commands(result):
@@ -87,6 +91,62 @@ class StageDenialTests(StageTestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertNotIn(SECRET, result.stderr)
                 self.assert_marker_untouched()
+
+
+class RegisterStageTests(StageTestCase):
+    def attestation(self):
+        done = self.host.deploy()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def register(self, text=None):
+        return self.host.cutover('register-stage', stdin=self.attestation() if text is None else text)
+
+    def test_operator_registers_the_verified_attestation_without_changing_the_phase(self):
+        done = self.register()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        status = json.loads(self.host.cutover('status').stdout)
+        self.assertEqual((status['phase'], status['seq']), ('prepared', 2))
+        state = json.loads((self.host.state_dir / 'state.json').read_text())
+        self.assertEqual({k: state['staged'][k] for k in ('digest', 'release_commit', 'release_tree')},
+                         {'digest': DIGEST, 'release_commit': COMMIT, 'release_tree': TREE})
+        self.assertRegex(state['staged']['at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        # the operator re-verified the image locally instead of trusting the SSH output
+        log = (self.host.work / 'cutover-calls.jsonl').read_text()
+        self.assertIn('inspect', log)
+        self.assertNotIn('"stop"', log)
+
+    def test_attestation_that_does_not_match_the_candidate_the_host_or_the_script_is_refused(self):
+        good = json.loads(self.attestation())
+        def mutate(path, value):
+            data = json.loads(json.dumps(good))
+            data['attestation'][path] = value
+            return json.dumps(data)
+        cases = {
+            'other candidate': (70, mutate('candidate_sha256', 'e' * 64)),
+            'other tree': (71, mutate('release_tree', 'f' * 40)),
+            'other migrations': (72, mutate('migrations_aggregate', 'f' * 64)),
+            'other script': (65, mutate('script_sha256', 'f' * 64)),
+            'bad digest': (64, mutate('digest', 'latest')),
+            'unknown field': (64, mutate('surprise', 1)),
+            'not json': (64, 'nope'),
+            'empty': (64, ''),
+        }
+        for name, (code, text) in cases.items():
+            with self.subTest(name=name):
+                done = self.register(text)
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assert_marker_untouched()
+
+    def test_operator_reverification_failure_and_wrong_phase_do_not_register(self):
+        text = self.attestation()
+        (self.host.ops.fake / 'inspect').write_bytes(('amd64|linux|' + COMMIT + chr(10)).encode())
+        self.assertEqual(self.register(text).returncode, 74)
+        self.assert_marker_untouched()
+        self.host.good_image()
+        state = cutover.State.load(self.host.state_dir, cutover.UNCHECKED)
+        state.transition('frozen', '2026-10-23T12:00:00Z')
+        self.assertEqual(self.register(text).returncode, 75)
 
 
 if __name__ == '__main__':
