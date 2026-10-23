@@ -36,5 +36,18 @@ class MigrationHashTests(unittest.TestCase):
             self.assertEqual(json.loads(out_crlf.stdout)['files'][0]['sha256'], node)
 
 
+    def test_aggregate_is_sha_of_sorted_name_colon_hash_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            write(tmp / '20260102000000_b.sql', b'select 2;\n')
+            write(tmp / '20260101000000_a.sql', b'select 1;\n')
+            write(tmp / 'notes.txt', b'ignored')
+            out = json.loads(manifest('migrations', tmp).stdout)
+        self.assertEqual([f['name'] for f in out['files']], ['20260101000000_a.sql', '20260102000000_b.sql'])
+        self.assertEqual(out['count'], 2)
+        lines = ''.join('%s:%s\n' % (f['name'], f['sha256']) for f in out['files'])
+        self.assertEqual(out['aggregate_sha256'], hashlib.sha256(lines.encode()).hexdigest())
+
+
 if __name__ == '__main__':
     unittest.main()
