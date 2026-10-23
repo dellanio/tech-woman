@@ -113,3 +113,33 @@ export function PasswordChangeView({ next: rawNext }: { next?: string }) {
       </form>}
   </AuthLayout>;
 }
+
+/** `simulated`: ambiente sem SES configurado (decidido no servidor). 202 nunca prova envio nem entrega. */
+export function ForgotView({ simulated }: { simulated: boolean }) {
+  const [email, setEmail] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [received, setReceived] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!email.trim()) { setError('Informe o e-mail da sua conta.'); return; }
+    setBusy(true); setError('');
+    const result = await request<{ status: 'received' }>('/api/v1/auth/password/forgot', { method: 'POST', body: { email: email.trim() }, csrf: false });
+    setBusy(false);
+    if (result.ok) { setReceived(true); setEmail(''); return; }
+    setError(result.code === 'INVALID_INPUT' ? 'Confira o e-mail informado.' : result.message);
+  }
+  return <AuthLayout eyebrow="CONTA / RECUPERAÇÃO" kicker="RECUPERAR ACESSO" title={<>Vamos retomar <em>seu acesso.</em></>} lead="Informe o e-mail da sua conta. Se ela puder receber instruções, preparamos um código de uso único ou uma senha temporária.">
+    {received ?
+      <div className="form-panel auth-panel"><p className="eyebrow">PEDIDO REGISTRADO</p>
+        <div role="status"><h2>Solicitação recebida.</h2><p className="auth-note">Se houver uma conta elegível para este e-mail, as instruções de acesso foram preparadas. Esta confirmação não confirma envio nem entrega de mensagem.</p>{simulated && <p className="mock-banner auth-mock">NÃO ENVIADA — ambiente local de simulação: nenhum e-mail sai daqui.</p>}</div>
+        <p className="auth-note">Recebeu um código? Use-o para definir a nova senha. Recebeu uma senha temporária? Entre com ela. Se chegar mais de uma mensagem, use a mais recente.</p>
+        <div className="auth-links"><Link href="/redefinir-senha">Já tenho um código</Link><Link href="/login">Voltar ao acesso</Link></div>
+        <button type="button" className="button-quiet auth-again" onClick={() => setReceived(false)}>Fazer outra solicitação</button>
+      </div> :
+      <form className="form-panel auth-panel" onSubmit={submit} noValidate aria-busy={busy}>
+        <p className="eyebrow">ESQUECI MINHA SENHA</p><h2>Recuperar senha</h2>
+        <Field id="forgot-email" label="E-mail" type="email" name="email" autoComplete="email" inputMode="email" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/>
+        {error && <p role="alert" className="visible-error">{error}</p>}
+        <button className="button-primary form-main-action" disabled={busy}>{busy ? 'Solicitando…' : 'Solicitar redefinição'}</button>
+        <div className="auth-links"><Link href="/redefinir-senha">Já tenho um código</Link><Link href="/login">Voltar ao acesso</Link></div>
+      </form>}
+  </AuthLayout>;
+}

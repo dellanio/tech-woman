@@ -71,3 +71,5 @@
   .auth-grid{min-height:0}
 }
 @media(prefers-reduced-motion:reduce){.header-account:hover{transform:none}}
+.auth-mock{margin:16px 0 0}
+.auth-again{margin-top:20px}
