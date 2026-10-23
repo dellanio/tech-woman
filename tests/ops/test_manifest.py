@@ -79,6 +79,21 @@ class OpsPackageTests(unittest.TestCase):
             changed = json.loads(manifest('ops-package', ops).stdout)
         self.assertNotEqual(changed['aggregate_sha256'], first['aggregate_sha256'])
 
+    def test_ops_package_and_seal_refuse_crlf_files_instead_of_normalizing_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            ops = self.make_ops(tmp)
+            write(ops / 'manifest.py', b'print(1)\r\n')
+            done = manifest('ops-package', ops)
+            self.assertEqual(done.returncode, 65, done.stderr)
+            self.assertEqual(done.stdout, '')
+            (tmp / 'drizzle').mkdir()
+            facts = write(tmp / 'facts.json', json.dumps(good_facts()).encode())
+            sealed = manifest('seal', '--facts', facts, '--migrations-dir', tmp / 'drizzle', '--ops-dir', ops,
+                              '--out', tmp / 'candidate.json')
+            self.assertEqual(sealed.returncode, 65, sealed.stderr)
+            self.assertFalse((tmp / 'candidate.json').exists())
+
 
 HEAD, TREE, MAIN = 'a' * 40, 'b' * 40, 'c' * 40
 
