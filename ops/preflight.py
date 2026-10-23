@@ -82,8 +82,176 @@ def restore_check(paths, pg, name):
     return check('PF-RESTORE', 'pass', 'restored in isolation: %d tables, %d rows, schema identical' % (len(copy['rows']), rows))
 
 
-def host_checks(paths, pg, restore_dump):
+EVIDENCE_FILES = {'PF-PG-PORT': ['ss-ltn.txt'], 'PF-PGADMIN-TLS': ['pgadmin-headers.txt'],
+                  'PF-PGADMIN-COOKIE': ['pgadmin-headers.txt'], 'PF-PGADMIN-RATE': ['pgadmin-burst.txt'],
+                  'PF-PGADMIN-CONN': ['pgadmin-servers.json'], 'PF-BACKUP-DAILY': ['backup-listing.txt', 'backup-toc.txt'],
+                  'PF-NGINX-REDACT': ['nginx-T.txt', 'nginx-readback.txt'],
+                  'PF-NO-SHARED-TOUCH': ['shared-before.txt', 'shared-after.txt']}
+EVIDENCE_NAME = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z')
+STAMP = re.compile(r'\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z')
+MAX_AGE_SECONDS = 7 * 24 * 3600
+PROBE_TOKEN = 'twprobe' + '0' * 37  # synthetic token the operator requests once to read the nginx log back
+
+
+def _lines(text):
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def judge_pg_port(files, paths):
+    lines = _lines(files['ss-ltn.txt'])
+    if not lines:
+        return 'fail', 'empty readback'
+    exposed = [l for l in lines if len(l.split()) >= 4 and l.split()[3].endswith(':5432')
+               and l.split()[3].rsplit(':', 1)[0] not in ('127.0.0.1', '[::1]', '::1')]
+    return ('fail', 'PostgreSQL port bound beyond loopback') if exposed else ('pass', 'no public bind of 5432')
+
+
+def _headers(text):
+    lines = _lines(text)
+    status = re.match(r'HTTP/\S+ (\d{3})', lines[0]) if lines else None
+    return status, [l.lower() for l in lines[1:]]
+
+
+def judge_tls(files, paths):
+    status, headers = _headers(files['pgadmin-headers.txt'])
+    ok = status and status.group(1)[0] in '23' and any(h.startswith('strict-transport-security:') for h in headers)
+    return ('pass', 'HTTPS with HSTS') if ok else ('fail', 'no HTTPS answer with HSTS')
+
+
+def judge_cookie(files, paths):
+    _, headers = _headers(files['pgadmin-headers.txt'])
+    cookies = [h for h in headers if h.startswith('set-cookie:')]
+    if not cookies:
+        return 'fail', 'no session cookie observed'
+    flags = [{p.strip() for p in c.split(';')[1:]} for c in cookies]
+    ok = all('secure' in f and 'httponly' in f for f in flags)
+    return ('pass', 'every cookie Secure and HttpOnly') if ok else ('fail', 'a cookie lacks Secure or HttpOnly')
+
+
+def judge_rate(files, paths):
+    codes = _lines(files['pgadmin-burst.txt'])
+    if len(codes) < 20 or not all(re.fullmatch(r'\d{3}', c) for c in codes):
+        return 'fail', 'burst readback needs at least 20 status codes'
+    return ('pass', 'burst answered 429') if '429' in codes else ('fail', 'no 429 under a burst')
+
+
+def judge_conn(files, paths):
+    try:
+        servers = json.loads(files['pgadmin-servers.json'])['Servers']
+        if type(servers) is not dict:
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return 'fail', 'server export unreadable'
+    bad = [s for s in servers.values() if type(s) is not dict or s.get('Username') == 'postgres'
+           or any(k in s for k in ('Password', 'SavePassword'))]
+    return ('fail', 'a saved connection uses the superuser or keeps a password') if bad else \
+        ('pass', '%d saved connections, none superuser' % len(servers))
+
+
+def judge_backup(files, paths, collected_epoch):
+    dumps = []
+    for line in _lines(files['backup-listing.txt']):
+        parts = line.split()
+        if len(parts) != 3 or not re.fullmatch(r'\d+(\.\d+)?', parts[0]) or not parts[1].isdigit():
+            return 'fail', 'unexpected listing line'
+        dumps.append((float(parts[0]), int(parts[1])))
+    if len(dumps) < 7:
+        return 'fail', 'fewer than 7 daily dumps retained'
+    newest = max(dumps)
+    if newest[1] == 0 or collected_epoch - newest[0] > 26 * 3600:
+        return 'fail', 'newest dump empty or older than 26h at collection'
+    if not re.search(r'^;\s+dbname: %s$' % re.escape(paths['TW_PG_DB']), files['backup-toc.txt'], re.M):
+        return 'fail', 'newest dump is not of the Tech Woman database'
+    return 'pass', '%d dumps, newest within 26h' % len(dumps)
+
+
+def judge_nginx(files, paths):
+    config, readback = files['nginx-T.txt'], files['nginx-readback.txt']
+    if not ('log_format tw_redacted' in config and 'tech-woman-redact-server.conf' in config
+            and 'tech-woman.dellanio.com' in config):
+        return 'fail', 'redaction not included in the Tech Woman vhost'
+    if PROBE_TOKEN in readback or '/api/state/[redacted]' not in readback:
+        return 'fail', 'log readback is not redacted'
+    return 'pass', 'redacted in the vhost log'
+
+
+def judge_shared(files, paths):
+    before, after = _lines(files['shared-before.txt']), _lines(files['shared-after.txt'])
+    if not before or not all(re.match(r'[0-9a-f]{64}  \S', l) for l in before + after):
+        return 'fail', 'empty or malformed hash listing'
+    return ('pass', 'shared configuration unchanged') if before == after else ('fail', 'shared configuration changed')
+
+
+JUDGES = {'PF-PG-PORT': judge_pg_port, 'PF-PGADMIN-TLS': judge_tls, 'PF-PGADMIN-COOKIE': judge_cookie,
+          'PF-PGADMIN-RATE': judge_rate, 'PF-PGADMIN-CONN': judge_conn, 'PF-NGINX-REDACT': judge_nginx,
+          'PF-NO-SHARED-TOUCH': judge_shared}
+
+
+def _register(paths, candidate_sha256):
+    """The operator's evidence register, or None when absent. Raises ValueError when it cannot be trusted."""
+    state_dir = pathlib.Path(paths['TW_STATE_DIR'])
+    path = state_dir / 'host-evidence.json'
+    if not os.path.lexists(path):
+        return None
+    try:
+        cutover._check_private_file(path, cutover._policy(paths))
+        register = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, cutover.StateError):
+        raise ValueError('evidence register unreadable')
+    if type(register) is not dict or sorted(register) != ['candidate_sha256', 'items', 'schema'] \
+            or register['schema'] != 1 or type(register['items']) is not dict:
+        raise ValueError('evidence register has an unexpected shape')
+    if register['candidate_sha256'] != candidate_sha256:
+        raise ValueError('evidence was collected for another candidate')
+    return register
+
+
+def _evidence(paths, entry, cid, now):
+    """(status, detail, files) for one item; files only when every hash matched and the readback is fresh."""
+    if type(entry) is not dict or sorted(entry) != ['collected_at', 'files'] or type(entry['files']) is not dict \
+            or not STAMP.match(str(entry['collected_at'])):
+        return 'fail', 'evidence entry malformed', None
+    if sorted(entry['files']) != sorted(EVIDENCE_FILES[cid]):
+        return 'fail', 'evidence entry does not name the required readback files', None
+    collected = cutover.datetime.datetime.strptime(entry['collected_at'], '%Y-%m-%dT%H:%M:%SZ').replace(
+        tzinfo=cutover.datetime.timezone.utc).timestamp()
+    if not 0 <= now - collected <= MAX_AGE_SECONDS:
+        return 'pending', 'evidence stale or dated in the future: collect again', None
+    directory = pathlib.Path(paths['TW_STATE_DIR']) / 'evidence'
+    files = {}
+    for name, digest in entry['files'].items():
+        path = directory / name
+        try:
+            if not EVIDENCE_NAME.match(name) or not stat.S_ISREG(os.lstat(path).st_mode):
+                raise OSError
+            data = path.read_bytes()
+        except OSError:
+            return 'fail', 'evidence file missing or not a plain file', None
+        if cutover._sha256(data) != digest:
+            return 'fail', 'evidence does not match its recorded hash', None
+        files[name] = data.decode('utf-8', 'replace')
+    return None, None, (files, collected)
+
+
+def host_checks(paths, pg, restore_dump, candidate_sha256):
     results = {cid: check(cid, 'pending', 'no operator evidence yet') for cid in HOST_IDS}
+    try:
+        register = _register(paths, candidate_sha256)
+    except ValueError as error:
+        register = None
+        for cid in EVIDENCE_FILES:
+            results[cid] = check(cid, 'fail', str(error))
+    now = cutover.datetime.datetime.now(cutover.datetime.timezone.utc).timestamp()
+    for cid, entry in ((register or {}).get('items') or {}).items():
+        if cid not in EVIDENCE_FILES:
+            continue
+        status, detail, found = _evidence(paths, entry, cid, now)
+        if found is None:
+            results[cid] = check(cid, status, detail)
+            continue
+        files, collected = found
+        status, detail = judge_backup(files, paths, collected) if cid == 'PF-BACKUP-DAILY' else JUDGES[cid](files, paths)
+        results[cid] = check(cid, status, detail)
     if restore_dump is not None:
         results['PF-RESTORE'] = restore_check(paths, pg, restore_dump)
     return [results[cid] for cid in HOST_IDS]
@@ -121,7 +289,7 @@ def main(argv):
         print('preflight: %s' % error, file=sys.stderr)
         return error.code
     pg = recover.Pg(paths)
-    checks = sql_checks(pg) + host_checks(paths, pg, restore_dump)
+    checks = sql_checks(pg) + host_checks(paths, pg, restore_dump, candidate_sha256)
     statuses = {c['status'] for c in checks}
     overall = 'fail' if 'fail' in statuses else 'pending' if 'pending' in statuses else 'pass'
     print(json.dumps({'candidate_sha256': candidate_sha256, 'overall': overall, 'checks': checks}, indent=1))
