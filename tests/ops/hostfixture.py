@@ -177,6 +177,10 @@ NEW_DIGEST = 'sha256:' + '2' * 64
 
 def _pg_open(host, last_good=OLD_PG_DIGEST, known=(OLD_PG_DIGEST,), schema_aggregate=None):
     """Host already on PostgreSQL (pg_write_open) running OLD_PG_IMAGE; the next release is NEW_DIGEST."""
+    from tests.ops.test_snapshot import synthetic_db
+    db_path = host.ops.host / 'app/dados/tech-woman.db'
+    if not db_path.exists():
+        synthetic_db(db_path, wal=False).close()
     candidate, state = _imported(host)
     state.transition('activated', NOW_FIXED, activation={'digest': OLD_PG_DIGEST, 'container': 'tech-woman-web-pg', 'at': NOW_FIXED})
     state.transition('smoke_ok', NOW_FIXED)
