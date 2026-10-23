@@ -1,4 +1,5 @@
 /** Cola HTTP v1 de Agenda/CRUD: sessão (Origin/CSRF/escopo) → serviço → envelope com no-store, requestId, ETag e página. Autorização final é do banco. */
+import { apiSuccess } from './contracts';
 import { etag, idempotencyKey, ifMatch, ok, okCollection, readJson, requireSession } from './auth';
 import type { ListQuery, Page } from './agenda';
 
@@ -12,6 +13,9 @@ export const listQuery = (request: Request): ListQuery => {
   return { cursor: params.get('cursor') ?? undefined, limit: limit === null ? undefined : /^-?\d+$/.test(limit) ? Number(limit) : limit };
 };
 export const collection = <T>(result: Page<T>) => okCollection(result.items, result.nextCursor);
+/** Objeto paginado (recomendações): `{data:{...}, page:{nextCursor}, requestId}` com no-store. */
+export const pagedObject = <T>(data: T, nextCursor: string | null) =>
+  new Response(JSON.stringify({ ...apiSuccess(data), page: { nextCursor } }), { status: 200, headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' } });
 type Versioned = { version: string };
 /** Recurso com versão: ETag = versão. */
 export const resource = <T extends Versioned>(data: T, status = 200) => ok(data, status, etag(data.version));

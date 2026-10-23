@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseCohort, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type ErrorCode, type MentorTopicDto, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -144,3 +144,14 @@ export function updateCohort(token: string, id: string, version: string, body: u
 }
 export const cancelCohort = (token: string, id: string, version: string) =>
   invoke<CohortAdminDto>(sql`select internal.api_cohort_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${'{"status":"cancelled"}'}::jsonb, 'cancel') as r`, 'cohort');
+
+// ---- Reservas da própria participante (participantId vem da sessão, nunca do corpo) ----
+export type OwnEnrollmentDto = EnrollmentDto & { mentor: { id: string; displayName: string }; topic: { id: string; name: string } };
+export type OwnEnrollments = { enrollments: OwnEnrollmentDto[]; legacyMatches: LegacyMatchDto[] };
+export const listOwnEnrollments = (token: string) => invoke<OwnEnrollments>(sql`select internal.api_my_enrollments(${digestOf(token)}) as r`);
+export function enroll(token: string, idem: Idempotent, body: unknown) {
+  const dto = parseEnrollment(body);
+  return invoke<EnrollmentDto>(sql`select internal.api_enroll(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${JSON.stringify(dto)}::jsonb) as r`, 'enroll');
+}
+export const cancelOwnEnrollment = (token: string, id: string) =>
+  invoke<EnrollmentDto>(sql`select internal.api_my_enrollment_cancel(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint) as r`, 'enroll');
