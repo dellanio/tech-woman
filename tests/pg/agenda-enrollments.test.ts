@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,shiftToStarted,pgFails,EDITOR} from './agenda-harness';
+import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,shiftToStarted,pgFails,applyLocalGrants,EDITOR} from './agenda-harness';
 
 test('reserva SQL da editora: match current selected com score/reasons do ranking legado (score0 aceito), job reservation e auditoria sem dados pessoais', ()=>withDb(async ({db,url})=>{
  const user=await addUser(db,{roles:['participant']}),other=await addUser(db,{roles:['participant']});
@@ -85,4 +85,22 @@ test('cancelar (inclusive após o início) e reativar (só futura) mantêm cance
  assert.equal((await db.query("select count(*)::int n from enrollment where status='active' and cancelled_at is not null")).rows[0].n,0,'cancelled_at só acompanha a transição');
  const stamp=(await db.query("update enrollment set status='cancelled',cancelled_at='2000-01-01T00:00:00Z' where participant_id=$1 and status='active' returning cancelled_at",[p])).rows[0].cancelled_at as Date;
  assert.ok(Date.now()-stamp.getTime()<60e3,'cancelled_at é o instante do cancelamento, não valor do cliente');
+}));
+
+test('match de reserva só muda pelos efeitos da inscrição: DML direto (runtime legado) não dessincroniza; score/FKs/origem imutáveis; legado segue editável no status', ()=>withDb(async ({db,url})=>{
+ await applyLocalGrants(db);
+ const mentor=await addMentor(db),c=await addCohort(db,await addMentorTopic(db,mentor,await addTopic(db)),{from:0});const p=await addParticipant(db),q=await addParticipant(db);
+ const e=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[p,c])).rows[0].id;
+ const legacy=(await db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,3,'[]','approved','legacy') returning id::text",[q,mentor])).rows[0].id;
+ const before=(await db.query('select m::text from match m where enrollment_id=$1',[e])).rows[0].m;
+ await withClients(url,['techwoman_runtime'],async r=>{
+  for(const sql of ["update match set status='cancelled' where enrollment_id=$1","update match set enrollment_id=null where enrollment_id=$1","update match set score=99 where enrollment_id=$1"])
+   await pgFails(r.query(sql,[e]),'23514','agenda_match_managed');
+  await pgFails(r.query("insert into match(participant_id,mentor_id,score,reasons,status,origin,enrollment_id) values($1,$2,0,'[]','selected','current',$3)",[q,mentor,e]),'23514','agenda_match_managed');
+  for(const sql of ['update match set score=99 where id=$1','update match set mentor_id=mentor_id+0, participant_id=participant_id+1 where id=$1',"update match set origin='current' where id=$1"])
+   await pgFails(r.query(sql,[legacy]),'23514','agenda_immutable');
+  await r.query("update match set status='rejected' where id=$1",[legacy]);
+ });
+ assert.equal((await db.query('select m::text from match m where enrollment_id=$1',[e])).rows[0].m,before);
+ assert.equal((await db.query('select status from match where id=$1',[legacy])).rows[0].status,'rejected');
 }));
