@@ -291,5 +291,91 @@ class VerifyReleaseTests(unittest.TestCase):
         self.assertEqual(self.verify(candidate=self.tmp / 'absent.json').returncode, 70)
 
 
+def git(repo, *args, env=None):
+    done = subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                           '-c', 'commit.gpgsign=false', '-C', str(repo), *args],
+                          text=True, capture_output=True, check=True, env=env)
+    return done.stdout.strip()
+
+
+class GitIdentityTests(unittest.TestCase):
+    """Real git repositories: tree identity, ancestry and squash/main-advance races."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.repo = self.tmp / 'repo'
+        self.repo.mkdir()
+        git(self.repo, 'init', '-q', '-b', 'main')
+        write(self.repo / 'base.txt', b'base\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-q', '-m', 'base')
+        self.main = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'checkout', '-q', '-b', 'feature')
+        write(self.repo / 'feature.txt', b'feature\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-q', '-m', 'feature')
+        self.head = git(self.repo, 'rev-parse', 'HEAD')
+        self.tree = git(self.repo, 'rev-parse', 'HEAD^{tree}')
+
+    def facts(self, **overrides):
+        facts = good_facts()
+        facts.update(tested_head=self.head, tested_tree=self.tree, base_main=self.main)
+        facts['ci'].update(head_sha=self.head, tree=self.tree)
+        facts.update(overrides)
+        return facts
+
+    def seal(self, facts):
+        ops = OpsPackageTests().make_ops(self.tmp)
+        mig = self.tmp / 'drizzle'
+        mig.mkdir(exist_ok=True)
+        write(mig / '20260101000000_a.sql', b'select 1;\n')
+        facts_path = write(self.tmp / 'facts.json', json.dumps(facts).encode())
+        return manifest('seal', '--facts', facts_path, '--migrations-dir', mig, '--ops-dir', ops,
+                        '--out', self.tmp / 'candidate.json', '--repo', self.repo), ops, mig
+
+    def test_tree_command_prints_the_git_tree_of_a_revision(self):
+        done = manifest('tree', 'feature', '--repo', self.repo)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'tree': self.tree})
+
+    def test_seal_with_repo_binds_candidate_to_real_head_tree_and_main_ancestry(self):
+        ok, _, _ = self.seal(self.facts())
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        other_tree = self.facts()
+        other_tree['tested_tree'] = '9' * 40
+        other_tree['ci']['tree'] = '9' * 40
+        self.assertEqual(self.seal(other_tree)[0].returncode, 71)
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'checkout', '-q', '-b', 'diverged-main')
+        write(self.repo / 'other.txt', b'other\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-q', '-m', 'main moved')
+        advanced = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertEqual(self.seal(self.facts(base_main=advanced))[0].returncode, 71)
+
+    def test_squash_commit_with_the_tested_tree_verifies_but_advanced_main_does_not(self):
+        sealed, ops, mig = self.seal(self.facts())
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'merge', '--squash', 'feature')
+        git(self.repo, 'commit', '-q', '-m', 'squash')
+        squash = git(self.repo, 'rev-parse', 'HEAD')
+        squash_tree = git(self.repo, 'rev-parse', 'HEAD^{tree}')
+        self.assertNotEqual(squash, self.head)
+        verify = lambda tree, commit: manifest(
+            'verify-release', '--candidate', self.tmp / 'candidate.json', '--release-tree', tree,
+            '--release-commit', commit, '--digest', DIGEST, '--now', NOW, '--migrations-dir', mig, '--ops-dir', ops)
+        accepted = verify(squash_tree, squash)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)['release_commit_is_tested_head'], False)
+        write(self.repo / 'later.txt', b'later\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-q', '-m', 'unrelated change landed on main')
+        later = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertEqual(verify(git(self.repo, 'rev-parse', 'HEAD^{tree}'), later).returncode, 71)
+
+
 if __name__ == '__main__':
     unittest.main()
