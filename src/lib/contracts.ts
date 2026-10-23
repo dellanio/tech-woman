@@ -120,6 +120,41 @@ export const parsePasswordChange=(value:unknown)=>{const p=object(value,['curren
 export const parseIdempotencyKey=(value:string|null):string=>{if(!isUuid(value))throw new ContractError(['Idempotency-Key']);return value.toLowerCase();};
 export type SessionPublicDto=SessionDto|{state:'password_change_required';expiresAt:string};
 
+// ---- Agenda e CRUD de domínio (WP-003) ----
+function patchObject(value:unknown,allowed:string[]){const p=object(value,allowed);if(!Object.keys(p).length)throw new ContractError(['body']);return p;}
+function boolean(value:unknown,field:string){if(typeof value!=='boolean')throw new ContractError([field]);return value;}
+export function parseTopicPatch(value:unknown){
+ const p=patchObject(value,['name','description','active']);
+ return {...('name' in p?{name:text(p.name,'name',1,120)}:{}),...('description' in p?{description:text(p.description,'description',0,1000)}:{}),...('active' in p?{active:boolean(p.active,'active')}:{})};
+}
+export function parseMentorTopicPatch(value:unknown){const p=patchObject(value,['position']);return {position:integer(p.position,1,2,'position') as 1|2};}
+export function parseCohortPatch(value:unknown){
+ const p=patchObject(value,['startsAt','endsAt','capacity','status']);
+ const out={...('startsAt' in p?{startsAt:parseInstant(p.startsAt)}:{}),...('endsAt' in p?{endsAt:parseInstant(p.endsAt)}:{}),...('capacity' in p?{capacity:integer(p.capacity,1,20,'capacity')}:{}),...('status' in p?{status:enumeration<CohortStatus>(p.status,['draft','open','closed','cancelled'],'status')}:{})};
+ if(out.startsAt&&out.endsAt&&out.endsAt<=out.startsAt)throw new ContractError(['endsAt']);return out;
+}
+export function parseReorder(value:unknown){const p=object(value,['firstId','secondId']);const firstId=parseSqlId(p.firstId),secondId=parseSqlId(p.secondId);if(firstId===secondId)throw new ContractError(['secondId']);return {firstId,secondId};}
+export function parseReassign(value:unknown){const p=object(value,['cohortId','confirm']);if(p.confirm!==true)throw new ContractError(['confirm']);return {cohortId:parseSqlId(p.cohortId),confirm:true as const};}
+export function parseMatchCreate(value:unknown){const p=object(value,['participantId','mentorId']);return {participantId:parseSqlId(p.participantId),mentorId:parseSqlId(p.mentorId)};}
+export function parseMatchPatch(value:unknown){const p=patchObject(value,['status']);return {status:enumeration(p.status,['suggested','rejected'],'status')};}
+export function parseParticipantPatch(value:unknown){
+ const p=patchObject(value,['goal','moment','interests','skills','area','otherArea','active']);
+ if('otherArea' in p&&p.area!=='outra')throw new ContractError(['otherArea']);
+ const area='area' in p?enumeration(p.area,[...tags,'outra'],'area'):undefined;
+ return {...('goal' in p?{goal:enumeration(p.goal,['transition','growth','leadership'],'goal')}:{}),...('moment' in p?{moment:enumeration(p.moment,['starting','working','returning'],'moment')}:{}),...('interests' in p?{interests:list(p.interests,tags,3,'interests')}:{}),...('skills' in p?{skills:list(p.skills,skills,4,'skills')}:{}),...(area?{area}:{}),...(area==='outra'?{otherArea:text(p.otherArea,'otherArea',1,80)}:{}),...('active' in p?{active:boolean(p.active,'active')}:{})};
+}
+export function parseMentorPatch(value:unknown){
+ const p=patchObject(value,['displayName','trajectory','specialties','availability','legacyCapacity','active']);
+ return {...('displayName' in p?{displayName:text(p.displayName,'displayName',1,120)}:{}),...('trajectory' in p?{trajectory:text(p.trajectory,'trajectory',1,1000)}:{}),...('specialties' in p?{specialties:list(p.specialties,tags,3,'specialties')}:{}),...('availability' in p?{availability:text(p.availability,'availability',1,300)}:{}),...('legacyCapacity' in p?{legacyCapacity:integer(p.legacyCapacity,1,50,'legacyCapacity')}:{}),...('active' in p?{active:boolean(p.active,'active')}:{})};
+}
+export const encodeSqlCursor=(id:string)=>encodeCursor(parseSqlId(id));
+export function parseDomainListQuery(query:{cursor?:unknown;limit?:unknown}):{after:string|null;limit:number}{
+ const limit=query.limit===undefined||query.limit===null?20:integer(query.limit,1,100,'limit');
+ if(query.cursor===undefined||query.cursor===null)return {after:null,limit};
+ if(typeof query.cursor!=='string'||query.cursor.length>200)throw new ContractError(['cursor']);
+ try{const parsed:unknown=JSON.parse(Buffer.from(query.cursor,'base64url').toString('utf8'));const p=object(parsed,['id']);return {after:parseSqlId(p.id),limit};}catch{throw new ContractError(['cursor']);}
+}
+
 /** POST antigo de mentora: `capacity` (sem displayName obrigatório). Mesmos limites do contrato v1; fecha campos desconhecidos. */
 export function parseLegacyMentorRegistration(value:unknown):{email:string;displayName:string|null;trajectory:string;specialties:Tag[];availability:string;legacyCapacity:number;consent:true}{
  const p=object(value,['email','displayName','trajectory','specialties','availability','capacity','consent']);
