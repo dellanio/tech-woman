@@ -72,10 +72,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
+          # 1. the signal is the trusted auto-merge workflow of this repository, finished with success
+          merger=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq '.path == ".github/workflows/approved-merge.yml" and .event == "workflow_run" and .conclusion == "success" and .repository.full_name == env.GH_REPO')
+          [ "$merger" = true ] || { echo 'the triggering run is not the trusted auto-merge workflow' >&2; exit 1; }
+          # 2. the checked-out main is the merge commit of exactly one merged PR by the authorised author
           count=$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/pulls" --jq '[.[] | select(.merged_at != null and .merge_commit_sha == env.RELEASE_SHA and .user.login == "beatrizbenz" and .base.ref == "main")] | length')
           [ "$count" = 1 ] || { echo 'main is not the merge commit of one merged PR by the authorised author' >&2; exit 1; }
+          # 3. that PR's exact head had a successful pull_request CI run of this repository's ci.yml
+          PR_HEAD=$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/pulls" --jq '[.[] | select(.merge_commit_sha == env.RELEASE_SHA)][0].head.sha')
+          [[ "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'cannot resolve the head of the merged PR' >&2; exit 1; }
+          export PR_HEAD
+          ci=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$PR_HEAD&event=pull_request&per_page=100" --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success" and .head_sha == env.PR_HEAD and .repository.full_name == env.GH_REPO)] | length')
+          [ "$ci" -ge 1 ] || { echo 'no successful CI run covers the exact head of the merged PR' >&2; exit 1; }
       - name: Install deploy key
         env:
           DEPLOY_KEY: ${{ secrets.OCI_TECH_WOMAN_KEY }}
