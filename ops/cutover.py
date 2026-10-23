@@ -706,6 +706,63 @@ def cmd_release_check(paths, flags):
     print(state.data.get('last_good_pg_image') or 'none')
 
 
+def cmd_rebind(paths, flags):
+    """Operator step for a code-only release: record the newly sealed candidate (same schema, same window rules)."""
+    manifest = _manifest()
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != 'pg_write_open':
+        raise StateError(75, 'rebind needs phase pg_write_open')
+    candidate = _sealed_candidate(paths, manifest)
+    if candidate['migrations']['aggregate_sha256'] != (state.data.get('schema_migrations') or {}).get('aggregate_sha256'):
+        raise StateError(72, 'the candidate changes the schema: that needs its own operator procedure')
+    now = _now()
+    window = candidate['window']
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    digest = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
+    state.transition('pg_write_open', now, candidate_sha256=digest)
+    print(json.dumps({'phase': 'pg_write_open', 'candidate_sha256': digest}))
+
+
+RELEASE_ATTESTATION_KEYS = sorted(ATTESTATION_KEYS + ['previous_container', 'backup'])
+RELEASE_ATTESTATION_KEYS.remove('phase')
+
+
+def cmd_register_release(paths, flags):
+    """Operator records a released image as known/last good after seeing it run as the public web."""
+    try:
+        report = json.loads(sys.stdin.read(65536))
+        attestation = report['attestation']
+    except (ValueError, KeyError, TypeError):
+        raise StateError(64, 'attestation is not valid JSON from deploy.sh release')
+    if type(report) is not dict or sorted(report) != ['attestation', 'op', 'release'] or report['op'] != 'release'             or report['release'] != 'verified' or type(attestation) is not dict             or sorted(attestation) != RELEASE_ATTESTATION_KEYS             or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(attestation['digest'])):
+        raise StateError(64, 'attestation has an unexpected shape')
+    manifest = _manifest()
+    state, candidate = _sealed_state(paths, manifest, 'pg_write_open')
+    sealed = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
+    if attestation['candidate_sha256'] != sealed:
+        raise StateError(70, 'attestation is not for the recorded candidate')
+    if attestation['script_sha256'] != candidate['deploy_script_sha256']:
+        raise StateError(65, 'attestation was produced by a different deploy.sh')
+    if attestation['release_tree'] != candidate['tested_tree']:
+        raise StateError(71, 'release tree is not the tested tree')
+    if attestation['migrations_aggregate'] != candidate['migrations']['aggregate_sha256']:
+        raise StateError(72, 'migrations differ from the sealed candidate')
+    hostops = _sibling('hostops')
+    try:
+        running = hostops.Runner(paths).run(['docker', 'inspect', 'tech-woman', '--format', '{{.Config.Image}}'],
+                                            error='cannot inspect the public web').stdout.strip().split('|')[0]
+    except hostops.HostError as error:
+        raise StateError(74, str(error))
+    if running != 'ghcr.io/dellanio/tech-woman@' + attestation['digest']:
+        raise StateError(74, 'the public web is not the attested image')
+    known = list(state.data.get('known_pg_images') or [])
+    if attestation['digest'] not in known:
+        known.append(attestation['digest'])
+    state.transition('pg_write_open', _now(), known_pg_images=known, last_good_pg_image=attestation['digest'])
+    print(json.dumps({'phase': 'pg_write_open', 'last_good': attestation['digest']}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -719,6 +776,8 @@ COMMANDS = {
     'smoke': cmd_smoke,
     'open-writes': cmd_open_writes,
     'release-check': cmd_release_check,
+    'rebind': cmd_rebind,
+    'register-release': cmd_register_release,
 }
 FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason'], 'release-check': ['previous-image']}
 
