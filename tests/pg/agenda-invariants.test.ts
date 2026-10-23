@@ -122,7 +122,7 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
  const role=(await db.query('select rolcanlogin,rolbypassrls,rolsuper,rolcreaterole,rolcreatedb,rolreplication from pg_roles where rolname=$1',[OWNER])).rows[0];
  assert.deepEqual(role,{rolcanlogin:false,rolbypassrls:false,rolsuper:false,rolcreaterole:false,rolcreatedb:false,rolreplication:false});
  const fns=(await db.query(`select p.proname,pg_get_userbyid(p.proowner) owner,p.prosecdef,p.provolatile,p.proconfig,
-   coalesce((select array_agg(coalesce(nullif(pg_get_userbyid(a.grantee),''),'-')) from aclexplode(p.proacl) a where a.privilege_type='EXECUTE' and a.grantee<>p.proowner),'{}') grantees,
+   coalesce((select array_agg(coalesce(nullif(pg_get_userbyid(a.grantee)::text,''),'-')) from aclexplode(p.proacl) a where a.privilege_type='EXECUTE' and a.grantee<>p.proowner),'{}') grantees,
    has_function_privilege('techwoman_runtime',p.oid,'EXECUTE') runtime
   from pg_proc p where p.pronamespace='internal'::regnamespace and p.proname=any($1) order by p.proname`,[AGENDA_FUNCTIONS])).rows;
  assert.equal(fns.length,AGENDA_FUNCTIONS.length);

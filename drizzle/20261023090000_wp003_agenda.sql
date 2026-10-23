@@ -104,3 +104,29 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('CREATE TRIGGER agenda_row BEFORE INSERT OR UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION internal.agenda_row_check()', t);
  END LOOP;
 END $$;
+--> statement-breakpoint
+-- Owner das funções de Agenda: NOLOGIN, sem BYPASSRLS/superuser. Criado aqui só se a migradora puder (local/teste);
+-- em produção o operador aplica antes scripts/migration/agenda-privileges.sql. Atributos inseguros abortam (fail-closed).
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_owner') THEN
+  IF NOT (SELECT rolsuper OR rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN
+   RAISE EXCEPTION 'techwoman_owner ausente: aplicar scripts/migration/agenda-privileges.sql como operador antes desta migration';
+  END IF;
+  CREATE ROLE techwoman_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_owner' AND (rolcanlogin OR rolbypassrls OR rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+  RAISE EXCEPTION 'techwoman_owner deve ser NOLOGIN sem BYPASSRLS/privilégios de cluster';
+ END IF;
+END $$;
+--> statement-breakpoint
+GRANT USAGE ON SCHEMA public, internal TO techwoman_owner;
+GRANT SELECT, UPDATE ON internal.agenda_guard TO techwoman_owner;
+GRANT SELECT ON public.topic, public.mentor_topic, public.cohort, public.enrollment, public.mentor, public.participant TO techwoman_owner;
+--> statement-breakpoint
+-- ALTER OWNER exige CREATE do novo dono no schema: concedido só durante a transferência.
+GRANT CREATE ON SCHEMA internal TO techwoman_owner;
+ALTER FUNCTION internal.acquire_agenda_guard() OWNER TO techwoman_owner;
+ALTER FUNCTION internal.validate_agenda_state() OWNER TO techwoman_owner;
+ALTER FUNCTION internal.agenda_row_check() OWNER TO techwoman_owner;
+ALTER FUNCTION internal.agenda_reject(text) OWNER TO techwoman_owner;
+REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
