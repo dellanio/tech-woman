@@ -3,23 +3,32 @@
 # Protocol TWDEPLOY/2 on stdin (LF lines, ASCII). Deny-by-default: every check runs before any effect.
 set -euo pipefail
 umask 077
+export LC_ALL=C
 self=$(readlink -f -- "${BASH_SOURCE[0]}")
 
 reject() { echo 'invalid digest or unsupported protocol' >&2; exit 64; }
 
-IFS= read -r header || reject
-IFS= read -r op || reject
-[[ "$header" == 'TWDEPLOY/2' ]] || reject
-if [[ "$op" == 'probe' ]]; then
+# Read at most 20000 bytes. A NUL byte or a longer input ends the read with status 0, which is rejected.
+input=''
+IFS= read -r -d '' -n 20001 input && reject
+[[ "$input" =~ ^[[:print:]$'\n']*$ ]] || reject
+[[ "$input" == *$'\n' ]] || reject
+mapfile -t lines <<<"${input%$'\n'}"
+for line in "${lines[@]}"; do (( ${#line} <= 4096 )) || reject; done
+[[ "${lines[0]}" == 'TWDEPLOY/2' ]] || reject
+
+if [[ "${lines[1]:-}" == 'probe' && ${#lines[@]} -eq 2 ]]; then
   printf '{"protocol":2,"script_sha256":"%s"}\n' "$(sha256sum -- "$self" | cut -d' ' -f1)"
   exit 0
 fi
-[[ "$op" == 'deploy' ]] || reject
-IFS= read -r digest || reject
-IFS= read -r release_commit || reject
-IFS= read -r release_tree || reject
-IFS= read -r migrations_aggregate || reject
-IFS= read -r migrations_count || reject
-IFS= read -r token || reject
+[[ "${lines[1]:-}" == 'deploy' && ${#lines[@]} -eq 8 ]] || reject
+digest=${lines[2]} release_commit=${lines[3]} release_tree=${lines[4]}
+migrations_aggregate=${lines[5]} migrations_count=${lines[6]} token=${lines[7]}
+re_digest='^sha256:[0-9a-f]{64}$' re_sha1='^[0-9a-f]{40}$' re_sha256='^[0-9a-f]{64}$'
+re_count='^[1-9][0-9]{0,3}$' re_token='^[A-Za-z0-9_.~+/=-]+$'
+[[ "$digest" =~ $re_digest && "$release_commit" =~ $re_sha1 && "$release_tree" =~ $re_sha1 \
+   && "$migrations_aggregate" =~ $re_sha256 && "$migrations_count" =~ $re_count \
+   && "$token" =~ $re_token && ${#token} -le 512 ]] || reject
+unset lines input
 echo 'state marker unavailable' >&2
 exit 70
