@@ -57,6 +57,12 @@ class JobShapeTests(unittest.TestCase):
 
 
 class StepOrderTests(unittest.TestCase):
+    def test_password_hash_csrf_and_origin_unit_suite_is_not_lost_by_the_pg_glob(self):
+        text = ci()
+        unit = position(text, 'pnpm exec tsx --test tests/unit/password.test.ts')
+        self.assertLess(position(text, 'pnpm install --frozen-lockfile'), unit)
+        self.assertLess(unit, position(text, 'pnpm build'))
+
     def test_suites_run_in_the_documented_order_with_the_real_commands(self):
         text = ci()
         order = [position(text, needle) for needle in (
