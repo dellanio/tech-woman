@@ -1,5 +1,6 @@
 'use client';
 /** Campos do diagnóstico (participante) e do perfil de mentora: estado, validação na ordem da tela e DTO fechado v1. Reutilizáveis nos CRUDs. */
+import type { ReactNode } from 'react';
 import { Chips, abilities, topics } from './shared';
 
 export type Goal = 'transition' | 'growth' | 'leadership';
@@ -82,5 +83,55 @@ export function InterestFields({ draft, onChange, invalid }: Props<ParticipantDr
       <option value="">Selecione uma área</option>{topics.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}<option value="outra">Outra</option>
     </select>
     {draft.area === 'outra' && <><label className="field-label" htmlFor={PARTICIPANT_IDS.otherArea}>Qual área?</label><input id={PARTICIPANT_IDS.otherArea} value={draft.otherArea} onChange={e => onChange({ ...draft, otherArea: e.target.value })} maxLength={OTHER_AREA_MAX} required aria-invalid={invalid.includes('otherArea') || undefined}/></>}
+  </>;
+}
+
+export const DISPLAY_NAME_MAX = 120, TRAJECTORY_MAX = 1000, SPECIALTY_MAX = 3, AVAILABILITY_MAX = 300, CAPACITY_MIN = 1, CAPACITY_MAX = 50;
+export type MentorDraft = { displayName: string; trajectory: string; specialties: string[]; availability: string; legacyCapacity: string };
+export const emptyMentor: MentorDraft = { displayName: '', trajectory: '', specialties: [], availability: '', legacyCapacity: '1' };
+export type MentorProfileDto = { displayName: string; trajectory: string; specialties: string[]; availability: string; legacyCapacity: number; consent: true };
+export type MentorField = 'displayName' | 'trajectory' | 'specialties' | 'availability' | 'legacyCapacity';
+export const MENTOR_MESSAGES: Record<MentorField, string> = {
+  displayName: `Informe seu nome de exibição (até ${DISPLAY_NAME_MAX} caracteres).`, trajectory: `Conte sua trajetória (até ${TRAJECTORY_MAX} caracteres).`,
+  specialties: `Escolha de 1 a ${SPECIALTY_MAX} especialidades.`, availability: `Descreva sua disponibilidade (até ${AVAILABILITY_MAX} caracteres).`,
+  legacyCapacity: `Informe a capacidade legada: um número inteiro de ${CAPACITY_MIN} a ${CAPACITY_MAX}.`,
+};
+export const MENTOR_IDS: Record<MentorField, string> = { displayName: 'mentor-name', trajectory: 'trajectory', specialties: 'specialty-options', availability: 'availability', legacyCapacity: 'capacity' };
+const capacityOf = (raw: string) => /^\d{1,3}$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+const within = (value: string, max: number) => textLength(value) >= 1 && textLength(value) <= max;
+
+/** Ordem da tela; o e-mail (só no público) é validado por quem o exibe. */
+export function mentorIssues(d: MentorDraft): Issue<MentorField>[] {
+  const bad: MentorField[] = [];
+  if (!within(d.displayName, DISPLAY_NAME_MAX)) bad.push('displayName');
+  if (!within(d.trajectory, TRAJECTORY_MAX)) bad.push('trajectory');
+  if (d.specialties.length < 1 || d.specialties.length > SPECIALTY_MAX) bad.push('specialties');
+  if (!within(d.availability, AVAILABILITY_MAX)) bad.push('availability');
+  const capacity = capacityOf(d.legacyCapacity);
+  if (!(capacity >= CAPACITY_MIN && capacity <= CAPACITY_MAX)) bad.push('legacyCapacity');
+  return bad.map(field => ({ field, message: MENTOR_MESSAGES[field] }));
+}
+export function mentorDto(d: MentorDraft): MentorProfileDto {
+  return { displayName: d.displayName.trim(), trajectory: d.trajectory.trim(), specialties: d.specialties, availability: d.availability.trim(), legacyCapacity: capacityOf(d.legacyCapacity), consent: true };
+}
+
+/** `email` (opcional) entra logo após o nome, só no cadastro público. */
+export function MentorFields({ draft, onChange, invalid, email }: Props<MentorDraft, MentorField> & { email?: ReactNode }) {
+  const bad = (f: MentorField) => invalid.includes(f) || undefined;
+  return <>
+    <label className="field-label" htmlFor={MENTOR_IDS.displayName}>Nome de exibição</label>
+    <p className="field-hint" id="mentor-name-hint">Como as participantes vão ver você ao escolher uma mentora.</p>
+    <input id={MENTOR_IDS.displayName} value={draft.displayName} onChange={e => onChange({ ...draft, displayName: e.target.value })} maxLength={DISPLAY_NAME_MAX} required autoComplete="name" aria-describedby="mentor-name-hint" aria-invalid={bad('displayName')}/>
+    {email}
+    <label className="field-label" htmlFor={MENTOR_IDS.trajectory}>Trajetória</label>
+    <textarea id={MENTOR_IDS.trajectory} value={draft.trajectory} onChange={e => onChange({ ...draft, trajectory: e.target.value })} maxLength={TRAJECTORY_MAX} required placeholder="Conte brevemente seu percurso em tecnologia" aria-invalid={bad('trajectory')}/>
+    <fieldset id={MENTOR_IDS.specialties} className={invalid.includes('specialties') ? 'field-invalid' : undefined}><legend>Em quais áreas você pode contribuir?</legend><p className="field-hint">Escolha até {SPECIALTY_MAX} especialidades.</p>
+      <Chips options={topics} values={draft.specialties} max={SPECIALTY_MAX} onChange={specialties => onChange({ ...draft, specialties })} name="specialties"/>
+    </fieldset>
+    <label className="field-label" htmlFor={MENTOR_IDS.availability}>Disponibilidade descritiva</label>
+    <input id={MENTOR_IDS.availability} value={draft.availability} onChange={e => onChange({ ...draft, availability: e.target.value })} maxLength={AVAILABILITY_MAX} required placeholder="Por exemplo: encontros a combinar presencialmente" aria-invalid={bad('availability')}/>
+    <label className="field-label" htmlFor={MENTOR_IDS.legacyCapacity}>Capacidade legada (participantes)</label>
+    <p className="field-hint" id="capacity-hint">Referência do cadastro anterior, de {CAPACITY_MIN} a {CAPACITY_MAX}; não define vagas de turma.</p>
+    <input id={MENTOR_IDS.legacyCapacity} type="number" inputMode="numeric" min={CAPACITY_MIN} max={CAPACITY_MAX} step={1} value={draft.legacyCapacity} onChange={e => onChange({ ...draft, legacyCapacity: e.target.value })} required aria-describedby="capacity-hint" aria-invalid={bad('legacyCapacity')}/>
   </>;
 }
