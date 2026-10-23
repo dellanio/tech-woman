@@ -1,4 +1,4 @@
-import hashlib, json, pathlib, subprocess, sys, tempfile, unittest
+import hashlib, json, pathlib, shutil, subprocess, sys, tempfile, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / 'ops/manifest.py'
@@ -203,6 +203,57 @@ class VerifyReleaseTests(unittest.TestCase):
         squash = self.verify(commit='f' * 40)
         self.assertEqual(squash.returncode, 0, squash.stderr)
         self.assertEqual(json.loads(squash.stdout), {'ok': True, 'release_commit_is_tested_head': False})
+
+    def test_denies_divergent_release_with_stable_codes(self):
+        def tree(v):
+            return {'tree': v}
+
+        def edit(name, data):
+            return lambda mig, ops: write(ops / name, data)
+
+        def drop_ops(name):
+            return lambda mig, ops: (ops / name).unlink()
+
+        def extra_migration(mig, ops):
+            write(mig / '20260105000000_extra.sql', b'select 9;\n')
+
+        def drop_migration(mig, ops):
+            (mig / '20260101000000_a.sql').unlink()
+
+        def alter_migration(mig, ops):
+            write(mig / '20260101000000_a.sql', b'select 1; -- changed\n')
+
+        def rename_migration(mig, ops):
+            (mig / '20260101000000_a.sql').rename(mig / '20250101000000_a.sql')
+
+        cases = [
+            ('main advanced, different tree', 71, tree('9' * 40), None),
+            ('digest latest', 64, {'digest': 'latest'}, None),
+            ('digest short', 64, {'digest': 'sha256:abc'}, None),
+            ('digest protocol token', 64, {'digest': 'TWDEPLOY/2'}, None),
+            ('tree is not an object id', 64, tree('HEAD;rm -rf /'), None),
+            ('deploy.sh differs', 65, {}, edit('deploy.sh', b'#!/usr/bin/env bash\necho other\n')),
+            ('helper differs', 65, {}, edit('manifest.py', b'print(3)\n')),
+            ('extra helper', 65, {}, edit('extra.py', b'print(4)\n')),
+            ('missing helper', 65, {}, drop_ops('verify-image.sh')),
+            ('extra migration', 72, {}, extra_migration),
+            ('missing migration', 72, {}, drop_migration),
+            ('changed migration', 72, {}, alter_migration),
+            ('reordered/renamed migration', 72, {}, rename_migration),
+            ('window expired', 73, {'now': '2026-10-23T14:00:01Z'}, None),
+            ('window not started', 73, {'now': '2026-10-23T11:59:59Z'}, None),
+            ('now is not RFC3339Z', 64, {'now': 'tomorrow'}, None),
+        ]
+        for name, code, kwargs, mutate in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as case:
+                case = pathlib.Path(case)
+                shutil.copytree(self.mig, case / 'mig')
+                shutil.copytree(self.ops, case / 'ops')
+                if mutate:
+                    mutate(case / 'mig', case / 'ops')
+                done = self.verify(mig=case / 'mig', ops=case / 'ops', **kwargs)
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assertEqual(done.stdout, '')
 
 
 if __name__ == '__main__':
