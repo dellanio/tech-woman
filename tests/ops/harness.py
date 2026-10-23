@@ -67,7 +67,7 @@ def run_script(path, stdin, extra_env=None, args=()):
 class StagedOps:
     """Byte-exact copy of ops/ whose paths.env points at a scratch host tree (no normalization of the scripts)."""
 
-    def __init__(self):
+    def __init__(self, pg_db='techwoman'):
         self._tmp = tempfile.TemporaryDirectory(prefix='tw-staged-')
         root = pathlib.Path(self._tmp.name)
         self.ops = root / 'lib'
@@ -91,7 +91,7 @@ class StagedOps:
             "TW_DB_FILE='%s'" % (self.host / 'app/dados/tech-woman.db').as_posix(),
             "TW_NETWORK='testnet'",
             "TW_BACKUP_DIR='%s'" % (self.host / 'backups').as_posix(),
-            "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='techwoman'", "TW_PG_DUMP_USER='techwoman_backup'",
+            "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='%s'" % pg_db, "TW_PG_DUMP_USER='techwoman_backup'",
             'TW_SMOKE_ATTEMPTS=2', 'TW_SMOKE_DELAY=0',
             "TW_CRON_PATHS='%s'" % (self.host / 'cron').as_posix(),
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).

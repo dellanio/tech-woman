@@ -21,8 +21,9 @@ def run_py(*args, stdin=None, env=None):
 
 
 class Host:
-    def __init__(self, test):
-        self.ops = harness.StagedOps()
+    def __init__(self, test, pg_db='techwoman', env=None):
+        self.ops = harness.StagedOps(pg_db)
+        self.env = dict(env or {})
         test.addCleanup(self.ops.cleanup)
         self.state_dir = self.ops.host / 'state'
         self.work = self.ops.host / 'work'
@@ -51,7 +52,8 @@ class Host:
         return json.loads((self.state_dir / 'candidate.json').read_text())
 
     def cutover(self, *args, stdin=None):
-        env = dict(os.environ, TW_FAKE_DIR=harness._posix(self.ops.fake), TW_FAKE_LOG=str(self.work / 'cutover-calls.jsonl'))
+        env = dict(os.environ, TW_FAKE_DIR=harness._posix(self.ops.fake), TW_FAKE_LOG=str(self.work / 'cutover-calls.jsonl'),
+                   **self.env)
         return run_py(self.ops.ops / 'cutover.py', *args, stdin=stdin, env=env)
 
     def migrations(self):

@@ -41,7 +41,7 @@ ALLOWED = {
     ('imported', 'activated'), ('activated', 'smoke_ok'), ('smoke_ok', 'pg_write_open'),
     ('frozen', 'aborted_pre_write'), ('snapshotted', 'aborted_pre_write'), ('imported', 'aborted_pre_write'),
     ('activated', 'recovering'), ('smoke_ok', 'recovering'), ('pg_write_open', 'recovering'),
-    ('pg_write_open', 'pg_write_open'),
+    ('pg_write_open', 'pg_write_open'), ('recovering', 'pg_write_open'),
 }
 
 
