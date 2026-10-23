@@ -52,7 +52,7 @@ class MigrationHashTests(unittest.TestCase):
 class OpsPackageTests(unittest.TestCase):
     def make_ops(self, tmp):
         ops = tmp / 'ops'
-        (ops / '__pycache__').mkdir(parents=True)
+        (ops / '__pycache__').mkdir(parents=True, exist_ok=True)
         write(ops / 'deploy.sh', b'#!/usr/bin/env bash\necho deploy\n')
         write(ops / 'manifest.py', b'print(1)\n')
         write(ops / 'verify-image.sh', b'#!/usr/bin/env bash\necho verify\n')

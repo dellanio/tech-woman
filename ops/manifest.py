@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Candidate identity: migration hashes, release tree checks, sealed candidate.json. Stdlib only."""
-import datetime, hashlib, json, pathlib, re, sys
+import datetime, hashlib, json, pathlib, re, subprocess, sys
 
 HEX40 = re.compile(r'\A[0-9a-f]{40}\Z')
 HEX64 = re.compile(r'\A[0-9a-f]{64}\Z')
@@ -182,13 +182,32 @@ def verify_release(flags):
     return {'ok': True, 'release_commit_is_tested_head': flags['release-commit'] == candidate['tested_head']}
 
 
-def _flags(args, names):
+def _flags(args, names, optional=()):
     values = {}
     for i in range(0, len(args), 2):
         values[args[i][2:]] = args[i + 1]
-    if sorted(values) != sorted(names):
+    if not set(names) <= set(values) <= set(names) | set(optional):
         raise SystemExit(64)
     return values
+
+
+def _git(repo, *args):
+    return subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True)
+
+
+def git_tree(repo, rev):
+    done = _git(repo, 'rev-parse', '--verify', '--end-of-options', rev + '^{tree}')
+    tree = done.stdout.strip()
+    if done.returncode != 0 or not _is_hex(tree, HEX40):
+        raise ManifestError(71, 'cannot resolve the tree of %s' % rev)
+    return tree
+
+
+def check_against_repo(facts, repo):
+    if git_tree(repo, facts['tested_head']) != facts['tested_tree']:
+        raise ManifestError(71, 'tested_tree is not the tree of tested_head')
+    if _git(repo, 'merge-base', '--is-ancestor', facts['base_main'], facts['tested_head']).returncode != 0:
+        raise ManifestError(71, 'base_main is not an ancestor of tested_head (main advanced)')
 
 
 def main(argv):
@@ -209,9 +228,15 @@ def _run(cmd, args):
     if cmd == 'ops-package' and len(args) == 1:
         print(json.dumps(ops_package(args[0])))
         return 0
+    if cmd == 'tree' and len(args) == 3 and args[1] == '--repo':
+        print(json.dumps({'tree': git_tree(args[2], args[0])}))
+        return 0
     if cmd == 'seal':
-        flags = _flags(args, ['facts', 'migrations-dir', 'ops-dir', 'out'])
+        flags = _flags(args, ['facts', 'migrations-dir', 'ops-dir', 'out'], optional=['repo'])
         facts = json.loads(pathlib.Path(flags['facts']).read_text())
+        validate_facts(facts)
+        if 'repo' in flags:
+            check_against_repo(facts, flags['repo'])
         data = (json.dumps(seal(facts, flags['migrations-dir'], flags['ops-dir']), indent=2, sort_keys=True) + '\n').encode()
         pathlib.Path(flags['out']).write_bytes(data)
         print(json.dumps({'candidate_sha256': _sha256(data)}))
