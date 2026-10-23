@@ -168,3 +168,82 @@ test('participante: mais de três sugestões com razões legíveis, outras sem a
  }finally{await context.close();}
 });
 
+
+test('participante escolhe mentora sem afinidade → tema e turma em Recife (12 UTC = 09:00) → resumo → 201 sem aprovação; rede caída reenvia a mesma chave; nova turma, nova chave',{timeout:300_000},async()=>{
+ const mentorId=await addMentor('Clara Score Zero',['design']);
+ const design=await link(mentorId,await addTopic('Design de produto'),1);const research=await link(mentorId,await addTopic('Pesquisa com usuárias'),2);
+ const morning=await addCohort(design,futureAt(30,12),{capacity:4});await occupy(morning);
+ const later=await addCohort(design,futureAt(31,18,30),{capacity:2});
+ const other=await addCohort(research,futureAt(32,15),{hours:2,capacity:5});
+ const {page,context,email}=await participantOnAccount('choose');
+ const posts=enrollmentRequests(page);
+ try{
+  await main(page).getByRole('heading',{name:'Suas reservas'}).waitFor();
+  await main(page).getByText(/ainda não tem reservas/).waitFor();
+  await openMentor(page,'Clara Score Zero');
+  // filtro de tema = seleção local das turmas retornadas
+  const filter=main(page).getByLabel('Filtrar por tema');
+  assert.deepEqual((await filter.locator('option').allInnerTexts()).slice(1),['Design de produto','Pesquisa com usuárias']);
+  assert.equal(await main(page).getByRole('radio').count(),3);
+  await filter.selectOption({label:'Pesquisa com usuárias'});
+  assert.equal(await main(page).getByRole('radio').count(),1);
+  assert.match(await main(page).locator('fieldset.cohort-group').innerText(),/12:00 às 14:00/);
+  await filter.selectOption({index:0});
+  // horário real em Recife: 12:00 UTC → 09:00; capacidade/ocupação/vagas reais do banco
+  const group=main(page).getByRole('group',{name:'Design de produto'});
+  const morningLabel=group.locator('label.cohort-option').first();
+  const morningText=await morningLabel.innerText();
+  assert.match(morningText,/09:00 às 10:00/);assert.match(morningText,/America\/Recife/);assert.doesNotMatch(morningText,/12:00/);
+  assert.match(morningText,/3 vagas disponíveis de 4 · 1 ocupada/);
+  assert.match(await group.locator('label.cohort-option').nth(1).innerText(),/15:30 às 16:30/);
+  await morningLabel.getByRole('radio').check();
+  await main(page).getByRole('button',{name:'Conferir resumo'}).click();
+  const summary=main(page).locator('.choice-summary');await summary.waitFor();
+  const summaryText=await summary.innerText();
+  for(const part of ['Clara Score Zero','Design de produto','09:00 às 10:00','America/Recife'])assert.ok(summaryText.includes(part),`resumo mostra ${part}`);
+  assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'Confira sua reserva','foco no passo atual');
+  await capture(page,'conta-resumo');
+  // rede cai DEPOIS do servidor gravar: a tela não confirma; o reenvio usa a mesma chave e recebe a mesma reserva (replay 201)
+  let dropped=false;
+  await page.route('**/api/v1/me/enrollments',async route=>{if(route.request().method()!=='POST'||dropped){await route.continue();return;}dropped=true;await route.fetch();await route.abort('internetdisconnected');});
+  await main(page).getByRole('button',{name:'Reservar vaga'}).click();
+  await alertText(page,/Sem conexão/);
+  assert.equal(await main(page).getByText('Reserva confirmada').count(),0,'sem falsa confirmação');
+  assert.ok((await summary.innerText()).includes('Clara Score Zero'),'contexto preservado');
+  await page.unroute('**/api/v1/me/enrollments');
+  const [created]=await Promise.all([page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/v1/me/enrollments'),main(page).getByRole('button',{name:'Tentar novamente'}).click()]);
+  assert.equal(created.status(),201);
+  assert.equal(posts.length,2);
+  const keys=posts.map(r=>r.headers()['idempotency-key']);
+  assert.match(keys[0],/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);assert.equal(keys[1],keys[0],'mesma chave no reenvio');
+  assert.deepEqual(posts.map(r=>r.postDataJSON()),[{cohortId:morning},{cohortId:morning}],'mesmo corpo, sem participantId');
+  for(const r of posts)assert.ok((r.headers()['x-csrf-token']??'').length>0);
+  const done=main(page).getByRole('status').filter({hasText:'Reserva confirmada'});await done.waitFor();
+  const doneText=await done.innerText();
+  assert.match(doneText,/Design de produto/);assert.match(doneText,/09:00 às 10:00/);
+  assert.match(doneText,/fila de envio/);assert.match(doneText,/não confirma entrega/);assert.match(doneText,/continua valendo mesmo se o e-mail falhar/);assert.match(doneText,/NÃO ENVIADA/);
+  assert.doesNotMatch(doneText,/aguard|em análise|aprovad|enviamos|foi enviad|entregue/i);
+  const rows=(await ui.db.query<{status:string}>("select e.status from enrollment e join participant p on p.id=e.participant_id where p.email=$1 and e.cohort_id=$2",[email,morning])).rows;
+  assert.deepEqual(rows.map(r=>r.status),['active'],'uma reserva só, apesar do reenvio');
+  assert.equal((await ui.db.query("select 1 from email_job j join enrollment e on e.id=j.enrollment_id join participant p on p.id=e.participant_id where p.email=$1 and j.kind='reservation'",[email])).rowCount,1,'e-mail de reserva enfileirado');
+  // Suas reservas (GET próprio) mostra a reserva real
+  const list=main(page).locator('.enrollment-list');
+  await list.getByText('Design de produto').waitFor();
+  const listText=await list.innerText();
+  assert.match(listText,/Clara Score Zero/);assert.match(listText,/09:00 às 10:00/);assert.match(listText,/Ativa/);
+  await capture(page,'conta-reserva-confirmada');
+  // outra reserva: outra turma → outra chave
+  await main(page).getByRole('button',{name:'Fazer outra reserva'}).click();
+  await openMentor(page,'Clara Score Zero');
+  await main(page).getByRole('group',{name:'Pesquisa com usuárias'}).getByRole('radio').check();
+  await main(page).getByRole('button',{name:'Conferir resumo'}).click();
+  const [second]=await Promise.all([page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/v1/me/enrollments'),main(page).getByRole('button',{name:'Reservar vaga'}).click()]);
+  assert.equal(second.status(),201);
+  assert.equal(posts.length,3);assert.notEqual(posts[2].headers()['idempotency-key'],keys[0],'nova seleção, nova chave');
+  assert.deepEqual(posts[2].postDataJSON(),{cohortId:other});
+  await list.getByText('Pesquisa com usuárias').waitFor();
+  assert.equal(await list.locator('li').count(),2);
+  void later;
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
