@@ -1,6 +1,10 @@
-import json, unittest
+import hashlib, json, unittest
 
-from tests.ops.hostfixture import Host, COMMIT
+from tests.ops import harness
+from tests.ops.hostfixture import Host
+from tests.ops.test_state import PHASES, path_to
+
+cutover = harness.load_ops_module('cutover')
 
 
 class GateTestCase(unittest.TestCase):
@@ -48,6 +52,75 @@ class GateBasicsTests(GateTestCase):
         other['ci']['head_sha'] = 'e' * 40
         self.host.seal(other)
         self.assert_denied_before_any_effect(self.host.deploy(), 70)
+
+
+class GateDenialTests(GateTestCase):
+    def test_drift_in_any_installed_file_is_65_before_anything_else(self):
+        for name, change in {
+            'deploy.sh': lambda ops: ops.script.write_bytes(ops.script.read_bytes() + b'# drift\n'),
+            'helper': lambda ops: (ops.ops / 'manifest.py').write_bytes((ops.ops / 'manifest.py').read_bytes() + b'#\n'),
+            'cutover': lambda ops: (ops.ops / 'cutover.py').write_bytes((ops.ops / 'cutover.py').read_bytes() + b'#\n'),
+            'extra file': lambda ops: (ops.ops / 'extra.py').write_bytes(b'print(1)\n'),
+            'paths.env': lambda ops: (ops.ops / 'paths.env').write_bytes((ops.ops / 'paths.env').read_bytes() + b'#\n'),
+        }.items():
+            with self.subTest(name=name):
+                self.host = Host(self)
+                self.prepare()
+                change(self.host.ops)
+                self.assert_denied_before_any_effect(self.host.deploy(), 65)
+
+    def test_release_identity_and_migrations_must_equal_the_candidate(self):
+        self.prepare()
+        migrations = self.host.migrations()
+        self.assert_denied_before_any_effect(self.host.deploy(tree='f' * 40), 71)
+        self.assert_denied_before_any_effect(self.host.deploy(aggregate='f' * 64), 72)
+        self.assert_denied_before_any_effect(self.host.deploy(count=str(migrations['count'] + 1)), 72)
+        self.assertEqual(self.host.deploy().returncode, 0)
+
+    def test_squash_commit_with_the_tested_tree_passes_and_main_advance_does_not(self):
+        self.prepare()
+        self.assertEqual(self.host.deploy(commit='9' * 40).returncode, 0)
+        self.assert_denied_before_any_effect(self.host.deploy(commit='9' * 40, tree='8' * 40), 71)
+
+    def test_stage_outside_the_window_is_73(self):
+        for name, authorized, expires in (('expired', -7200, -3600), ('not started', 3600, 7200)):
+            with self.subTest(name=name):
+                self.host = Host(self)
+                self.host.seal(self.host.facts(authorized=authorized, expires=expires))
+                digest = hashlib.sha256((self.host.state_dir / 'candidate.json').read_bytes()).hexdigest()
+                cutover.State.create(self.host.state_dir, digest, '2026-10-23T12:00:00Z')
+                self.assert_denied_before_any_effect(self.host.deploy(), 73)
+
+
+class PhaseMatrixTests(GateTestCase):
+    def walk_to(self, phase):
+        state = cutover.State.load(self.host.state_dir, cutover.UNCHECKED)
+        for step in path_to(phase)[1:]:
+            state.transition(step, '2026-10-23T12:00:00Z')
+
+    def test_phase_by_operation_matrix(self):
+        outcomes = {}
+        for phase in PHASES:
+            self.host = Host(self)
+            self.prepare()
+            self.walk_to(phase)
+            result = self.host.deploy()
+            outcomes[phase] = result.returncode
+            if result.returncode:
+                self.assert_denied_before_any_effect(result, result.returncode)
+            else:
+                self.assertEqual(json.loads(result.stdout)['phase'], phase)
+        self.assertEqual(outcomes, {
+            'prepared': 0, 'frozen': 75, 'snapshotted': 75, 'imported': 75, 'activated': 75, 'smoke_ok': 75,
+            'pg_write_open': 0, 'aborted_pre_write': 75, 'recovering': 75})
+
+    def test_pg_write_open_is_a_release_and_ignores_the_stage_window(self):
+        self.host.seal(self.host.facts(authorized=-7200, expires=-3600))
+        digest = hashlib.sha256((self.host.state_dir / 'candidate.json').read_bytes()).hexdigest()
+        cutover.State.create(self.host.state_dir, digest, '2026-10-23T12:00:00Z')
+        self.walk_to('pg_write_open')
+        report = json.loads(self.host.deploy().stdout)
+        self.assertEqual((report['op'], report['phase']), ('release', 'pg_write_open'))
 
 
 if __name__ == '__main__':
