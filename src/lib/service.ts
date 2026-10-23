@@ -54,7 +54,7 @@ export function decide(token:string,body:unknown){
 }
 export function adminChange(token:string,body:unknown){
  const dto=legacyBody(body,['action','participantId','mentorId'],['participantId','mentorId']);
- return adapt(invoke<LegacyStatus>(sql`select internal.api_legacy_change(${digestOf(token)}, ${newRequestId()}::uuid, ${JSON.stringify(dto)}::jsonb) as r`),{cohortId:NEW_FLOW.reassign,participantId:NEW_FLOW.cancel});
+ return adapt(invoke<LegacyStatus>(sql`select internal.api_legacy_change(${digestOf(token)}, ${newRequestId()}::uuid, ${JSON.stringify(dto)}::jsonb) as r`),{cohortId:NEW_FLOW.reassign,...(dto.action==='cancel'&&dto.participantId!==undefined?{participantId:NEW_FLOW.cancel}:{})});
 }
 export type EventContentDto={description:string;venue:string;agenda:string;speakers:string;date:string;duration:string};
 /** Conteúdo textual do evento (não é Agenda): só admin, ator revalidado sob lock, DTO fechado e auditoria no banco. */
