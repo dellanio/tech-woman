@@ -13,7 +13,7 @@ import {sql} from 'drizzle-orm';
 import {invoke} from '../../src/lib/agenda';
 import {HttpError} from '../../src/lib/auth';
 import {tokenDigest} from '../../src/lib/db';
-import {withDb,withClients,connect,addParticipant,addMentor,linkFixture,mentorWithCohort,pidOf,waitLocked,EDITOR} from './agenda-harness';
+import {withDb,withClients,connect,addParticipant,addMentor,linkFixture,mentorWithCohort,pidOf,waitLocked,applyLocalGrants,EDITOR} from './agenda-harness';
 import {actorOf,as,code,etagOf,sameShape,snapshot,type Actor,type Reply} from './agenda-api-kit';
 
 const P='/api/v1/admin/participants',M='/api/v1/admin/mentors';
@@ -252,4 +252,32 @@ test('segurança SQL das operações: owner NOLOGIN e search_path fixo; runtime 
  }finally{await runtime.end();}
  const editor=await connect(url,EDITOR);
  try{await assert.rejects(editor.query('select internal.api_topic_list($1,null,20)',['a'.repeat(64)]),(e:{code?:string})=>e.code==='42501');}finally{await editor.end();}
+}));
+
+test('I3/M4 runtime sem DML livre de domínio (mesmo após grants-local): participant/mentor/match/tentativas/evento negados (identidade, token, e-mail, status, aprovação legada, DELETE físico, sequences), sem policy RLS do runtime, sem EXECUTE nos helpers nus; só leitura do conteúdo público da home',()=>withDb(async({db,url})=>{
+ await applyLocalGrants(db);
+ const p=await addParticipant(db,{userId:null,email:'legado@example.invalid'});const m=await addMentor(db);const u=await actorOf(db,['participant']);
+ await db.query("insert into email_attempt(participant_id,status) values($1,'mock-not-sent')",[p]);
+ const runtime=await connect(url,'techwoman_runtime');
+ try{
+  for(const [q,args] of [
+   ['select * from participant',[]],['select token_hash from participant',[]],['select email from mentor',[]],['select * from match',[]],['select * from email_attempt',[]],['select * from choice_email_attempt',[]],
+   ['update participant set user_id=$2 where id=$1',[p,u.id]],['update participant set legacy_access_revoked_at=null where id=$1',[p]],['update participant set token_hash=token_hash where id=$1',[p]],
+   ["update participant set email='x@example.invalid' where id=$1",[p]],['update participant set active=false where id=$1',[p]],['update participant set id=id where id=$1',[p]],['delete from participant where id=$1',[p]],
+   ["insert into participant(email,goal,moment,interests,skills,token_hash,consent_version) values('n@example.invalid','growth','working','[]','[]',repeat('a',64),'v1')",[]],
+   ['update mentor set user_id=$2 where id=$1',[m,u.id]],['update mentor set active=false where id=$1',[m]],['delete from mentor where id=$1',[m]],
+   ["insert into mentor(email,trajectory,specialties,availability,capacity) values('n@example.invalid','t','[]','a',1)",[]],
+   ["insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,0,'[]','approved','legacy')",[p,m]],["update match set status='approved'",[]],['delete from match',[]],
+   ["update email_attempt set status='sent'",[]],["insert into choice_email_attempt(participant_id,mentor_id,status) values($1,$2,'sent')",[p,m]],
+   ["update event_content set venue='x'",[]],["insert into event_content(id,description,venue,agenda,speakers,date,duration) values(1,'','','','','','')",[]],['delete from event_content',[]],['insert into demo_seed_state(id) values(1)',[]],
+   ["select nextval('participant_id_seq')",[]],["select nextval('mentor_id_seq')",[]],["select nextval('match_id_seq')",[]],
+   ["select internal.domain_protected('participant',$1)",[p]],['select internal.user_protected($1::uuid)',[u.id]],["select internal.lock_domain_owner('participant',$1)",[p]],
+  ] as [string,unknown[]][])await assert.rejects(runtime.query(q,args),(e:{code?:string})=>{assert.equal(e.code,'42501',q);return true;});
+  await runtime.query('select description,venue,agenda,speakers,date,duration from event_content');await runtime.query('select id from demo_seed_state');
+ }finally{await runtime.end();}
+ assert.equal((await db.query("select count(*)::int n from pg_policy where 'techwoman_runtime'::regrole=any(polroles)")).rows[0].n,0,'nenhuma policy RLS para o runtime');
+ assert.deepEqual((await db.query('select user_id,legacy_access_revoked_at,active from participant where id=$1',[p])).rows[0],{user_id:null,legacy_access_revoked_at:null,active:true});
+ // as operações do owner continuam usando os helpers (definers legítimos): leitura admin aplica a proteção por e-mail de admin
+ const admin=await actorOf(db,['admin'],{email:'LEGADO@example.invalid'.toLowerCase()});
+ assert.deepEqual([(await pGet(admin,p)).status,code(await pGet(admin,p))],[404,'NOT_FOUND'],'domain_protected segue aplicado pelas operações');
 }));

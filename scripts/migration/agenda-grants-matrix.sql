@@ -5,8 +5,8 @@
 -- e o guard de Agenda fica travado por instantes. Sucesso: NOTICE 'MATRIX OK' e exit 0. Falha: ERROR 'MATRIX FAIL: <item>' e exit != 0.
 -- Limites: SET ROLE dentro de sessão superusuária é checado contra a session user, por isso a negação de troca de role aqui é por pg_has_role
 -- (efetivo, com herança); o teste PG também tenta SET ROLE numa sessão LOGIN real. Acesso a outras bases, pg_hba, rede, pgAdmin e host NÃO são
--- atestados por esta matriz: são do OPS no host. Compatibilidade local WP-001 (grants-local.sql: DML do runtime em participant/mentor/match e
--- tentativas de e-mail legadas) não é afirmada nem negada aqui; o serviço não depende mais dela para Agenda/adaptadores.
+-- atestados por esta matriz: são do OPS no host. O runtime não tem DML nem SELECT direto de domínio (participant/mentor/match/tentativas legadas),
+-- nem policy RLS: tudo passa pelas operações SQL do owner; só lê event_content/demo_seed_state (home). Vale também depois de grants-local.sql.
 \set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -84,6 +84,8 @@ BEGIN
    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.proowner = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = r)));
  END LOOP;
  PERFORM pg_temp.matrix_check('nenhuma role techwoman_* com BYPASSRLS', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname LIKE 'techwoman%' AND rolbypassrls));
+ PERFORM pg_temp.matrix_check('nenhuma policy RLS concede linhas ao runtime/mailer', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_policy p JOIN pg_catalog.pg_roles r ON r.oid = ANY (p.polroles)
+  WHERE r.rolname IN ('techwoman_runtime','techwoman_mailer')));
  PERFORM pg_temp.matrix_check('FORCE RLS nas seis tabelas de Agenda/domínio', (SELECT count(*) FROM pg_catalog.pg_class c WHERE c.oid IN ('public.topic'::regclass, 'public.mentor_topic'::regclass,
   'public.cohort'::regclass, 'public.enrollment'::regclass, 'public.mentor'::regclass, 'public.participant'::regclass) AND c.relrowsecurity AND c.relforcerowsecurity) = 6);
  PERFORM pg_temp.matrix_check('nenhuma função SECURITY DEFINER sem search_path fixo pg_catalog, …, pg_temp', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
@@ -252,8 +254,8 @@ DECLARE q text; t text;
   'api_catalog_cohorts','api_catalog_mentor','api_catalog_mentors','api_cohort_create','api_cohort_get','api_cohort_list','api_cohort_update','api_enroll','api_legacy_change','api_legacy_decide','api_legacy_event_save',
   'api_legacy_overview','api_legacy_state','api_match_create','api_match_get','api_match_list','api_match_update','api_mentor_topic_create','api_mentor_topic_delete','api_mentor_topic_get','api_mentor_topic_list',
   'api_mentor_topic_reorder','api_mentor_topic_update','api_my_enrollment_cancel','api_my_enrollments','api_recommendations','api_topic_create','api_topic_get','api_topic_list','api_topic_update','consume_reset_token',
-  'domain_protected','idem_abort','idem_begin','idem_finish','identity_change_begin','identity_change_finish','identity_login_begin','identity_login_finish','identity_logout','identity_session_get','lock_domain_owner',
-  'rate_hit','register_mentor_account','register_participant_account','request_password_forgot','user_protected'];
+  'idem_abort','idem_begin','idem_finish','identity_change_begin','identity_change_finish','identity_login_begin','identity_login_finish','identity_logout','identity_session_get',
+  'rate_hit','register_mentor_account','register_participant_account','request_password_forgot'];
 BEGIN
  PERFORM pg_temp.matrix_reaches('runtime executa operação de Agenda (sessão inválida → AUTH_REQUIRED)', 'SELECT internal.api_topic_list(NULL, NULL, 20)', 'P0001');
  PERFORM pg_temp.matrix_reaches('runtime executa adaptador legado (sessão inválida → AUTH_REQUIRED)', 'SELECT internal.api_legacy_overview(NULL)', 'P0001');
@@ -262,8 +264,23 @@ BEGIN
  PERFORM pg_temp.matrix_check('runtime: funções fora da lista autorizada negadas', pg_temp.matrix_functions_denied(v_allowed) > 0);
  FOREACH t IN ARRAY ARRAY['public.app_user', 'public.user_role', 'public.auth_session', 'public.password_reset_token', 'public.email_job', 'public.email_delivery_attempt', 'public.api_idempotency', 'public.auth_rate_bucket',
   'public.audit_event', 'public.migration_run', 'public.migration_identity_link', 'public.migration_issue', 'legacy_snapshot.source_table', 'legacy_snapshot.source_row', 'internal.agenda_guard', 'internal.api_context',
-  'internal.schema_migration', 'public.topic', 'public.mentor_topic', 'public.cohort', 'public.enrollment'] LOOP
+  'internal.schema_migration', 'public.topic', 'public.mentor_topic', 'public.cohort', 'public.enrollment', 'public.participant', 'public.mentor', 'public.match', 'public.email_attempt',
+  'public.choice_email_attempt', 'public.participant_editor', 'public.mentor_editor'] LOOP
   PERFORM pg_temp.matrix_denied('runtime SELECT * ' || t, 'SELECT * FROM ' || t || ' LIMIT 1');
+ END LOOP;
+ PERFORM pg_temp.matrix_allowed('runtime lê o conteúdo público da home', 'SELECT (SELECT count(*) FROM public.event_content) + (SELECT count(*) FROM public.demo_seed_state)');
+ -- DML livre de domínio: identidade/token/e-mail/status/histórico protegido, aprovação legada, PK, DELETE físico e sequences
+ FOREACH q IN ARRAY ARRAY['SELECT token_hash FROM public.participant', 'SELECT email FROM public.participant', 'SELECT email FROM public.mentor', 'SELECT user_id FROM public.mentor',
+  format('UPDATE public.participant SET user_id = NULL WHERE id = %s', current_setting('matrix.p_free')), format('UPDATE public.participant SET legacy_access_revoked_at = NULL WHERE id = %s', current_setting('matrix.p_cand')),
+  'UPDATE public.participant SET token_hash = token_hash', 'UPDATE public.participant SET email = email', 'UPDATE public.participant SET active = active', 'UPDATE public.participant SET goal = goal', 'UPDATE public.participant SET id = id',
+  'DELETE FROM public.participant', 'INSERT INTO public.participant(email, goal, moment, interests, skills, token_hash, consent_version) VALUES ($x$r@example.invalid$x$, $x$growth$x$, $x$working$x$, $x$[]$x$, $x$[]$x$, $x$t$x$, $x$v$x$)',
+  format('UPDATE public.mentor SET user_id = NULL WHERE id = %s', current_setting('matrix.m_admin')), 'UPDATE public.mentor SET active = active', 'UPDATE public.mentor SET demo = demo', 'DELETE FROM public.mentor',
+  'INSERT INTO public.mentor(email, trajectory, specialties, availability, capacity) VALUES ($x$r@example.invalid$x$, $x$t$x$, $x$[]$x$, $x$a$x$, 1)',
+  format('INSERT INTO public.match(participant_id, mentor_id, score, reasons, status, origin) VALUES (%s, %s, 0, $x$[]$x$, $x$approved$x$, $x$legacy$x$)', current_setting('matrix.p_free'), current_setting('matrix.m_free')),
+  'UPDATE public.match SET status = status', 'DELETE FROM public.match', 'UPDATE public.email_attempt SET status = status', 'UPDATE public.choice_email_attempt SET status = status',
+  'INSERT INTO public.email_attempt(participant_id, status) VALUES (1, $x$sent$x$)', 'UPDATE public.event_content SET venue = venue', 'DELETE FROM public.event_content',
+  'INSERT INTO public.demo_seed_state(id) VALUES (1)', 'SELECT nextval(''public.participant_id_seq'')', 'SELECT nextval(''public.mentor_id_seq'')', 'SELECT nextval(''public.match_id_seq'')'] LOOP
+  PERFORM pg_temp.matrix_denied('runtime DML/leitura livre de domínio', q);
  END LOOP;
  FOREACH q IN ARRAY ARRAY['SELECT password_hash, temporary_password_hash FROM public.app_user', 'SELECT token_hash FROM public.auth_session', 'SELECT token_hash FROM public.password_reset_token',
   'INSERT INTO public.topic(slug, name) VALUES ($x$matrix-r$x$, $x$x$x$)', 'UPDATE public.cohort SET capacity = capacity', 'UPDATE public.enrollment SET status = status', 'DELETE FROM public.mentor_topic',

@@ -87,13 +87,18 @@ test('cancelar (inclusive após o início) e reativar (só futura) mantêm cance
  assert.ok(Date.now()-stamp.getTime()<60e3,'cancelled_at é o instante do cancelamento, não valor do cliente');
 }));
 
-test('match de reserva só muda pelos efeitos da inscrição: DML direto (runtime legado) não dessincroniza; score/FKs/origem imutáveis; legado segue editável no status', ()=>withDb(async ({db,url})=>{
+test('match de reserva só muda pelos efeitos da inscrição: DML direto (dono da tabela; o runtime nem tem DML) não dessincroniza; score/FKs/origem imutáveis; legado segue editável no status', ()=>withDb(async ({db,url})=>{
  await applyLocalGrants(db);
  const mentor=await addMentor(db),c=await addCohort(db,await addMentorTopic(db,mentor,await addTopic(db)),{from:0});const p=await addParticipant(db),q=await addParticipant(db);
  const e=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[p,c])).rows[0].id;
  const legacy=(await db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,3,'[]','approved','legacy') returning id::text",[q,mentor])).rows[0].id;
  const before=(await db.query('select m::text from match m where enrollment_id=$1',[e])).rows[0].m;
+ // WP-003 I3: o runtime não tem DML de match (nem com os grants locais); a fixture de DML direto roda explicitamente como dono da tabela
  await withClients(url,['techwoman_runtime'],async r=>{
+  await pgFails(r.query("update match set status='rejected' where id=$1",[legacy]),'42501');
+  await pgFails(r.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,0,'[]','approved','legacy')",[q,mentor]),'42501');
+ });
+ await withClients(url,[undefined],async r=>{
   for(const sql of ["update match set status='cancelled' where enrollment_id=$1","update match set enrollment_id=null where enrollment_id=$1","update match set score=99 where enrollment_id=$1"])
    await pgFails(r.query(sql,[e]),'23514','agenda_match_managed');
   await pgFails(r.query("insert into match(participant_id,mentor_id,score,reasons,status,origin,enrollment_id) values($1,$2,0,'[]','selected','current',$3)",[q,mentor,e]),'23514','agenda_match_managed');

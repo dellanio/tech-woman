@@ -37,10 +37,10 @@ test('predicado de proteção: admin/team, multi-perfil, candidato NULL, víncul
  assert.equal(await dom('unknown',1),true,'tabela desconhecida é conservadoramente protegida');
  const fns=(await db.query("select p.proname,p.prosecdef,p.proconfig::text cfg,has_function_privilege('public',p.oid,'execute') pub,has_function_privilege('techwoman_runtime',p.oid,'execute') rt,has_function_privilege('techwoman_mailer',p.oid,'execute') ml,pg_get_function_result(p.oid) res from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='internal' and p.proname in ('user_protected','domain_protected','privileged_email_keys')")).rows;
  assert.equal(fns.length,3);
- for(const f of fns){assert.equal(f.prosecdef,true,f.proname);assert.match(f.cfg,/search_path=pg_catalog, pg_temp/);assert.equal(f.pub,false);assert.equal(f.ml,false);assert.equal(f.rt,f.proname!=='privileged_email_keys',f.proname);}
+ for(const f of fns){assert.equal(f.prosecdef,true,f.proname);assert.match(f.cfg,/search_path=pg_catalog, pg_temp/);assert.equal(f.pub,false);assert.equal(f.ml,false);assert.equal(f.rt,false,`${f.proname}: helper nu sem EXECUTE do runtime (WP-003 M4; operações SQL o usam como definer)`);}
  assert.equal(fns.filter(f=>f.proname!=='privileged_email_keys').every(f=>f.res==='boolean'),true,'só boolean');
- assert.deepEqual(await asRole(db,'techwoman_runtime','select internal.user_protected($1::uuid) p',[admin.id]),[{p:true}]);
- assert.deepEqual(await asRole(db,'techwoman_runtime',"select internal.domain_protected('participant',30) p"),[{p:true}]);
+ assert.equal(await asRole(db,'techwoman_runtime','select internal.user_protected($1::uuid) p',[admin.id]),null);
+ assert.equal(await asRole(db,'techwoman_runtime',"select internal.domain_protected('participant',30) p"),null);
  assert.equal(await asRole(db,'techwoman_runtime','select * from migration_identity_link'),null);
  assert.equal(await asRole(db,'techwoman_runtime','select * from internal.privileged_email_keys()'),null);
 }));

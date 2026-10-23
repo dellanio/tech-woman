@@ -218,7 +218,7 @@ test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASC
 }));
 
 const AGENDA_TABLES=['topic','mentor_topic','cohort','enrollment','mentor','participant'];
-test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado nem candidato privilegiado sem user_id; validador e runtime veem o conjunto integral', ()=>withDb(async ({db,url})=>{
+test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado nem candidato privilegiado sem user_id; validador vê o conjunto integral; runtime sem acesso direto', ()=>withDb(async ({db,url})=>{
  const admin=await addUser(db,{roles:['admin','mentor','participant']});const team=await addUser(db,{roles:['team']});
  const adminMentor=await addMentor(db,{userId:admin.id}),adminParticipant=await addParticipant(db,{userId:admin.id});
  const sameEmailMentor=await addMentor(db,{email:` ${team.email.toUpperCase()} `});
@@ -250,8 +250,8 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,full]),'23514','agenda_capacity_exceeded');
-  assert.equal((await runtime.query('select count(*)::int n from participant')).rows[0].n,4,'runtime aplica a exclusão no serviço, não perde linhas');
-  assert.equal((await runtime.query('select count(*)::int n from mentor')).rows[0].n,3);
+  // WP-003 I3: o runtime não lê nem escreve domínio direto (nem com os grants locais): só pelas operações SQL do owner, que veem o conjunto integral
+  for(const sql of ['select count(*) from participant','select count(*) from mentor',"update participant set goal='growth' where id=$1"])await pgFails(runtime.query(sql,sql.includes('$1')?[participant]:[]),'42501');
  });
  assert.equal((await db.query("select string_agg(t::text,'|' order by t::text) s from (select p::text from participant p union all select m::text from mentor m) x(t)")).rows[0].s,before,'nenhuma mutação em linha protegida');
  assert.equal((await db.query("select count(*)::int n from enrollment where status='active'")).rows[0].n,2);

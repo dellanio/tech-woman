@@ -67,6 +67,9 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    {const self=(await c.query('select current_user u')).rows[0].u;if(self!==role)await denied(c,`set role ${role}`);}
   assert.equal((await runtime.query('select internal.api_legacy_state(null) r')).rows[0].r,null);
   await denied(runtime,'select * from app_user');await denied(runtime,'select * from topic');await denied(mailer,'select * from email_job');
+  // I3: nem os grants locais reabrem DML/leitura de domínio para o runtime (só a home: event_content/demo_seed_state)
+  for(const q of ['select * from participant','update participant set user_id=null','select * from mentor','select * from match',"insert into match(participant_id,mentor_id,score,reasons,status,origin) values(1,1,0,'[]','approved','legacy')"])await denied(runtime,q);
+  await runtime.query('select * from event_content');await runtime.query('select * from demo_seed_state');
   await migrator.query('set role techwoman_owner');await denied(migrator,'select * from app_user');await migrator.query('reset role');
   // fluxos reais sob migradora não superusuária: helpers do owner (sessão, lock de contas, conta nova, lock de domínio) e função WP-002 que chama lock_users
   const adminId=randomUUID(),target=randomUUID(),digest=tokenDigest(newSessionToken()),hash='a'.repeat(64);
@@ -92,6 +95,9 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    ['grant select on public.auth_session to techwoman_runtime','revoke select on public.auth_session from techwoman_runtime'],
    ['alter table public.cohort no force row level security','alter table public.cohort force row level security'],
    ['alter function internal.api_legacy_state(text) reset search_path','alter function internal.api_legacy_state(text) set search_path = pg_catalog, pg_temp'],
+   ['grant select, update on public.participant to techwoman_runtime','revoke select, update on public.participant from techwoman_runtime'],
+   ['grant execute on function internal.domain_protected(text,bigint) to techwoman_runtime','revoke execute on function internal.domain_protected(text,bigint) from techwoman_runtime'],
+   ['create policy matrix_runtime on public.participant for select to techwoman_runtime using (true)','drop policy matrix_runtime on public.participant'],
    ['alter function internal.lock_user_set(uuid[]) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.lock_user_set(uuid[]) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
   ] as const){
    await migrator.query(grant);
