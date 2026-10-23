@@ -53,7 +53,7 @@ def run_script(path, stdin, extra_env=None):
             env['SYSTEMROOT'] = os.environ.get('SYSTEMROOT', 'C:/Windows')
         env.update(extra_env or {})
         # Git Bash prepends /usr/bin at startup; reset PATH inside so only the fakes shadow host tools.
-        launcher = 'PATH="$TW_PATH"; exec bash "$1"'
+        launcher = 'export PATH="$TW_PATH"; exec bash "$1"'
         completed = subprocess.run([BASH, '--noprofile', '--norc', '-c', launcher, 'tw-launcher',
                                     pathlib.Path(path).as_posix()], input=stdin.encode('utf-8'),
                                    capture_output=True, env=env)
