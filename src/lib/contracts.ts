@@ -52,3 +52,9 @@ export type RegistrationReceived={status:'received';next:'check_email'};
 export type LoginState={state:'authenticated'|'password_change_required'};
 export type SessionDto={user:{id:string;email:string;roles:Role[]};state:'authenticated'|'password_change_required';expiresAt:string};
 export type LegacyMatchDto={id:SqlId;mentorId:SqlId;status:string;origin:'legacy';enrollmentId:null};
+/** Stubs RED (WP-002 Task 2): substituídos no GREEN. */
+export const registrationReceived: RegistrationReceived = { status: 'received', next: 'check_email' };
+export type ForgotReceived = { status: 'received' };
+export const parsePasswordForgot = (_value: unknown): { email: string } => ({ email: '' });
+export const parseParticipantProfile = (_value: unknown): Omit<ParticipantRegistration, 'email'> => ({ goal: 'growth', moment: 'working', interests: [], skills: [], area: 'dados', consent: true });
+export const parseMentorProfile = (_value: unknown): Omit<MentorRegistration, 'email'> => ({ displayName: '', trajectory: '', specialties: [], availability: '', legacyCapacity: 1, consent: true });
