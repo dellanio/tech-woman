@@ -150,7 +150,7 @@ maintenance page kept”); no `abort` a fase não muda e o SQLite continua prote
   é alegado — restaurar um dump antigo é decisão explícita do operador (`decision_ref`).
 - Schema: dump/restore re-analisa CHECKs (achata `AND` aninhados), então a base viva é comparada depois de UM round trip
   `pg_dump --schema-only` → base scratch `<db>_canon_<ts>` → impressão (scratch e dump temporário removidos pela própria
-  ferramenta). Nada é apagado do texto além de comentários e da linha `estrict`: `a AND (b OR c)` ≠ `(a AND b) OR c`
+  ferramenta). Nada é apagado do texto além de comentários e da linha `\restrict`: `a AND (b OR c)` ≠ `(a AND b) OR c`
   (provado em PG16: CHECK reagrupado com os mesmos dados ⇒ `schema_equal:false`, 86). Bases `<db>_restore_*` ficam para
   inspeção; o operador as remove.
 
