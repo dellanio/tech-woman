@@ -24,13 +24,15 @@ case "$sub" in
     if [[ -f "$d/$sub.rc.$n" ]]; then exit "$(cat "$d/$sub.rc.$n")"; fi
     exit "$(rc_of "$sub.rc" 0)" ;;
   run)
-    ep='' detached=false
+    ep='' detached=false mount='' workdir=''
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --rm|-i) shift ;;
         -d) detached=true; shift ;;
         --network|--entrypoint|--name|--memory|--cpus|--env-file|--ip|--network-alias|--mount|--log-opt|--restart|--workdir|-e|--user)
           [[ "$1" == --entrypoint ]] && ep=$2
+          [[ "$1" == --mount ]] && mount=$2
+          [[ "$1" == --workdir ]] && workdir=$2
           shift 2 ;;
         -*) shift ;;
         *) break ;;
@@ -38,6 +40,21 @@ case "$sub" in
     done
     shift  # image reference
     if [[ "$detached" == true ]]; then exit "$(rc_of run-d.rc 0)"; fi
+    # Rehearsal: one-shot node containers (migrator, importer, baseline) run the REAL scripts of this checkout
+    # ($TW_FAKE_REPO stands for /tools) against the test PostgreSQL; the snapshot bind mount is mapped back.
+    if [[ "$ep" == node && -f "$d/node-passthrough" && "$workdir" == /tools ]]; then
+      src='' dst=''
+      IFS=, read -ra parts <<< "$mount"
+      for part in "${parts[@]}"; do
+        [[ "$part" == src=* ]] && src=${part#src=}
+        [[ "$part" == dst=* ]] && dst=${part#dst=}
+      done
+      args=()
+      for arg in "$@"; do
+        if [[ -n "$dst" && "$arg" == "$dst"/* ]]; then args+=("$src${arg#"$dst"}"); else args+=("$arg"); fi
+      done
+      cd "$TW_FAKE_REPO" && exec node "${args[@]}"
+    fi
     case "$ep" in
       test)
         if [[ "$1" == '!' ]]; then exists "$3" && exit 1 || exit 0; fi
