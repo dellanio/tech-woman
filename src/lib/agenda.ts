@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseMentorPatch, parseMentorRegistration, parseParticipantPatch, parseParticipantRegistration, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -42,6 +42,7 @@ function constraintError(name: string, operation: Operation): HttpError | null {
     case 'agenda_invalid_transition': return new HttpError('INVALID_INPUT', ['status']);
     case 'agenda_immutable': return new HttpError('INVALID_INPUT');
     case 'topic_slug_unique': return new HttpError('INVALID_INPUT', ['slug']);
+    case 'app_user_email_key_unique': return new HttpError('EMAIL_UNAVAILABLE');
     default: return null;
   }
 }
@@ -155,3 +156,25 @@ export function enroll(token: string, idem: Idempotent, body: unknown) {
 }
 export const cancelOwnEnrollment = (token: string, id: string) =>
   invoke<EnrollmentDto>(sql`select internal.api_my_enrollment_cancel(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint) as r`, 'enroll');
+
+// ---- CRUD administrativo de participantes e mentoras (admin escreve, team lê; protegidos = 404) ----
+export type DomainKind = 'participant' | 'mentor';
+export type AdminParticipantDto = { id: string; email: string; goal: string; moment: string; interests: string[]; skills: string[]; area: string | null; otherArea?: string; active: boolean; userId: string | null; version: string };
+export type AdminMentorDto = { id: string; email: string; displayName: string | null; trajectory: string; specialties: string[]; availability: string; legacyCapacity: number; active: boolean; demo: boolean; userId: string | null; version: string };
+export type AdminDomainDto<K extends DomainKind> = K extends 'participant' ? AdminParticipantDto : AdminMentorDto;
+export const listDomain = <K extends DomainKind>(token: string, kind: K, query: ListQuery) =>
+  page<AdminDomainDto<K>>(query, (after, limit) => sql`select internal.api_admin_domain_list(${digestOf(token)}, ${kind}, ${after}::bigint, ${limit}) as r`);
+export const getDomain = <K extends DomainKind>(token: string, kind: K, id: string) =>
+  invoke<AdminDomainDto<K>>(sql`select internal.api_admin_domain_get(${digestOf(token)}, ${kind}, ${routeId(id)}::bigint) as r`);
+/** POST: DTO público de cadastro (com consent:true) + conta pendente criada na mesma transação. */
+export function createDomain<K extends DomainKind>(token: string, kind: K, idem: Idempotent, body: unknown) {
+  const dto = kind === 'participant' ? parseParticipantRegistration(body) : parseMentorRegistration(body);
+  return invoke<AdminDomainDto<K>>(sql`select internal.api_admin_domain_create(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${kind}, ${JSON.stringify(dto)}::jsonb) as r`);
+}
+export function updateDomain<K extends DomainKind>(token: string, kind: K, id: string, version: string, body: unknown) {
+  const patch = kind === 'participant' ? parseParticipantPatch(body) : parseMentorPatch(body);
+  return invoke<AdminDomainDto<K>>(sql`select internal.api_admin_domain_update(${digestOf(token)}, ${newRequestId()}::uuid, ${kind}, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${JSON.stringify(patch)}::jsonb, 'update') as r`);
+}
+/** DELETE = desativar (soft); reservas ativas → 409 até cancelamento explícito. */
+export const deactivateDomain = <K extends DomainKind>(token: string, kind: K, id: string, version: string) =>
+  invoke<AdminDomainDto<K>>(sql`select internal.api_admin_domain_update(${digestOf(token)}, ${newRequestId()}::uuid, ${kind}, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${'{"active":false}'}::jsonb, 'deactivate') as r`);

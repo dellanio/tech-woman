@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import type {Pool} from 'pg';
 import * as participants from '../../src/app/api/v1/admin/participants/route';
 import * as participantOne from '../../src/app/api/v1/admin/participants/[id]/route';
 import * as mentors from '../../src/app/api/v1/admin/mentors/route';
@@ -18,7 +19,7 @@ const pPatch=(a:Actor,id:string,body:unknown,version?:string)=>as(a).send(partic
 const pDel=(a:Actor,id:string,version?:string)=>as(a).send(participantOne.DELETE,`${P}/${id}`,{method:'DELETE',params:{id},version});
 
 /** Domínios protegidos: admin multi-perfil vinculado, mentora/participante com e-mail de admin (sem vínculo) e candidato privilegiado com user_id NULL. */
-async function protectedFixtures(db:Parameters<typeof addParticipant>[0]){
+async function protectedFixtures(db:Pool){
  const {link}=await linkFixture(db);
  const multi=await actorOf(db,['admin','participant','mentor'],{email:'multi@example.invalid'});
  const pAdmin=await addParticipant(db,{userId:multi.id,email:'multi@example.invalid'});const mAdmin=await addMentor(db,{userId:multi.id,email:'multi@example.invalid'});
