@@ -161,6 +161,26 @@ class SqlChecksTests(PreflightWorld):
         self.assertEqual({i: report[i]['status'] for i in SQL_IDS}, {i: 'fail' for i in SQL_IDS})
 
 
+class BackupRoleTests(PreflightWorld):
+    def test_the_documented_backup_role_coexists_with_a_green_preflight(self):
+        """The pre-release pg_dump needs BYPASSRLS (Agenda tables use RLS); the WP-003 matrix forbids BYPASSRLS on any
+        techwoman_* role. The production TW_PG_DUMP_USER must satisfy both."""
+        production = dict(line.split('=', 1) for line in (ROOT / 'ops/paths.env').read_text().splitlines()
+                          if line and not line.startswith('#'))
+        role = production['TW_PG_DUMP_USER']
+        self.assertRegex(role, r'^[a-z_][a-z0-9_]*$')
+        self.cluster.psql('postgres', "do $$ begin if not exists (select 1 from pg_roles where rolname='%s') then "
+                                      "create role %s login bypassrls; end if; end $$; grant pg_read_all_data to %s"
+                          % (role, role, role))
+        self.addCleanup(self.cluster.psql, 'postgres', 'drop role if exists %s' % role)
+        done = self.preflight()
+        report = self.report(done)
+        self.assertEqual({i: report[i]['status'] for i in SQL_IDS}, {i: 'pass' for i in SQL_IDS}, report['PF-COLGRANT'])
+        dump = subprocess.run(['pg_dump', '-Fc', '-U', role, '-d', self.db], env=self.cluster.env(), capture_output=True)
+        self.assertEqual(dump.returncode, 0, dump.stderr[-300:])
+        self.assertTrue(dump.stdout.startswith(b'PGDMP'))
+
+
 class RestoreCheckTests(PreflightWorld):
     def test_pf_restore_restores_the_newest_daily_dump_in_isolation_and_proves_the_schema(self):
         dump = self.host.ops.host / 'backups' / 'daily-20261023.dump'
