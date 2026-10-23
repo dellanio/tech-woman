@@ -221,15 +221,15 @@ class State:
         _check_journal(entries, raw_lines, data, state_bytes)
         return cls(directory, data)
 
-    def transition(self, target, now):
+    def transition(self, target, now, **updates):
         if (self.phase, target) not in TRANSITIONS:
             raise StateError(75, 'transition %s -> %s is not allowed' % (self.phase, target))
-        data = dict(self.data, seq=self.seq + 1, prev_sha256=self._last_entry_sha(), phase=target)
+        data = dict(self.data, seq=self.seq + 1, prev_sha256=self._last_entry_sha(), phase=target, **updates)
         self._commit(data, self.phase, now)
 
 
 HERE = pathlib.Path(__file__).resolve().parent
-PATH_KEYS = {'TW_ENV_DIR', 'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
+PATH_KEYS = {'TW_BASH', 'TW_ENV_DIR', 'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
              'TW_STATE_MODE_CHECK'}
 
 
@@ -333,7 +333,68 @@ def cmd_phase(paths):
         print('unreadable')
 
 
-COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status, 'phase': cmd_phase}
+ATTESTATION_KEYS = ['candidate_sha256', 'digest', 'migrations_aggregate', 'migrations_count', 'phase',
+                    'release_commit', 'release_tree', 'script_sha256']
+
+
+def _read_attestation(text):
+    """Strict parse of the report printed by deploy.sh stage; shape problems are exit 64."""
+    try:
+        report = json.loads(text)
+        attestation = report['attestation']
+    except (ValueError, KeyError, TypeError):
+        raise StateError(64, 'attestation is not valid JSON from deploy.sh stage')
+    if type(report) is not dict or sorted(report) != ['attestation', 'stage'] or report['stage'] != 'verified' \
+            or type(attestation) is not dict or sorted(attestation) != ATTESTATION_KEYS:
+        raise StateError(64, 'attestation has an unexpected shape')
+    sha1, sha256 = re.compile(r'\A[0-9a-f]{40}\Z'), HEX64
+    if not (re.match(r'\Asha256:[0-9a-f]{64}\Z', str(attestation['digest']))
+            and all(type(attestation[k]) is str and sha1.match(attestation[k]) for k in ('release_commit', 'release_tree'))
+            and all(type(attestation[k]) is str and sha256.match(attestation[k])
+                    for k in ('candidate_sha256', 'migrations_aggregate', 'script_sha256'))
+            and _is_int(attestation['migrations_count']) and attestation['migrations_count'] > 0
+            and attestation['phase'] == 'prepared'):
+        raise StateError(64, 'attestation has invalid values')
+    return attestation
+
+
+def cmd_register_stage(paths):
+    """Operator side of stage: re-verify the staged image locally, then record it. deploy.sh never writes state."""
+    import subprocess
+    attestation = _read_attestation(sys.stdin.read(65536))
+    manifest = _manifest()
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != 'prepared':
+        raise StateError(75, 'phase %s does not accept a staged image' % state.phase)
+    candidate = _sealed_candidate(paths, manifest)
+    sealed = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
+    if sealed != state.candidate_sha256 or attestation['candidate_sha256'] != sealed:
+        raise StateError(70, 'attestation is not for the candidate recorded by prepare')
+    if attestation['script_sha256'] != candidate['deploy_script_sha256']:
+        raise StateError(65, 'attestation was produced by a different deploy.sh')
+    if attestation['release_tree'] != candidate['tested_tree']:
+        raise StateError(71, 'release tree is not the tested tree')
+    migrations = candidate['migrations']
+    if attestation['migrations_aggregate'] != migrations['aggregate_sha256'] \
+            or attestation['migrations_count'] != migrations['count']:
+        raise StateError(72, 'migrations differ from the sealed candidate')
+    window = candidate['window']
+    now = _now()
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    image = 'ghcr.io/dellanio/tech-woman@' + attestation['digest']
+    done = subprocess.run([paths['TW_BASH'], (HERE / 'verify-image.sh').as_posix(), image, attestation['release_commit'],
+                           attestation['migrations_aggregate'], str(attestation['migrations_count'])],
+                          capture_output=True, encoding='utf-8', errors='replace')
+    if done.returncode != 0:
+        raise StateError(done.returncode, 'operator re-verification failed: ' + done.stderr.strip()[:200])
+    state.transition('prepared', now, staged={'digest': attestation['digest'],
+                                              'release_commit': attestation['release_commit'],
+                                              'release_tree': attestation['release_tree'], 'at': now})
+    print(json.dumps({'phase': 'prepared', 'staged': attestation['digest']}))
+
+
+COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status, 'phase': cmd_phase, 'register-stage': cmd_register_stage}
 
 
 def main(argv):

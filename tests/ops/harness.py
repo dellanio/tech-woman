@@ -87,6 +87,7 @@ class StagedOps:
             "TW_APP_DIR='%s'" % (self.host / 'app').as_posix(),
             "TW_ENV_DIR='%s'" % self.env_dir.as_posix(),
             "TW_PYTHON='%s'" % _posix(sys.executable),
+            "TW_BASH='%s'" % BASH,
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
             'TW_STATE_OWNER_UID=%d' % (os.getuid() if os.name == 'posix' else 0),
             'TW_STATE_MODE_CHECK=%d' % (1 if os.name == 'posix' else 0), '']).encode('utf-8')))

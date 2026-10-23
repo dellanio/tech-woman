@@ -16,8 +16,8 @@ def stamp(offset_seconds):
 
 
 def run_py(*args, stdin=None, env=None):
-    return subprocess.run([sys.executable, '-I', *map(str, args)], input=stdin, text=True, capture_output=True,
-                          env=env)
+    return subprocess.run([sys.executable, '-I', *map(str, args)], input=stdin, capture_output=True, encoding='utf-8',
+                          errors='replace', env=env)
 
 
 class Host:
