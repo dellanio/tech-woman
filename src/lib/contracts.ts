@@ -119,3 +119,9 @@ export const canonicalHash=(value:unknown)=>createHash('sha256').update(JSON.str
 export const parsePasswordChange=(value:unknown)=>{const p=object(value,['currentPassword','newPassword']);if(typeof p.currentPassword!=='string'||p.currentPassword.length<1||p.currentPassword.length>1024)throw new ContractError(['currentPassword']);if(typeof p.newPassword!=='string'||[...p.newPassword].length<12||[...p.newPassword].length>128)throw new ContractError(['newPassword']);return {currentPassword:p.currentPassword,newPassword:p.newPassword};};
 export const parseIdempotencyKey=(value:string|null):string=>{if(!isUuid(value))throw new ContractError(['Idempotency-Key']);return value.toLowerCase();};
 export type SessionPublicDto=SessionDto|{state:'password_change_required';expiresAt:string};
+
+/** POST antigo de mentora: `capacity` (sem displayName obrigatório). Mesmos limites do contrato v1; fecha campos desconhecidos. */
+export function parseLegacyMentorRegistration(value:unknown):{email:string;displayName:string|null;trajectory:string;specialties:Tag[];availability:string;legacyCapacity:number;consent:true}{
+ const p=object(value,['email','displayName','trajectory','specialties','availability','capacity','consent']);
+ return {email:email(p.email),displayName:p.displayName===undefined?null:text(p.displayName,'displayName',1,120),trajectory:text(p.trajectory,'trajectory',1,1000),specialties:list(p.specialties,tags,3,'specialties'),availability:text(p.availability,'availability',1,300),legacyCapacity:integer(p.capacity,1,50,'capacity'),consent:consent(p.consent)};
+}

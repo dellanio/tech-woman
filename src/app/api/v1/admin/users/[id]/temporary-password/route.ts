@@ -1,3 +1,11 @@
-// RED stub (WP-002 Task 3 slice C): sem comportamento.
+import { assertOk, resendTemporary } from '@/lib/accounts';
+import { handle, idempotencyKey, ok, readJson, requireSession } from '@/lib/auth';
+import { parseTemporaryPasswordRequest } from '@/lib/contracts';
 export const runtime = 'nodejs';
-export async function POST(): Promise<Response> { return new Response(null, { status: 501 }); }
+/** Enfileira nova senha temporária (intenção sem segredo). 202 `{jobId,status:'queued'}`; nunca devolve senha. */
+export const POST = handle<{ id: string }>(async (request, { id }) => {
+  const { token } = await requireSession(request, { mutation: true, roles: ['admin'] });
+  parseTemporaryPasswordRequest(await readJson(request));
+  const result = assertOk(await resendTemporary(token, id, idempotencyKey(request)));
+  return ok(result.job, 202);
+});

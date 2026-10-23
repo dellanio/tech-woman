@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { isSessionToken } from './identity';
-import { parseParticipantRegistration, parseMentorRegistration, parseParticipantProfile, parseMentorProfile, registrationReceived, canonicalHash, type RegistrationReceived } from './contracts';
+import { parseParticipantRegistration, parseMentorRegistration, parseParticipantProfile, parseMentorProfile, parseLegacyMentorRegistration, registrationReceived, canonicalHash, type RegistrationReceived } from './contracts';
 
 export class RegistrationClosedError extends Error { readonly code = 'REGISTRATION_CLOSED'; readonly status = 403; constructor() { super('Cadastro de mentoras encerrado.'); } }
 /** Mesmo default e semântica de service.ts (MENTOR_DEADLINE), lido a cada chamada. */
@@ -37,6 +37,13 @@ export async function registerMentor(input: unknown, idem?: PublicIdempotency): 
   if (!mentorRegistrationOpen()) throw new RegistrationClosedError();
   const p = parseMentorRegistration(input);
   await withIdempotency(idem, '/api/v1/registrations/mentors', p, db => db.execute(sql`select internal.register_mentor_account(${p.email},${p.displayName},${p.trajectory},${JSON.stringify(p.specialties)}::jsonb,${p.availability},${p.legacyCapacity})`));
+  return received();
+}
+
+/** Adapter do cadastro antigo de mentora (sem displayName → NULL; projeções usam o fallback "Mentora #id"). `p` já passou pelo parser fechado do contrato antigo. */
+export async function registerLegacyMentor(p: ReturnType<typeof parseLegacyMentorRegistration>): Promise<RegistrationReceived> {
+  if (!mentorRegistrationOpen()) throw new RegistrationClosedError();
+  await getDb().execute(sql`select internal.register_mentor_account(${p.email},${p.displayName},${p.trajectory},${JSON.stringify(p.specialties)}::jsonb,${p.availability},${p.legacyCapacity})`);
   return received();
 }
 

@@ -2,6 +2,7 @@
 import { sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
+import { HttpError } from './auth';
 import { IdentityError, isSessionToken } from './identity';
 import { participantArea } from './registration';
 import { canonicalHash, encodeCursor, isUuid, parseAdminUserCreate, parseAdminUserPatch, parseListQuery, type TemporaryPasswordQueued, type UserDto, type Role } from './contracts';
@@ -76,4 +77,19 @@ export async function createAccount(token: string, idempotencyKey: string, dto: 
   const participant = parsed.participant ? JSON.stringify({ goal: parsed.participant.goal, moment: parsed.participant.moment, interests: parsed.participant.interests, skills: parsed.participant.skills, area: participantArea(parsed.participant.area, parsed.participant.otherArea) }) : null;
   const mentor = parsed.mentor ? JSON.stringify({ displayName: parsed.mentor.displayName, trajectory: parsed.mentor.trajectory, specialties: parsed.mentor.specialties, availability: parsed.mentor.availability, legacyCapacity: parsed.mentor.legacyCapacity }) : null;
   return single((await rows(sql`select * from internal.admin_user_create(${digest},${idempotencyKey.toLowerCase()}::uuid,${canonicalHash(parsed)},${parsed.email},${`{${parsed.roles.join(',')}}`}::text[],${participant}::jsonb,${mentor}::jsonb,${requestUuid(requestId)}::uuid)`))[0]);
+}
+
+/** Desfecho SQL → erro HTTP. Protegido e inexistente já chegam como o mesmo `not_found`. */
+export function assertOk(result: AccountResult): AccountResult {
+  switch (result.outcome) {
+    case 'ok': return result;
+    case 'auth_required': throw new HttpError('AUTH_REQUIRED');
+    case 'forbidden': throw new HttpError('FORBIDDEN');
+    case 'version_mismatch': throw new HttpError('VERSION_MISMATCH');
+    case 'email_unavailable': throw new HttpError('EMAIL_UNAVAILABLE');
+    case 'conflict_active': throw new HttpError('COHORT_IN_USE', [], {}, 'Há reservas ativas; cancele-as antes de continuar.');
+    case 'invalid': throw new HttpError('INVALID_INPUT');
+    case 'idempotency_conflict': throw new HttpError('IDEMPOTENCY_CONFLICT');
+    default: throw new HttpError('NOT_FOUND');
+  }
 }

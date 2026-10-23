@@ -46,7 +46,7 @@ test('leitura HTTP: coleção paginada e GET por ID só de contas comuns; proteg
  assert.equal((await get(team,a.id)).status,200);assert.equal((await call(users.GET,LIST,{cookie:team.token})).status,200);
  const plain=await actorOf(db,['participant']);
  assert.deepEqual([(await call(users.GET,LIST,{cookie:plain.token})).status,code(await get(plain,a.id))],[403,'FORBIDDEN']);
- const limited=await sessionFor(db,a.id,'password_change');
+ await db.query('update app_user set must_change_password=true where id=$1',[a.id]);const limited=await sessionFor(db,a.id,'password_change');
  assert.equal(code(await call(users.GET,LIST,{cookie:limited})),'PASSWORD_CHANGE_REQUIRED');assert.equal(code(await call(user.GET,`${LIST}/${a.id}`,{cookie:limited,params:{id:a.id}})),'PASSWORD_CHANGE_REQUIRED');
  assert.deepEqual([(await call(users.GET,LIST)).status,(await call(users.GET,LIST,{cookie:'z'.repeat(43)})).status],[401,401]);
 }));

@@ -93,7 +93,7 @@ test('service legado: overview/decide/change/remove-demo excluem linhas de domí
  const insP=(id:number,addr:string,userId:string|null=null)=>db.query("insert into participant(id,email,goal,moment,interests,skills,area,token_hash,consent_version,user_id) values($1,$2,'growth','working','[\"dados\"]','[\"analise\"]','dados',$3,'v0',$4)",[id,addr,String(id).padStart(64,'a'),userId]);
  const insM=(id:number,addr:string,opts:{demo?:boolean;userId?:string|null}={})=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity,active,demo,demo_name,user_id) values($1,$2,'t','[\"dados\"]','a',3,true,$3,$4,$5)",[id,addr,opts.demo??false,opts.demo?`Demo ${id}`:null,opts.userId??null]);
  await insP(1,'plain.p@example.invalid');await insM(2,'plain.m@example.invalid');await insM(3,'demo.livre@example.invalid',{demo:true});
- await insP(10,'dona@example.invalid',admin.id);await insM(20,'dona@example.invalid',{userId:admin.id});await insM(4,'demo.admin@example.invalid',{demo:true,userId:admin.id});
+ await insP(10,'dona@example.invalid',admin.id);await insM(20,'dona@example.invalid',{userId:admin.id});await insM(4,'Dona@example.invalid',{demo:true});
  await insP(30,'  DONA@example.invalid');await insM(31,'cand.m@example.invalid');await link('mentor','31',null,'privileged_candidate');await insP(32,'cand.p@example.invalid');await link('participant','32',null,'privileged_candidate');
  await useOwnerPool(url);
  const overview=await service.adminOverview();
