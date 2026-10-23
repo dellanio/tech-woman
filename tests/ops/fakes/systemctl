@@ -4,7 +4,10 @@ source "$(dirname "$0")/_common.sh"
 case "${1:-}" in
   list-timers|list-unit-files|list-units|is-active)
     tw_log systemctl false "$@"
-    [[ -f "${TW_FAKE_DIR:-/nonexistent}/timers" ]] && cat "$TW_FAKE_DIR/timers"
+    scenario=timers
+    [[ "$1" == list-unit-files ]] && scenario=unit-files
+    [[ "$1" == list-units ]] && scenario=units
+    [[ -f "${TW_FAKE_DIR:-/nonexistent}/$scenario" ]] && cat "$TW_FAKE_DIR/$scenario"
     exit 0 ;;
 esac
 tw_log systemctl true "$@"

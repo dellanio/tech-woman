@@ -51,8 +51,8 @@ class FreezeHappyPathTests(FreezeTestCase):
         state = self.state()
         self.assertEqual((state.phase, state.seq), ('frozen', 3))
         freeze = state.data['freeze']
-        self.assertEqual(freeze['writers_checked'], ['app-container', 'mailer-containers', 'timers', 'cron',
-                                                     'file-handles', 'quiet-window'])
+        self.assertEqual(freeze['writers_checked'], ['app-container', 'mailer-containers', 'timers', 'systemd-services',
+                                                     'cron', 'cron-files', 'file-handles', 'quiet-window'])
         self.assertEqual((freeze['quiet_seconds'], freeze['original_container'], freeze['original_image'], freeze['ip']),
                          (1, 'tech-woman-sqlite-original', ORIGINAL_IMAGE, ORIGINAL_IP))
         self.assertRegex(freeze['cutoff_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
@@ -131,6 +131,41 @@ class FreezePreconditionTests(FreezeTestCase):
         self.assertEqual(self.state().phase, 'prepared')
         (fake / 'stop.rc').unlink()
         (fake / 'run-d.rc').write_bytes(b'1')
+        self.assert_unfrozen_and_available(self.freeze(), 83)
+
+
+class FreezeBroaderWritersTests(FreezeTestCase):
+    def test_cron_files_of_any_user_and_systemd_services_without_a_timer_also_refuse(self):
+        cron = self.host.ops.host / 'cron'
+
+        def spool():
+            (cron / 'spool').mkdir()
+            (cron / 'spool' / 'deploy').write_bytes(b'5 4 * * * /opt/tech-woman/run' + bytes([10]))
+
+        def drop_in():
+            (cron / 'cron.d').mkdir()
+            (cron / 'cron.d' / 'job').write_bytes(b'@daily root tech-woman-export' + bytes([10]))
+
+        fake = self.host.ops.fake
+        cases = {
+            'system crontab file': lambda: (cron / 'crontab').write_bytes(b'0 * * * * root /usr/local/bin/Tech-Woman-sync' + bytes([10])),
+            'cron.d drop-in': drop_in,
+            'another users spool crontab': spool,
+            'service unit without a timer': lambda: (fake / 'unit-files').write_bytes(b'tech-woman-worker.service enabled' + bytes([10])),
+            'running service': lambda: (fake / 'units').write_bytes(b'tech-woman-sync.service loaded active running' + bytes([10])),
+        }
+        for name, arrange in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                cron = self.host.ops.host / 'cron'
+                fake = self.host.ops.fake
+                arrange()
+                done = self.freeze()
+                self.assert_unfrozen_and_available(done, 80)
+                self.assertNotIn('0 * * * *', done.stderr)  # the message names the source, never the file content
+
+    def test_a_cron_location_that_cannot_be_read_proves_nothing_and_refuses_with_83(self):
+        (self.host.ops.host / 'cron').rmdir()
         self.assert_unfrozen_and_available(self.freeze(), 83)
 
 
