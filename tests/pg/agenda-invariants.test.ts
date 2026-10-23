@@ -96,3 +96,22 @@ test('imutabilidade: ids, slug, mentora do vínculo e FKs de inscrição; tema d
  await pgFails(db.query('update enrollment set participant_id=$2 where id=$1',[e,await addParticipant(db)]),'23514','agenda_immutable');
  await pgFails(db.query('update enrollment set id=id+1000 where id=$1',[e]),'23514','agenda_immutable');
 }));
+
+test('capacidade 1..20, ocupação ≤ capacidade, redução abaixo da ocupação e cancelar/desativar com reservas ativas recusados', ()=>withDb(async ({db})=>{
+ const mentor=await addMentor(db),topic=await addTopic(db),mt=await addMentorTopic(db,mentor,topic);
+ for(const capacity of [0,21]) await pgFails(addCohort(db,mt,{from:0,capacity}),'23514','cohort_capacity_check');
+ await addCohort(db,mt,{from:10,capacity:20});
+ const c=await addCohort(db,mt,{from:0,capacity:2}),[p1,p2,p3]=[await addParticipant(db),await addParticipant(db),await addParticipant(db)];
+ const enroll=(p:string)=>db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[p,c]).then(r=>r.rows[0].id as string);
+ const e1=await enroll(p1);await enroll(p2);
+ await pgFails(enroll(p3),'23514','agenda_capacity_exceeded');
+ await pgFails(db.query('update cohort set capacity=1 where id=$1',[c]),'23514','agenda_capacity_exceeded');
+ await pgFails(db.query("update cohort set status='cancelled' where id=$1",[c]),'23514','agenda_cohort_in_use');
+ await pgFails(db.query('update cohort set starts_at=$2,ends_at=$3 where id=$1',[c,at(2),at(3)]),'23514','agenda_cohort_in_use');
+ for(const [table,id] of [['topic',topic],['mentor',mentor],['participant',p1]]) await pgFails(db.query(`update ${table} set active=false where id=$1`,[id]),'23514','agenda_active_enrollment');
+ await db.query("update cohort set status='closed' where id=$1",[c]);
+ assert.equal((await db.query("select count(*)::int n from enrollment where cohort_id=$1 and status='active'",[c])).rows[0].n,2,'closed retém reservas');
+ await db.query("update enrollment set status='cancelled' where id=$1",[e1]);
+ await db.query('update cohort set capacity=1 where id=$1',[c]);
+ await db.query('update participant set active=false where id=$1',[p1]);
+}));
