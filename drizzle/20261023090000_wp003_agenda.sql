@@ -32,6 +32,19 @@ BEGIN
   WHERE a.status <> 'cancelled' AND b.status <> 'cancelled' AND a.starts_at < b.ends_at AND b.starts_at < a.ends_at) THEN
   RAISE EXCEPTION 'agenda_mentor_overlap' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_mentor_overlap';
  END IF;
+ -- Ocupação = inscrições active (match não é fonte de vagas); closed retém, cancelled exige zero.
+ IF EXISTS (SELECT 1 FROM public.cohort c JOIN public.enrollment e ON e.cohort_id = c.id AND e.status = 'active' GROUP BY c.id, c.capacity HAVING count(*) > c.capacity) THEN
+  RAISE EXCEPTION 'agenda_capacity_exceeded' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_capacity_exceeded';
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.cohort c JOIN public.enrollment e ON e.cohort_id = c.id AND e.status = 'active' WHERE c.status = 'cancelled') THEN
+  RAISE EXCEPTION 'agenda_cohort_in_use' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_cohort_in_use';
+ END IF;
+ -- Desativar participante, mentora ou tema com reserva active exige cancelamento explícito antes.
+ IF EXISTS (SELECT 1 FROM public.enrollment e JOIN public.participant p ON p.id = e.participant_id JOIN public.cohort c ON c.id = e.cohort_id
+   JOIN public.mentor_topic mt ON mt.id = c.mentor_topic_id JOIN public.mentor m ON m.id = mt.mentor_id JOIN public.topic t ON t.id = mt.topic_id
+  WHERE e.status = 'active' AND NOT (p.active AND m.active AND t.active)) THEN
+  RAISE EXCEPTION 'agenda_active_enrollment' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_active_enrollment';
+ END IF;
  RETURN NULL;
 END $$;
 --> statement-breakpoint
