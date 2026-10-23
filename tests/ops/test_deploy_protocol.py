@@ -100,11 +100,13 @@ class LockTests(unittest.TestCase):
 
 class ProbeTests(unittest.TestCase):
     def test_probe_reports_script_hash_and_touches_no_host_tool(self):
-        result = harness.run_script(DEPLOY, request('TWDEPLOY/2', 'probe'))
+        ops = harness.StagedOps()
+        self.addCleanup(ops.cleanup)
+        result = ops.run(request('TWDEPLOY/2', 'probe'))
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report['protocol'], 2)
-        self.assertEqual(report['script_sha256'], hashlib.sha256(DEPLOY.read_bytes()).hexdigest())
+        self.assertEqual(report['script_sha256'], hashlib.sha256(ops.script.read_bytes()).hexdigest())
         self.assertEqual(result.stderr, '')
         self.assertEqual(result.calls(), [])
 

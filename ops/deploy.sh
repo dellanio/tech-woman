@@ -17,8 +17,11 @@ mapfile -t lines <<<"${input%$'\n'}"
 for line in "${lines[@]}"; do (( ${#line} <= 4096 )) || reject; done
 [[ "${lines[0]}" == 'TWDEPLOY/2' ]] || reject
 
+source "$(dirname -- "$self")/paths.env"
+export PATH
 if [[ "${lines[1]:-}" == 'probe' && ${#lines[@]} -eq 2 ]]; then
-  printf '{"protocol":2,"script_sha256":"%s"}\n' "$(sha256sum -- "$self" | cut -d' ' -f1)"
+  phase=$("$TW_PYTHON" -I "$(dirname -- "$self")/cutover.py" phase)
+  printf '{"protocol":2,"script_sha256":"%s","phase":"%s"}\n' "$(sha256sum -- "$self" | cut -d' ' -f1)" "$phase"
   exit 0
 fi
 [[ "${lines[1]:-}" == 'deploy' && ${#lines[@]} -eq 8 ]] || reject
@@ -31,8 +34,6 @@ re_count='^[1-9][0-9]{0,3}$' re_token='^[A-Za-z0-9_.~+/=-]+$'
    && "$token" =~ $re_token && ${#token} -le 512 ]] || reject
 unset lines input
 
-source "$(dirname -- "$self")/paths.env"
-export PATH
 exec 9>"$TW_LOCK_FILE"
 flock -n 9 || { echo 'deployment in progress' >&2; exit 66; }
 

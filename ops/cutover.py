@@ -325,7 +325,15 @@ def cmd_gate(paths, flags):
     print(json.dumps({'gate': 'ok', 'op': operation, 'phase': state.phase}))
 
 
-COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status}
+def cmd_phase(paths):
+    """Phase for the probe: never fails, so an unreadable marker is reported rather than hidden."""
+    try:
+        print(State.load(paths['TW_STATE_DIR'], _policy(paths)).phase)
+    except StateError:
+        print('unreadable')
+
+
+COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status, 'phase': cmd_phase}
 
 
 def main(argv):
