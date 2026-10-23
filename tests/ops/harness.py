@@ -76,9 +76,9 @@ class StagedOps:
         self.script = self.ops / 'deploy.sh'
         (self.ops / 'paths.env').write_bytes(('\n'.join([
             "PATH='%s'" % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
-            "TW_LOCK_FILE='%s'" % _posix(self.host / 'lock/deploy.lock'),
-            "TW_STATE_DIR='%s'" % _posix(self.host / 'state'),
-            "TW_APP_DIR='%s'" % _posix(self.host / 'app'),
+            "TW_LOCK_FILE='%s'" % (self.host / 'lock/deploy.lock').as_posix(),
+            "TW_STATE_DIR='%s'" % (self.host / 'state').as_posix(),
+            "TW_APP_DIR='%s'" % (self.host / 'app').as_posix(),
             "TW_PYTHON='%s'" % _posix(sys.executable),
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
             'TW_STATE_OWNER_UID=%d' % (os.getuid() if os.name == 'posix' else 0),

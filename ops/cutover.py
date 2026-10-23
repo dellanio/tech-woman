@@ -5,7 +5,7 @@ The state file is root-owned and written only by this tool. The journal is a con
 (sequence + links between entries) that detects torn or mismatched writes; it is NOT a cryptographic
 protection against root and must not be described as one.
 """
-import contextlib, hashlib, json, os, pathlib, re, stat, sys
+import contextlib, datetime, hashlib, json, os, pathlib, re, stat, sys
 
 
 class StateError(Exception):
@@ -226,3 +226,93 @@ class State:
             raise StateError(75, 'transition %s -> %s is not allowed' % (self.phase, target))
         data = dict(self.data, seq=self.seq + 1, prev_sha256=self._last_entry_sha(), phase=target)
         self._commit(data, self.phase, now)
+
+
+HERE = pathlib.Path(__file__).resolve().parent
+PATH_KEYS = {'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
+             'TW_STATE_MODE_CHECK'}
+
+
+def read_paths():
+    """Parse the installed paths.env (KEY=value or KEY='value'); never sourced, unknown keys are an error."""
+    values = {}
+    try:
+        lines = (HERE / 'paths.env').read_text(encoding='utf-8').splitlines()
+    except OSError:
+        raise StateError(70, 'paths.env missing')
+    for line in lines:
+        if not line.strip() or line.startswith('#'):
+            continue
+        key, _, value = line.partition('=')
+        if key not in PATH_KEYS:
+            raise StateError(70, 'paths.env has an unknown key')
+        values[key] = value[1:-1] if len(value) >= 2 and value[0] == value[-1] == "'" else value
+    if not {'TW_STATE_DIR', 'TW_STATE_OWNER_UID', 'TW_STATE_MODE_CHECK'} <= set(values):
+        raise StateError(70, 'paths.env is incomplete')
+    return values
+
+
+def _policy(paths):
+    return Policy(owner_uid=int(paths['TW_STATE_OWNER_UID']), check_mode=paths['TW_STATE_MODE_CHECK'] == '1')
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _manifest():
+    sys.path.insert(0, str(HERE))
+    try:
+        import manifest
+    finally:
+        sys.path.remove(str(HERE))
+    return manifest
+
+
+def _sealed_candidate(paths, manifest):
+    """The candidate.json installed by the operator, checked against this very installation."""
+    try:
+        candidate = manifest.load_candidate(pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json')
+        package = manifest.ops_package(HERE)
+    except manifest.ManifestError as error:
+        raise StateError(error.code, str(error))
+    if package['files'] != candidate['ops_package']['files']:
+        raise StateError(65, 'installed ops package differs from the sealed candidate')
+    return candidate
+
+
+def cmd_prepare(paths):
+    manifest = _manifest()
+    candidate = _sealed_candidate(paths, manifest)
+    now = _now()
+    window = candidate['window']
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    state_dir = pathlib.Path(paths['TW_STATE_DIR'])
+    digest = _sha256((state_dir / 'candidate.json').read_bytes())
+    State.create(state_dir, digest, now)
+    print(json.dumps({'phase': 'prepared', 'candidate_sha256': digest}))
+
+
+def cmd_status(paths):
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    print(json.dumps({'phase': state.phase, 'seq': state.seq, 'candidate_sha256': state.candidate_sha256}))
+
+
+COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status}
+
+
+def main(argv):
+    try:
+        if len(argv) != 2 or argv[1] not in COMMANDS:
+            print('usage: cutover.py {%s}' % '|'.join(sorted(COMMANDS)), file=sys.stderr)
+            return 64
+        COMMANDS[argv[1]](read_paths())
+        return 0
+    except StateError as error:
+        print('cutover: %s' % error, file=sys.stderr)
+        return error.code
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
