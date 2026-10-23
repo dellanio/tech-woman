@@ -176,6 +176,7 @@ class BackupRoleTests(PreflightWorld):
         done = self.preflight()
         report = self.report(done)
         self.assertEqual({i: report[i]['status'] for i in SQL_IDS}, {i: 'pass' for i in SQL_IDS}, report['PF-COLGRANT'])
+        self.restore_hba()  # the scram-only hba of this world has no password for the synthetic role; dump over trust
         dump = subprocess.run(['pg_dump', '-Fc', '-U', role, '-d', self.db], env=self.cluster.env(), capture_output=True)
         self.assertEqual(dump.returncode, 0, dump.stderr[-300:])
         self.assertTrue(dump.stdout.startswith(b'PGDMP'))

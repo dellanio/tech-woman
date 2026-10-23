@@ -72,7 +72,7 @@ class ReleaseHappyPathTests(ReleaseTestCase):
         self.assertEqual(len(dumps), 1)
         self.assertGreater(dumps[0].stat().st_size, 0)
         dump = next(a for a in calls if a[0] == 'exec' and 'pg_dump' in a)
-        self.assertEqual(dump[1:], ['test-postgres', 'pg_dump', '-Fc', '-U', 'techwoman_backup', 'techwoman'])
+        self.assertEqual(dump[1:], ['test-postgres', 'pg_dump', '-Fc', '-U', 'backup_techwoman', 'techwoman'])
         self.assertNotIn(SECRET, result.stdout + result.stderr + json.dumps(result.calls()))
         self.assertEqual([x for a in calls for x in a if x in SQLITE_NAMES], [])
         result.assert_no_tripwire()

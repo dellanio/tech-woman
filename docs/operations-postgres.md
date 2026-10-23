@@ -34,10 +34,12 @@ hash do pacote (`ops_package`). Alterar qualquer arquivo de `ops/` muda o hash e
    `TW_PG_ADMIN_USER`, `TW_CRON_PATHS`. Qualquer ajuste exige novo `seal`.
 
 ### Roles do PostgreSQL que o operador cria/ajusta
-- **Backup só-leitura (`TW_PG_DUMP_USER`, ex. `techwoman_backup`)**: `CREATE ROLE techwoman_backup LOGIN BYPASSRLS;`
-  `GRANT pg_read_all_data TO techwoman_backup;`. **BYPASSRLS é obrigatório**: as tabelas de Agenda têm RLS e o
+- **Backup só-leitura (`TW_PG_DUMP_USER` = `backup_techwoman`)**: `CREATE ROLE backup_techwoman LOGIN BYPASSRLS;`
+  `GRANT pg_read_all_data TO backup_techwoman;`. **BYPASSRLS é obrigatório**: as tabelas de Agenda têm RLS e o
   `pg_dump` de uma role sem BYPASSRLS falha (`query would be affected by row-level security policy`); o `deploy.sh`
-  então sai 79 sem tocar em contêiner (provado no ensaio S14).
+  então sai 79 sem tocar em contêiner (provado no ensaio S14). O nome **não** pode começar com `techwoman_`: a matriz
+  WP-003 (`PF-COLGRANT`) proíbe BYPASSRLS em qualquer role `techwoman_*` — provado em PG16 que `backup_techwoman`
+  convive com o preflight verde e faz o dump.
 - **Limites**: `docker exec -i <pg> psql -X -v ON_ERROR_STOP=1 -U <admin> -d techwoman -f - < ops/sql/role-limits.sql`
   (padrões: runtime/mailer lock 5s, statement 15s, idle-tx 10s; editora 10s/60s/30s; sobrescreva com
   `-v runtime_lock=...` etc.). Só `ALTER ROLE ... IN DATABASE techwoman`: bases vizinhas não mudam. Vale para

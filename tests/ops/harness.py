@@ -91,7 +91,7 @@ class StagedOps:
             "TW_DB_FILE='%s'" % (self.host / 'app/dados/tech-woman.db').as_posix(),
             "TW_NETWORK='testnet'",
             "TW_BACKUP_DIR='%s'" % (self.host / 'backups').as_posix(),
-            "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='%s'" % pg_db, "TW_PG_DUMP_USER='techwoman_backup'",
+            "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='%s'" % pg_db, "TW_PG_DUMP_USER='backup_techwoman'",
             "TW_PG_ADMIN_USER='postgres'",
             'TW_SMOKE_ATTEMPTS=2', 'TW_SMOKE_DELAY=0',
             "TW_CRON_PATHS='%s'" % (self.host / 'cron').as_posix(),

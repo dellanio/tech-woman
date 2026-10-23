@@ -60,9 +60,9 @@ class RehearsalTests(unittest.TestCase):
             self.cluster.psql('postgres', "do $$ begin if not exists (select 1 from pg_roles where rolname='%s') "
                                           "then create role %s nologin; end if; end $$" % (role, role))
         # read-only backup role (TW_PG_DUMP_USER) as a first, naive attempt: LOGIN + pg_read_all_data, no BYPASSRLS
-        self.cluster.psql('postgres', "do $$ begin if not exists (select 1 from pg_roles where rolname='techwoman_backup') "
-                                      "then create role techwoman_backup login; end if; end $$; "
-                                      "alter role techwoman_backup nobypassrls; grant pg_read_all_data to techwoman_backup")
+        self.cluster.psql('postgres', "do $$ begin if not exists (select 1 from pg_roles where rolname='backup_techwoman') "
+                                      "then create role backup_techwoman login; end if; end $$; "
+                                      "alter role backup_techwoman nobypassrls; grant pg_read_all_data to backup_techwoman")
         env = dict(self.cluster.env(), MIGRATION_DATABASE_URL=self.cluster.url(self.db), TW_FAKE_REPO=str(ROOT))
         self.host = Host(self, pg_db=self.db, env=env)
         # the candidate's migrations are the real ones of this checkout (what the migrator applies)
@@ -141,7 +141,7 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 79, refused.stderr)
         self.assertEqual([c['args'] for c in refused.calls() if c['cmd'] == 'docker' and (
             c['args'][0] in ('stop', 'rename', 'rm', 'start') or (c['args'][0] == 'run' and '-d' in c['args']))], [])
-        self.cluster.psql('postgres', 'alter role techwoman_backup bypassrls')  # the operator's documented fix
+        self.cluster.psql('postgres', 'alter role backup_techwoman bypassrls')  # the operator's documented fix
         released = self.deploy(NEW_DIGEST)
         self.assertEqual(released.returncode, 0, released.stderr)
         report = json.loads(released.stdout)
