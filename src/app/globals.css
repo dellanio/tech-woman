@@ -88,3 +88,8 @@
 .form-panel [aria-invalid="true"]{outline:2px solid var(--accent);outline-offset:2px}
 .signup-account{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin:0 0 18px;font-size:15px;overflow-wrap:anywhere}
 .signup-account-link{margin-top:18px}
+/* WP-004 — Sua conta, escolha de mentora/turma e histórico (aditivo) */
+.account-home{display:grid;gap:clamp(32px,4vw,56px)}
+.account-intro h1{font-size:clamp(48px,5vw,72px)}
+.account-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(24px,3vw,40px);align-items:start}
+@media(max-width:760px){.account-columns{grid-template-columns:1fr}}

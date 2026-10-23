@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation';
 import { DEFAULT_AFTER_LOGIN, Frame, loadSession, loginHref, passwordChangeHref, request, safeNext, type SessionUser, type SessionView } from './shared';
 
 const FLASH = 'tw-auth-flash';
+/** Aviso de uma navegação para a próxima tela (troca de senha, reset, saída); lido uma vez e apagado. */
+export const setFlash = (value: 'password-set' | 'password-reset' | 'signed-out') => sessionStorage.setItem(FLASH, value);
+export function takeFlash(): string | null { const value = sessionStorage.getItem(FLASH); sessionStorage.removeItem(FLASH); return value; }
 const PASSWORD_MIN = 12, PASSWORD_MAX = 128;
 const ROLE_LABEL: Record<SessionUser['roles'][number], string> = { admin: 'Administração', team: 'Equipe', mentor: 'Mentora', participant: 'Participante' };
 const recife = (iso: string) => new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Recife', dateStyle: 'short', timeStyle: 'short' }).format(new Date(iso));
@@ -48,13 +51,14 @@ export function LoginView({ next: rawNext }: { next?: string }) {
     const result = await loadSession();
     if (!result.ok) { setSession({ state: 'anonymous' }); return; }
     if (result.data.state === 'password_change_required') { router.replace(passwordChangeHref(next)); return; }
-    if (result.data.state === 'authenticated' && next !== DEFAULT_AFTER_LOGIN) { router.replace(next); return; }
+    // Sessão full não fica no formulário: segue ao destino (padrão: Sua conta).
+    if (result.data.state === 'authenticated') { router.replace(next); return; }
     setSession(result.data);
   }, [next, router]);
   useEffect(() => {
-    const flash = sessionStorage.getItem(FLASH); sessionStorage.removeItem(FLASH);
-    if (flash === 'password-set') setNotice('Senha definida. Sua conta está ativa.');
+    const flash = takeFlash();
     if (flash === 'password-reset') setNotice('Senha redefinida. Entre com a nova senha.');
+    if (flash === 'signed-out') setNotice('Você saiu da conta neste navegador.');
     void refresh();
   }, [refresh]);
   async function submit(event: FormEvent) {
@@ -65,12 +69,10 @@ export function LoginView({ next: rawNext }: { next?: string }) {
     setPassword(''); setBusy(false);
     if (!result.ok) { setError(result.code === 'INVALID_INPUT' ? 'E-mail ou senha não conferem.' : result.message); return; }
     if (result.data.state === 'password_change_required') { router.replace(passwordChangeHref(next)); return; }
-    if (next !== DEFAULT_AFTER_LOGIN) { router.replace(next); return; }
-    await refresh();
+    router.replace(next);
   }
-  const signedIn = session?.state === 'authenticated' ? session : null;
-  return <AuthLayout eyebrow="CONTA / ACESSO" kicker="SUA CONTA TECH WOMAN" title={signedIn ? <>Bom ter você <em>por aqui.</em></> : <>Seu caminho continua <em>daqui.</em></>} lead={signedIn ? 'Sua sessão está ativa neste navegador.' : 'Entre para acompanhar sua participação, escolher mentora e turma e cuidar dos seus dados.'}>
-    {!session ? <Checking label="Conferindo sua sessão…"/> : signedIn ? <AccountPanel user={signedIn.user} expiresAt={signedIn.expiresAt} notice={notice} onSignedOut={() => { setSession({ state: 'anonymous' }); setNotice('Você saiu da conta neste navegador.'); }}/> :
+  return <AuthLayout eyebrow="CONTA / ACESSO" kicker="SUA CONTA TECH WOMAN" title={<>Seu caminho continua <em>daqui.</em></>} lead="Entre para acompanhar sua participação, escolher mentora e turma e cuidar dos seus dados.">
+    {!session || session.state !== 'anonymous' ? <Checking label="Conferindo sua sessão…"/> :
       <form className="form-panel auth-panel" onSubmit={submit} noValidate aria-busy={busy}>
         <p className="eyebrow">ACESSO</p><h2>Entrar</h2>
         {notice && <p className="notice" role="status">{notice}</p>}
@@ -97,7 +99,7 @@ export function PasswordChangeView({ next: rawNext }: { next?: string }) {
     setBusy(true); setError('');
     const result = await request<{ state: 'authenticated' }>('/api/v1/auth/password/change', { method: 'POST', body: { currentPassword: current, newPassword: fresh } });
     setBusy(false);
-    if (result.ok) { setCurrent(''); setFresh(''); setConfirm(''); sessionStorage.setItem(FLASH, 'password-set'); router.replace(next); return; }
+    if (result.ok) { setCurrent(''); setFresh(''); setConfirm(''); if (next === DEFAULT_AFTER_LOGIN) setFlash('password-set'); router.replace(next); return; }
     if (result.code === 'AUTH_REQUIRED') { setCurrent(''); setSession({ state: 'anonymous' }); return; }
     setError(result.code === 'INVALID_CREDENTIALS' ? 'Senha atual ou temporária não confere.' : result.code === 'INVALID_INPUT' ? `A nova senha precisa ter de ${PASSWORD_MIN} a ${PASSWORD_MAX} caracteres.` : result.message);
   }
@@ -179,7 +181,7 @@ export function ResetView() {
     setBusy(true); setError(''); setInvalid(false);
     const result = await request<null>('/api/v1/auth/password/reset', { method: 'POST', body: { token: secret, newPassword: fresh }, csrf: false });
     setBusy(false);
-    if (result.ok) { token.current = null; setCode(''); setFresh(''); setConfirm(''); sessionStorage.setItem(FLASH, 'password-reset'); router.replace('/login'); return; }
+    if (result.ok) { token.current = null; setCode(''); setFresh(''); setConfirm(''); setFlash('password-reset'); router.replace('/login'); return; }
     if (result.code === 'INVALID_RESET' || result.fields.includes('token')) { setInvalid(true); setCode(''); if (fromLink) manual(); setError(result.code === 'INVALID_RESET' ? result.message : 'Confira o código de redefinição.'); return; }
     setError(result.code === 'INVALID_INPUT' ? `A nova senha precisa ter de ${PASSWORD_MIN} a ${PASSWORD_MAX} caracteres.` : result.message);
   }
