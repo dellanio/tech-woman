@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
+import {OWNER} from './agenda-harness';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -114,4 +115,22 @@ test('capacidade 1..20, ocupação ≤ capacidade, redução abaixo da ocupaçã
  await db.query("update enrollment set status='cancelled' where id=$1",[e1]);
  await db.query('update cohort set capacity=1 where id=$1',[c]);
  await db.query('update participant set active=false where id=$1',[p1]);
+}));
+
+const AGENDA_FUNCTIONS=['acquire_agenda_guard','validate_agenda_state','agenda_row_check','agenda_reject'];
+test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, search_path fixo, VOLATILE, sem EXECUTE para PUBLIC/runtime', ()=>withDb(async ({db})=>{
+ const role=(await db.query('select rolcanlogin,rolbypassrls,rolsuper,rolcreaterole,rolcreatedb,rolreplication from pg_roles where rolname=$1',[OWNER])).rows[0];
+ assert.deepEqual(role,{rolcanlogin:false,rolbypassrls:false,rolsuper:false,rolcreaterole:false,rolcreatedb:false,rolreplication:false});
+ const fns=(await db.query(`select p.proname,pg_get_userbyid(p.proowner) owner,p.prosecdef,p.provolatile,p.proconfig,
+   coalesce((select array_agg(coalesce(nullif(pg_get_userbyid(a.grantee),''),'-')) from aclexplode(p.proacl) a where a.privilege_type='EXECUTE' and a.grantee<>p.proowner),'{}') grantees,
+   has_function_privilege('techwoman_runtime',p.oid,'EXECUTE') runtime
+  from pg_proc p where p.pronamespace='internal'::regnamespace and p.proname=any($1) order by p.proname`,[AGENDA_FUNCTIONS])).rows;
+ assert.equal(fns.length,AGENDA_FUNCTIONS.length);
+ for(const f of fns){
+  assert.equal(f.owner,OWNER,`${f.proname} owner`);assert.equal(f.provolatile,'v',`${f.proname} VOLATILE`);
+  assert.deepEqual(f.proconfig,['search_path=pg_catalog, pg_temp'],`${f.proname} search_path`);
+  assert.deepEqual(f.grantees,[],`${f.proname} sem EXECUTE concedido (inclusive PUBLIC)`);assert.equal(f.runtime,false);
+  if(f.proname!=='agenda_reject')assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
+ }
+ assert.equal((await db.query("select count(*)::int n from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) and prosrc ~* 'execute\\s'",[AGENDA_FUNCTIONS])).rows[0].n,0,'sem SQL dinâmico');
 }));
