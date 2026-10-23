@@ -137,3 +137,22 @@
 .legacy-state .legacy-flag{display:inline-block;border:1px dashed var(--accent);border-radius:var(--radius-control);color:var(--ink);padding:6px 10px;margin:4px 0 10px;font-weight:700}
 .legacy-state .auth-actions a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 .legacy-state ul{color:var(--muted);padding-left:20px}
+/* Painel da organização (WP-004 tarefa 4): navegação de recursos, cartões de cadastro, estados e formulários. Herda tokens; sem arte decorativa. */
+.admin-nav{display:flex;flex-direction:column;gap:4px;margin:8px 0 24px}.admin-nav .sidebar-link{padding:16px;border-radius:var(--radius-control);color:var(--muted);transition:background .18s var(--ease-out),color .18s var(--ease-out)}.admin-nav .sidebar-link:hover{background:var(--surface);color:var(--ink)}
+.admin-nav button:focus-visible,.admin-nav a:focus-visible,.dashboard-sidebar .logout:focus-visible,.admin-panel button:focus-visible,.admin-panel input:focus-visible,.admin-panel textarea:focus-visible,.admin-panel summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.admin-role{margin:4px 0 0;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.06em}
+.admin-readonly{margin-top:0}
+.admin-toolbar{display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;padding:20px 0}
+.admin-list{list-style:none;margin:0;padding:0}.admin-list>li{border-bottom:var(--border);padding:28px 0;animation:arrive .32s var(--ease-out) both}
+.admin-card{min-width:0}.admin-card h2{font:500 clamp(22px,2.4vw,30px) var(--font-display);text-transform:none;margin:12px 0;overflow-wrap:anywhere}
+.admin-card-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;align-items:center}
+.badge-off{border-style:dashed;color:var(--subtle)}
+.admin-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px 24px;margin:0}.admin-facts div{min-width:0}.admin-facts dt{color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}.admin-facts dd{margin:4px 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.admin-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+.admin-loading .admin-skeleton{list-style:none;margin:0;padding:0}.admin-skeleton li{display:grid;gap:10px;padding:28px 0;border-bottom:var(--border)}.admin-skeleton span{display:block;height:14px;border-radius:var(--radius-control);background:var(--surface-raised);animation:admin-pulse 1.2s var(--ease-out) infinite alternate}.admin-skeleton span:nth-child(1){width:30%}.admin-skeleton span:nth-child(2){width:62%;height:24px}.admin-skeleton span:nth-child(3){width:48%}
+@keyframes admin-pulse{from{opacity:.45}to{opacity:1}}
+.admin-empty p{margin:0 0 8px}.admin-empty strong{color:var(--ink)}
+.admin-state{margin:12px 0}.admin-more{margin-top:24px}
+.admin-denied{max-width:640px}.admin-denied h1{font-size:clamp(36px,4vw,52px)}
+@media(max-width:760px){.admin-nav{flex-direction:row;flex-wrap:wrap;margin:0;width:100%}.admin-nav button,.admin-nav .sidebar-link{font-size:13px;padding:10px}.admin-toolbar{justify-content:flex-start}.admin-facts{grid-template-columns:1fr 1fr}}
+@media(prefers-reduced-motion:reduce){.admin-list>li,.admin-skeleton span{animation:none}}
