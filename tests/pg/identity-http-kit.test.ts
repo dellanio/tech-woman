@@ -1,7 +1,7 @@
 /** Cliente de teste dos handlers de rota (Request/Response reais, sem servidor). Sem testes próprios. */
 import assert from 'node:assert/strict';
 
-type Handler=(request:Request,context?:never)=>Promise<Response>;
+type Handler=(request:Request,context:never)=>Promise<Response>;
 type WithContext=(request:Request,context?:{params:Promise<Record<string,string>>})=>Promise<Response>;
 export type Opts={method?:string;body?:unknown;raw?:string;headers?:Record<string,string|null>;cookie?:string;csrf?:string;key?:string;params?:Record<string,string>};
 export type Reply={status:number;json:any;text:string;headers:Headers};

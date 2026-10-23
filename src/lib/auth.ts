@@ -99,10 +99,16 @@ export function errorResponse(error: unknown): Response {
   console.error('api_error', { name: error instanceof Error ? error.name : 'unknown', sqlstate: state });
   return failure(new HttpError(state === '40001' || state === '40P01' || state === '55P03' ? 'RETRY_TRANSACTION' : 'DEPENDENCY_UNAVAILABLE'));
 }
-/** Envolve um handler de rota: captura e converte erros no envelope normativo. */
-export function handle<P = Record<string, string>>(fn: (request: Request, params: P) => Promise<Response>) {
-  return async (request: Request, context?: { params: Promise<P> }): Promise<Response> => {
-    try { return await fn(request, context ? await context.params : ({} as P)); } catch (error) { return errorResponse(error); }
+/** Envolve um handler de rota estática: captura e converte erros no envelope normativo. */
+export function handle(fn: (request: Request) => Promise<Response>) {
+  return async (request: Request): Promise<Response> => {
+    try { return await fn(request); } catch (error) { return errorResponse(error); }
+  };
+}
+/** Idem para rotas dinâmicas (`[id]`): o Next 15 exige o contexto `{ params: Promise }` como segundo argumento. */
+export function handleWith<P>(fn: (request: Request, params: P) => Promise<Response>) {
+  return async (request: Request, context: { params: Promise<P> }): Promise<Response> => {
+    try { return await fn(request, await context.params); } catch (error) { return errorResponse(error); }
   };
 }
 
