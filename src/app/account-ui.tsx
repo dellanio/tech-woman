@@ -22,12 +22,20 @@ function Checking({ label }: { label: string }) {
   return <div className="form-panel auth-panel" aria-busy="true"><p className="auth-loading" role="status">{label}</p></div>;
 }
 
-export function AccountPanel({ user, expiresAt, notice }: { user: SessionUser; expiresAt: string; notice?: string }) {
+export function AccountPanel({ user, expiresAt, notice, onSignedOut }: { user: SessionUser; expiresAt: string; notice?: string; onSignedOut: () => void }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  async function signOut() {
+    setBusy(true); setError('');
+    const result = await request<null>('/api/v1/auth/logout', { method: 'POST' });
+    setBusy(false);
+    if (result.ok) onSignedOut(); else setError(result.message);
+  }
   return <section className="form-panel auth-panel account-panel" aria-labelledby="account-title">
     <p className="eyebrow">SESSÃO ATIVA</p><h2 id="account-title">Sua conta</h2>
     {notice && <p className="notice" role="status">{notice}</p>}
     <dl className="account-facts"><div><dt>E-mail</dt><dd>{user.email}</dd></div><div><dt>Perfis</dt><dd>{user.roles.length ? user.roles.map(r => ROLE_LABEL[r]).join(' · ') : 'Nenhum perfil ainda'}</dd></div><div><dt>Sessão válida até</dt><dd>{recife(expiresAt)} <small>(horário de Recife)</small></dd></div></dl>
-    <div className="auth-actions"><Link className="button-secondary" href="/troca-senha">Trocar senha</Link></div>
+    {error && <p role="alert" className="visible-error">{error}</p>}
+    <div className="auth-actions"><Link className="button-secondary" href="/troca-senha">Trocar senha</Link><button type="button" className="button-quiet" onClick={signOut} disabled={busy}>{busy ? 'Saindo…' : 'Sair da conta'}</button></div>
   </section>;
 }
 
@@ -50,7 +58,7 @@ export function LoginView({ next: rawNext }: { next?: string }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!email.trim() || !password) { setError('Informe e-mail e senha.'); emailRef.current?.focus(); return; }
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setNotice('');
     const result = await request<{ state: 'authenticated' | 'password_change_required' }>('/api/v1/auth/login', { method: 'POST', body: { email: email.trim(), password }, csrf: false });
     setPassword(''); setBusy(false);
     if (!result.ok) { setError(result.code === 'INVALID_INPUT' ? 'E-mail ou senha não conferem.' : result.message); return; }
@@ -60,9 +68,10 @@ export function LoginView({ next: rawNext }: { next?: string }) {
   }
   const signedIn = session?.state === 'authenticated' ? session : null;
   return <AuthLayout eyebrow="CONTA / ACESSO" kicker="SUA CONTA TECH WOMAN" title={signedIn ? <>Bom ter você <em>por aqui.</em></> : <>Seu caminho continua <em>daqui.</em></>} lead={signedIn ? 'Sua sessão está ativa neste navegador.' : 'Entre para acompanhar sua participação, escolher mentora e turma e cuidar dos seus dados.'}>
-    {!session ? <Checking label="Conferindo sua sessão…"/> : signedIn ? <AccountPanel user={signedIn.user} expiresAt={signedIn.expiresAt} notice={notice}/> :
+    {!session ? <Checking label="Conferindo sua sessão…"/> : signedIn ? <AccountPanel user={signedIn.user} expiresAt={signedIn.expiresAt} notice={notice} onSignedOut={() => { setSession({ state: 'anonymous' }); setNotice('Você saiu da conta neste navegador.'); }}/> :
       <form className="form-panel auth-panel" onSubmit={submit} noValidate aria-busy={busy}>
         <p className="eyebrow">ACESSO</p><h2>Entrar</h2>
+        {notice && <p className="notice" role="status">{notice}</p>}
         <Field id="login-email" label="E-mail" ref={emailRef} type="email" name="email" autoComplete="email" inputMode="email" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/>
         <Field id="login-password" label="Senha" type="password" name="password" autoComplete="current-password" maxLength={1024} required value={password} onChange={e => setPassword(e.target.value)}/>
         {error && <p role="alert" className="visible-error">{error}</p>}
