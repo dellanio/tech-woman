@@ -46,9 +46,20 @@ jobs:
       - run: pnpm test:pg
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      # The ops recovery/limits/preflight suites need their OWN disposable PostgreSQL 16 cluster (initdb, crash
+      # restart, login-time role settings): server binaries only; the cluster runs as the runner user, never as a service.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-16
+      - run: python3 -m unittest -v tests.ops.pg.test_recovery_pg tests.ops.pg.test_preflight_pg
+        env:
+          WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg
+          WP005_PG_PORT: '55346'
+          PG_BIN: /usr/lib/postgresql/16/bin
       - run: pnpm exec tsx --test --test-concurrency=1 tests/ops/pg/*.test.ts
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+          WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg
+          WP005_PG_PORT: '55346'
+          PG_BIN: /usr/lib/postgresql/16/bin
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
         env:

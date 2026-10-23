@@ -63,7 +63,11 @@ class PreflightWorld(unittest.TestCase):
             self.reopened.append(name)
         self.addCleanup(self.reopen)
         self.hba = self.cluster.data / 'pg_hba.conf'
-        self.original_hba = self.hba.read_bytes()
+        # the pristine pg_hba of the disposable cluster is kept once, so an interrupted run can never leave scram behind
+        pristine = self.cluster.data / 'pg_hba.conf.wp005-orig'
+        if not pristine.exists():
+            pristine.write_bytes(self.hba.read_bytes())
+        self.original_hba = pristine.read_bytes()
         self.addCleanup(self.restore_hba)
         self.write_hba('host all postgres 127.0.0.1/32 trust\n'
                        'host all techwoman_migrator 127.0.0.1/32 trust\n'

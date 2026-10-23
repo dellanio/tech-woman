@@ -46,11 +46,15 @@ async function canLogin(db: Pool) {for (const r of ROLES) await db.query(`alter 
 test('role-limits.sql stores finite timeouts per role IN DATABASE, idempotently, and refuses invalid or hostile values', async () => {
   const {withDb} = await harness();
   await withDb(async ({db, url}) => {
+    // role settings of OTHER scopes (e.g. the global ones agenda-privileges.sql gives the editor) must stay untouched
+    const elsewhere = async () => (await settings(db)).filter(r => r.db !== dbName(url));
+    const before = await elsewhere();
     const first = applyLimits(url);
     assert.equal(first.status, 0, first.stderr);
     assert.equal(applyLimits(url).status, 0, 'idempotent');
-    const rows = await settings(db);
-    assert.deepEqual(rows.map(r => [r.role, r.db]), ROLES.slice().sort().map(r => [r, dbName(url)]), 'one row per role, scoped to this database only');
+    assert.deepEqual(await elsewhere(), before, 'nothing outside this database changed');
+    const rows = (await settings(db)).filter(r => r.db === dbName(url));
+    assert.deepEqual(rows.map(r => r.role), ROLES.slice().sort(), 'one row per role, scoped to this database');
     const byRole = Object.fromEntries(rows.map(r => [r.role, [...r.cfg].sort()]));
     assert.deepEqual(byRole.techwoman_runtime, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
     assert.deepEqual(byRole.techwoman_mailer, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
@@ -58,7 +62,8 @@ test('role-limits.sql stores finite timeouts per role IN DATABASE, idempotently,
     for (const bad of [{runtime_lock: '0'}, {beatriz_idle: '-1s'}, {mailer_statement: 'forever'}, {runtime_lock: "5s'; drop role techwoman_mailer; --"}]) {
       const r = applyLimits(url, bad);
       assert.notEqual(r.status, 0, JSON.stringify(bad));
-      assert.deepEqual(await settings(db), rows, 'a refused run changes nothing: ' + JSON.stringify(bad));
+      assert.deepEqual((await settings(db)).filter(r => r.db === dbName(url)), rows, 'a refused run changes nothing: ' + JSON.stringify(bad));
+      assert.deepEqual(await elsewhere(), before);
     }
     assert.equal((await db.query("select count(*)::int n from pg_roles where rolname='techwoman_mailer'")).rows[0].n, 1);
   });
