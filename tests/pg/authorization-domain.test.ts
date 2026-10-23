@@ -227,7 +227,9 @@ test('segurança SQL das operações: owner NOLOGIN e search_path fixo; runtime 
  const operations=new Set(['api_topic_list','api_topic_get','api_topic_create','api_topic_update','api_mentor_topic_list','api_mentor_topic_get','api_mentor_topic_create','api_mentor_topic_reorder','api_mentor_topic_update','api_mentor_topic_delete',
   'api_cohort_list','api_cohort_get','api_cohort_create','api_cohort_update','api_catalog_mentors','api_catalog_mentor','api_catalog_cohorts','api_recommendations','api_my_enrollments','api_enroll','api_my_enrollment_cancel',
   'api_admin_domain_list','api_admin_domain_get','api_admin_domain_create','api_admin_domain_update','api_match_list','api_match_get','api_match_create','api_match_update',
-  'api_admin_enrollment_list','api_admin_enrollment_get','api_admin_enrollment_cancel','api_admin_enrollment_reassign']);
+  'api_admin_enrollment_list','api_admin_enrollment_get','api_admin_enrollment_cancel','api_admin_enrollment_reassign',
+  // T5: adaptadores antigos também são operações (helpers api_legacy_owners/visible/begin continuam sem EXECUTE do runtime)
+  'api_legacy_overview','api_legacy_decide','api_legacy_change','api_legacy_event_save','api_legacy_state']);
  const identity=new Set(['api_session_actor','api_account_create','lock_user_set','lock_users']);
  assert.ok(fns.length>=operations.size+identity.size+10);
  for(const f of fns){
