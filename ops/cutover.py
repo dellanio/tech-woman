@@ -299,13 +299,35 @@ def cmd_status(paths):
     print(json.dumps({'phase': state.phase, 'seq': state.seq, 'candidate_sha256': state.candidate_sha256}))
 
 
+GATE_FLAGS = ['digest', 'release-commit', 'release-tree', 'migrations-aggregate', 'migrations-count']
+
+
+def cmd_gate(paths, flags):
+    """Read-only decision for deploy.sh: may this request proceed, and as which operation?"""
+    manifest = _manifest()
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    candidate = _sealed_candidate(paths, manifest)
+    sealed = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
+    if sealed != state.candidate_sha256:
+        raise StateError(70, 'candidate.json is not the one recorded by prepare')
+    print(json.dumps({'gate': 'ok', 'op': 'stage', 'phase': state.phase}))
+
+
 COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status}
 
 
 def main(argv):
     try:
+        if len(argv) > 2 and argv[1] == 'gate':
+            pairs = argv[2:]
+            flags = {pairs[i][2:]: pairs[i + 1] for i in range(0, len(pairs) - 1, 2)}
+            if len(pairs) % 2 or sorted(flags) != sorted(GATE_FLAGS):
+                print('usage: cutover.py gate --digest D --release-commit C ...', file=sys.stderr)
+                return 64
+            cmd_gate(read_paths(), flags)
+            return 0
         if len(argv) != 2 or argv[1] not in COMMANDS:
-            print('usage: cutover.py {%s}' % '|'.join(sorted(COMMANDS)), file=sys.stderr)
+            print('usage: cutover.py {%s|gate}' % '|'.join(sorted(COMMANDS)), file=sys.stderr)
             return 64
         COMMANDS[argv[1]](read_paths())
         return 0

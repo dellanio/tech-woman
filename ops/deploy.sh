@@ -36,5 +36,10 @@ export PATH
 exec 9>"$TW_LOCK_FILE"
 flock -n 9 || { echo 'deployment in progress' >&2; exit 66; }
 
-echo 'state marker unavailable' >&2
-exit 70
+rc=0
+verdict=$("$TW_PYTHON" -I "$(dirname -- "$self")/cutover.py" gate --digest "$digest" \
+  --release-commit "$release_commit" --release-tree "$release_tree" \
+  --migrations-aggregate "$migrations_aggregate" --migrations-count "$migrations_count") || rc=$?
+[[ $rc -eq 0 ]] || exit "$rc"
+printf '%s\n' "$verdict"
+exit 0
