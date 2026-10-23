@@ -135,3 +135,62 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+/** Perfil de mentora completo (e-mail só no cadastro público). */
+async function mentorFields(page:Page,name:string,email?:string){
+ await page.getByLabel('Nome de exibição').fill(name);
+ if(email!==undefined)await page.getByLabel('Seu e-mail').fill(email);
+ await page.getByLabel('Trajetória').fill('Dez anos entre dados e produto em Recife.');
+ await page.getByRole('group',{name:/Em quais áreas/}).getByLabel('Dados',{exact:true}).click();
+ await page.getByLabel('Disponibilidade descritiva').fill('Encontros presenciais no dia do evento.');
+ await page.getByLabel(/Capacidade legada/).fill('2');
+ await page.getByRole('checkbox',{name:/Concordo/}).check();
+}
+
+test('mentora pública: nome de exibição obrigatório, capacidade legada, foco no inválido e 202 neutro sem protocolo nem turma',{timeout:300_000},async()=>{
+ const email=unique('mentor');const name=`Ana Recife ${randomBytes(2).toString('hex')}`;
+ const {page,context}=await ui.newPage();
+ try{
+  await page.goto(ui.origin+'/mentora');
+  await page.getByRole('heading',{name:/O que você aprendeu pode abrir um caminho/}).waitFor();
+  assert.ok(await page.locator('.mentor-art picture img[src*="perfil-1"]').count()>0,'arte Perfil 1 preservada');
+  const display=page.getByLabel('Nome de exibição');await display.waitFor();
+  assert.deepEqual([await display.getAttribute('maxlength'),await display.getAttribute('required')],['120','']);
+  assert.equal(await main(page).getByRole('link',{name:/Já tenho conta/}).getAttribute('href'),'/login?next=%2Fmentora');
+  // capacidade é LEGADA: não define vagas de turma
+  const capacity=page.getByLabel(/Capacidade legada/);
+  assert.deepEqual([await capacity.getAttribute('min'),await capacity.getAttribute('max')],['1','50']);
+  assert.match(await main(page).locator('#capacity-hint').innerText(),/não define vagas de turma/);
+  const submit=page.getByRole('button',{name:/Cadastrar perfil/});
+  await submit.click();
+  await alertText(page,/nome de exibição/);
+  assert.equal((await focused(page)).id,'mentor-name');
+  await page.getByLabel('Nome de exibição').fill(name);await page.getByLabel('Seu e-mail').fill(email);
+  await page.getByLabel('Trajetória').fill('Dez anos entre dados e produto em Recife.');
+  await submit.click();
+  await alertText(page,/especialidade/);
+  assert.equal((await focused(page)).name,'specialties');
+  assert.equal(await page.getByLabel('Nome de exibição').inputValue(),name,'campos preservados');
+  await mentorFields(page,name,email);
+  await page.getByLabel(/Capacidade legada/).fill('51');
+  await submit.click();
+  await alertText(page,/capacidade/i);
+  assert.equal((await focused(page)).id,'capacity');
+  await page.getByLabel(/Capacidade legada/).fill('2');
+  const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/registrations/mentors')),submit.click()]);
+  assert.equal(response.status(),202);
+  assert.deepEqual(body(response.request()),{email,displayName:name,trajectory:'Dez anos entre dados e produto em Recife.',specialties:['dados'],availability:'Encontros presenciais no dia do evento.',legacyCapacity:2,consent:true});
+  assert.match(response.request().headers()['idempotency-key']??'',UUID);
+  const status=main(page).getByRole('status').filter({hasText:/Cadastro recebido/});await status.waitFor();
+  const text=(await status.innerText()).trim();
+  assert.equal(text.includes(email),false);
+  assert.match(text,/não confirma envio nem entrega/);assert.match(text,/não cria turmas/);
+  assert.doesNotMatch(text,NO_PROMISE);assert.doesNotMatch(text,/revis|aprova/i);
+  assert.doesNotMatch(await main(page).innerText(),/Agendar|agenda automática/i);
+  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login?next=%2Fconta');
+  const row=await ui.db.query<{display_name:string;capacity:number}>('select m.display_name,m.capacity from mentor m join app_user u on u.id=m.user_id where u.email=$1',[email]);
+  assert.deepEqual(row.rows,[{display_name:name,capacity:2}]);
+  for(const m of await ui.drain())assert.equal((await page.content()).includes(m.secret),false);
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
