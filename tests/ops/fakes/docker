@@ -63,6 +63,8 @@ case "$sub" in
         exit "$(rc_of pgdump.rc 0)"
       fi
     done
+    [[ -f "$d/exec.out" ]] && cat "$d/exec.out"
+    [[ -f "$d/exec.err" ]] && cat "$d/exec.err" >&2
     exit "$(rc_of exec.rc 0)" ;;
   login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
   pull) exit "$(rc_of pull.rc 0)" ;;
