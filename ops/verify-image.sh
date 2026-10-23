@@ -11,9 +11,13 @@ here=$(dirname -- "$self")
 
 fail() { echo "verify-image: $2" >&2; exit "$1"; }
 
-[[ $# -eq 4 ]] || fail 64 'usage: verify-image.sh <ref> <release_commit> <aggregate> <count>'
+# --image-only (CI): a local image id, no host env files. The host never passes it (deploy.sh, cutover.py).
+image_only=false
+if [[ "${1:-}" == --image-only ]]; then image_only=true; shift; fi
+[[ $# -eq 4 ]] || fail 64 'usage: verify-image.sh [--image-only] <ref> <release_commit> <aggregate> <count>'
 ref=$1 commit=$2 aggregate=$3 count=$4
 re_ref='^ghcr\.io/dellanio/tech-woman@sha256:[0-9a-f]{64}$' re_sha1='^[0-9a-f]{40}$'
+if [[ "$image_only" == true ]]; then re_ref='^sha256:[0-9a-f]{64}$'; fi
 re_sha256='^[0-9a-f]{64}$' re_count='^[1-9][0-9]{0,3}$'
 [[ "$ref" =~ $re_ref && "$commit" =~ $re_sha1 && "$aggregate" =~ $re_sha256 && "$count" =~ $re_count ]] \
   || fail 64 'invalid arguments'
@@ -48,6 +52,12 @@ case $rc in
   *) fail 74 'cannot scan the image for SQLite code' ;;
 esac
 
+checks='"platform","revision","entrypoints","migrations","no-sqlite"'
+if [[ "$image_only" == true ]]; then
+  printf '{"verified":true,"checks":[%s]}\n' "$checks"
+  exit 0
+fi
+
 env_dir=$TW_ENV_DIR
 for file in web.env mailer.env migrator.env; do
   [[ -f "$env_dir/$file" ]] || fail 74 "env file $file is missing"
@@ -59,4 +69,4 @@ if grep -Eq '^MIGRATION_DATABASE_URL=' "$env_dir/mailer.env"; then
   fail 74 'mailer env carries the migrator credential'
 fi
 
-echo '{"verified":true,"checks":["platform","revision","entrypoints","migrations","no-sqlite","env-names"]}'
+printf '{"verified":true,"checks":[%s,"env-names"]}\n' "$checks"
