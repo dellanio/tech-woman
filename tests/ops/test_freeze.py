@@ -134,5 +134,21 @@ class FreezePreconditionTests(FreezeTestCase):
         self.assert_unfrozen_and_available(self.freeze(), 83)
 
 
+class FreezeRestoreFailureTests(FreezeTestCase):
+    def test_a_restore_that_fails_is_reported_loudly_and_never_claimed_as_available(self):
+        fake = self.host.ops.fake
+        (fake / 'fuser.rc').write_bytes(b'0')     # a writer is found, so the freeze must back out ...
+        (fake / 'rename.rc').write_bytes(b'1')    # ... but putting the original back fails
+        done = self.freeze()
+        self.assertEqual(done.returncode, 84, done.stderr)
+        self.assertIn('NOT restored', done.stderr)
+        self.assertIn('tech-woman-sqlite-original', done.stderr)
+        self.assertEqual(self.state().phase, 'prepared')
+        self.assertEqual(self.state().seq, 2)
+        # a later successful restore path is unaffected: the original is still where freeze put it
+        self.assertTrue(any(a[:2] == ['rename', 'tech-woman-sqlite-original']
+                            for a in docker(self.host.cutover_calls())))
+
+
 if __name__ == '__main__':
     unittest.main()
