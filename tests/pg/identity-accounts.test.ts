@@ -281,3 +281,16 @@ test('fronteira: runtime executa só as funções fechadas de contas/limites; he
   assert.equal(await asRole(db,'techwoman_runtime',sql),null,sql);
  void u;void hashPassword;
 }));
+
+test('replay idempotente de criação não devolve conta que virou protegida (admin/team invisíveis)',async()=>withDb(async({db})=>{
+ const actor=await adminActor(db);const dto={email:'replay@example.invalid',roles:['participant'],participant:profile};const key=randomUUID();
+ const made=await accounts.createAccount(actor.token,key,dto);assert.equal(made.outcome,'ok');
+ assert.deepEqual((await accounts.createAccount(actor.token,key,dto)).outcome,'ok','antes da elevação o replay segue devolvendo a conta');
+ await db.query("insert into user_role(user_id,role) values($1,'team')",[made.user?.id]);
+ assert.deepEqual(await accounts.createAccount(actor.token,key,dto),{outcome:'not_found'},'após elevação o replay é indistinguível de inexistente');
+}));
+
+test('runtime e mailer não executam enqueue_admin_temporary (reenvio só por admin_user_resend com ator)',async()=>withDb(async({db})=>{
+ for(const role of ['techwoman_runtime','techwoman_mailer','public'])
+  assert.deepEqual([role,(await db.query('select has_function_privilege($1,\'internal.enqueue_admin_temporary(uuid,text)\',\'execute\') p',[role])).rows[0].p],[role,false]);
+}));
