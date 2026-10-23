@@ -35,18 +35,18 @@ class VerifyImageDenialTests(unittest.TestCase):
         self.host.good_image()
 
     def fake(self, name, text):
-        (self.host.ops.fake / name).write_text(text)
+        (self.host.ops.fake / name).write_bytes(text.encode())
 
     def drop_from_image(self, path):
-        lines = (self.host.ops.fake / 'fs.txt').read_text().splitlines()
+        lines = (self.host.ops.fake / 'fs.txt').read_bytes().decode().splitlines()
         self.fake('fs.txt', chr(10).join(l for l in lines if l != path) + chr(10))
 
     def add_to_image(self, path):
-        self.fake('fs.txt', (self.host.ops.fake / 'fs.txt').read_text() + path + chr(10))
+        self.fake('fs.txt', (self.host.ops.fake / 'fs.txt').read_bytes().decode() + path + chr(10))
 
     def env_add(self, name, variable):
         path = self.host.ops.env_dir / name
-        path.write_text(path.read_text() + variable + '=TEST-ONLY' + chr(10))
+        path.write_bytes(path.read_bytes() + (variable + '=TEST-ONLY' + chr(10)).encode())
 
     def denied(self, code, **kwargs):
         result = self.host.verify_image(**kwargs)
@@ -66,7 +66,7 @@ class VerifyImageDenialTests(unittest.TestCase):
         self.denied(74)
         self.fake('inspect', 'arm64|linux|' + chr(10))
         self.denied(74)
-        (self.host.ops.fake / 'inspect.rc').write_text('1')
+        (self.host.ops.fake / 'inspect.rc').write_bytes(b'1')
         self.denied(74)
 
     def test_image_without_its_three_entrypoint_files_is_74(self):

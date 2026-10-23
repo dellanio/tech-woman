@@ -75,8 +75,8 @@ IMAGE_FILES = ['/app/server.js', '/tools/scripts/email-worker.ts', '/tools/scrip
 def _good_image(host):
     from tests.ops.test_manifest import make_tar
     fake = host.ops.fake
-    (fake / 'inspect').write_text('arm64|linux|%s\n' % COMMIT)
-    (fake / 'fs.txt').write_text('\n'.join(IMAGE_FILES) + '\n')
+    (fake / 'inspect').write_bytes(('arm64|linux|%s\n' % COMMIT).encode())
+    (fake / 'fs.txt').write_bytes(('\n'.join(IMAGE_FILES) + '\n').encode())
     (fake / 'drizzle.tar').write_bytes(make_tar([('./', None, 'dir')] + [('./' + n, d, 'file') for n, d in MIGRATIONS.items()]))
     for stale in ('grep.rc', 'inspect.rc', 'login.rc', 'pull.rc'):
         (fake / stale).unlink(missing_ok=True)

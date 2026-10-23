@@ -262,6 +262,12 @@ def _run(cmd, args):
     if cmd == 'migrations-tar' and not args:
         print(json.dumps(migrations_from_tar(sys.stdin.buffer.read(MAX_TAR_BYTES + 1))))
         return 0
+    if cmd == 'check-migrations-tar' and len(args) == 2:
+        found = migrations_from_tar(sys.stdin.buffer.read(MAX_TAR_BYTES + 1))
+        if found['aggregate_sha256'] != args[0] or str(found['count']) != args[1]:
+            raise ManifestError(72, 'migrations differ from the sealed candidate')
+        print(json.dumps({'ok': True}))
+        return 0
     if cmd == 'script-sha' and len(args) == 1:
         print(json.dumps(script_sha(args[0])))
         return 0
