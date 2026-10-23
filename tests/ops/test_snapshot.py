@@ -64,6 +64,7 @@ class BackupTests(unittest.TestCase):
         before = (sha(source), sha(str(source) + '-wal'))
         self.assertIsNotNone(before[1], 'the committed write must still live only in the WAL')
         done = run(OPS_SNAPSHOT, 'backup', source, self.tmp / 'copy.db')
+        after = (sha(source), sha(str(source) + '-wal'))  # before the writer closes and checkpoints the WAL
         db.close()
         self.assertEqual(done.returncode, 0, done.stderr)
         report = json.loads(done.stdout)
@@ -73,7 +74,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(report['counts']['booking'], 2)
         self.assertEqual(sorted(report), ['bytes', 'checksum', 'counts', 'file_sha256'])
         self.assertEqual(report['file_sha256'], sha(self.tmp / 'copy.db'))
-        self.assertEqual((sha(source), sha(str(source) + '-wal')), before)
+        self.assertEqual(after, before)
         if os.name == 'posix':
             self.assertEqual(os.stat(self.tmp / 'copy.db').st_mode & 0o777, 0o600)
 

@@ -56,15 +56,49 @@ def logical(path):
     return {'checksum': checksum, 'counts': counts}
 
 
+def backup(source, target):
+    """Online Backup API copy of a (possibly WAL-mode) database, read-only on the source, mode 0600, checked."""
+    source, target = pathlib.Path(source).resolve(), pathlib.Path(target)
+    if target.exists() or target.resolve() == source:
+        raise SnapshotError(81, 'refusing to overwrite an existing file or the source')
+    partial = target.with_name('.' + target.name + '.partial')
+    descriptor = os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    try:
+        reader, writer = _connect(source), sqlite3.connect(partial)
+        try:
+            reader.backup(writer, pages=256)
+            writer.execute('PRAGMA journal_mode=DELETE')
+            _checks(writer)
+        finally:
+            writer.close()
+            reader.close()
+        os.replace(partial, target)
+    except BaseException:
+        for leftover in (partial, partial.with_name(partial.name + '-wal'), partial.with_name(partial.name + '-shm')):
+            if leftover.exists():
+                leftover.unlink()
+        raise
+    report = logical(target)
+    report.update(file_sha256=hashlib.sha256(target.read_bytes()).hexdigest(), bytes=target.stat().st_size)
+    return report
+
+
 def main(argv):
     try:
         if len(argv) == 3 and argv[1] == 'logical':
             print(json.dumps(logical(argv[2])))
             return 0
+        if len(argv) == 4 and argv[1] == 'backup':
+            print(json.dumps(backup(argv[2], argv[3])))
+            return 0
+    except sqlite3.Error as error:
+        print('snapshot: SQLite refused the operation (%s)' % type(error).__name__, file=sys.stderr)
+        return 81
     except SnapshotError as error:
         print('snapshot: %s' % error, file=sys.stderr)
         return error.code
-    print('usage: snapshot.py logical <db>', file=sys.stderr)
+    print('usage: snapshot.py {logical <db>|backup <source> <target>}', file=sys.stderr)
     return 64
 
 
