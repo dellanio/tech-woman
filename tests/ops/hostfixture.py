@@ -65,3 +65,29 @@ class Host:
 
     def deploy(self, **changes):
         return self.ops.run(self.deploy_request(**changes))
+
+
+IMAGE_REF = 'ghcr.io/dellanio/tech-woman@' + DIGEST
+IMAGE_FILES = ['/app/server.js', '/tools/scripts/email-worker.ts', '/tools/scripts/migration/migrate.ts',
+               '/tools/drizzle/20260101000000_a.sql', '/tools/node_modules/drizzle-orm/index.js']
+
+
+def _good_image(host):
+    from tests.ops.test_manifest import make_tar
+    fake = host.ops.fake
+    (fake / 'inspect').write_text('arm64|linux|%s\n' % COMMIT)
+    (fake / 'fs.txt').write_text('\n'.join(IMAGE_FILES) + '\n')
+    (fake / 'drizzle.tar').write_bytes(make_tar([('./', None, 'dir')] + [('./' + n, d, 'file') for n, d in MIGRATIONS.items()]))
+    for stale in ('grep.rc', 'inspect.rc', 'login.rc', 'pull.rc'):
+        (fake / stale).unlink(missing_ok=True)
+
+
+def _verify_image(host, ref=IMAGE_REF, commit=COMMIT, aggregate=None, count=None):
+    migrations = host.migrations()
+    return host.ops.run('', script='verify-image.sh',
+                        args=[ref, commit, aggregate or migrations['aggregate_sha256'],
+                              count or str(migrations['count'])])
+
+
+Host.good_image = _good_image
+Host.verify_image = _verify_image

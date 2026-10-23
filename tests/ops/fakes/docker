@@ -1,4 +1,44 @@
 #!/usr/bin/env bash
+# Fake docker: logs every call; behaviour comes from files in $TW_FAKE_DIR (never from the real host).
 source "$(dirname "$0")/_common.sh"
 tw_log docker false "$@"
+d=${TW_FAKE_DIR:-/nonexistent}
+if [[ "${1:-}" == --config ]]; then shift 2; fi
+sub=${1:-}; shift || true
+exists() {
+  local path=$1 line
+  [[ -f "$d/fs.txt" ]] || return 1
+  while IFS= read -r line; do [[ "$line" == "$path" || "$line" == "$path"/* ]] && return 0; done < "$d/fs.txt"
+  return 1
+}
+rc_of() { if [[ -f "$d/$1" ]]; then cat "$d/$1"; else echo "${2:-0}"; fi; }
+case "$sub" in
+  image)
+    [[ "${1:-}" == inspect ]] || exit 0
+    [[ -f "$d/inspect.rc" ]] && exit "$(cat "$d/inspect.rc")"
+    cat "$d/inspect" ;;
+  run)
+    ep=''
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --rm|-d|-i) shift ;;
+        --network|--entrypoint|--name|--memory|--cpus|--env-file|--ip|--network-alias|--mount|--log-opt|--restart)
+          [[ "$1" == --entrypoint ]] && ep=$2
+          shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
+    shift  # image reference
+    case "$ep" in
+      test)
+        if [[ "$1" == '!' ]]; then exists "$3" && exit 1 || exit 0; fi
+        [[ "$1" == -f ]] && { exists "$2" && exit 0 || exit 1; }
+        exit 2 ;;
+      tar) cat "$d/drizzle.tar" ;;
+      grep) exit "$(rc_of grep.rc 1)" ;;
+    esac ;;
+  login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
+  pull) exit "$(rc_of pull.rc 0)" ;;
+esac
 exit 0

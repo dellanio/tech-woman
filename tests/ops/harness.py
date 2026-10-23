@@ -5,6 +5,8 @@ BASH = 'C:/Program Files/Git/bin/bash.exe' if os.name == 'nt' else 'bash'
 FAKES = pathlib.Path(__file__).resolve().parent / 'fakes'
 OPS_SOURCE = pathlib.Path(__file__).resolve().parents[2] / 'ops'
 UTIL_DIRS = ['C:/Program Files/Git/usr/bin'] if os.name == 'nt' else ['/usr/bin', '/bin']
+ENV_FILES = (('web.env', ['DATABASE_URL', 'SESSION_SECRET']), ('mailer.env', ['MAILER_DATABASE_URL']),
+             ('migrator.env', ['MIGRATION_DATABASE_URL']))
 EFFECT_COMMANDS = ('stop', 'rename', 'run', 'start', 'rm', 'network', 'login', 'pull')
 
 
@@ -39,7 +41,7 @@ class Result:
                 raise AssertionError('unexpected effect: %r' % (call,))
 
 
-def run_script(path, stdin, extra_env=None):
+def run_script(path, stdin, extra_env=None, args=()):
     with tempfile.TemporaryDirectory(prefix='tw-ops-') as scratch:
         log_path = pathlib.Path(scratch) / 'calls.jsonl'
         log_path.write_text('', encoding='utf-8')
@@ -54,9 +56,9 @@ def run_script(path, stdin, extra_env=None):
             env['SYSTEMROOT'] = os.environ.get('SYSTEMROOT', 'C:/Windows')
         env.update(extra_env or {})
         # Git Bash prepends /usr/bin at startup; reset PATH inside so only the fakes shadow host tools.
-        launcher = 'export PATH="$TW_PATH"; exec bash "$1"'
+        launcher = 'export PATH="$TW_PATH"; exec bash "$@"'
         completed = subprocess.run([BASH, '--noprofile', '--norc', '-c', launcher, 'tw-launcher',
-                                    pathlib.Path(path).as_posix()], input=stdin.encode('utf-8'),
+                                    pathlib.Path(path).as_posix(), *map(str, args)], input=stdin.encode('utf-8'),
                                    capture_output=True, env=env)
         return Result(completed, log_path)
 
@@ -71,22 +73,29 @@ class StagedOps:
         self.ops = root / 'lib'
         self.host = root / 'host'
         shutil.copytree(OPS_SOURCE, self.ops, ignore=shutil.ignore_patterns('__pycache__'))
-        for name in ('lock', 'state', 'app'):
+        for name in ('lock', 'state', 'app', 'fake', 'env'):
             (self.host / name).mkdir(parents=True)
+        self.fake = self.host / 'fake'
+        self.env_dir = self.host / 'env'
+        for name, body in ENV_FILES:
+            (self.env_dir / name).write_bytes(''.join('%s=TEST-ONLY%s' % (k, chr(10)) for k in body).encode('utf-8'))
         self.script = self.ops / 'deploy.sh'
         (self.ops / 'paths.env').write_bytes(('\n'.join([
             "PATH='%s'" % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
             "TW_LOCK_FILE='%s'" % (self.host / 'lock/deploy.lock').as_posix(),
             "TW_STATE_DIR='%s'" % (self.host / 'state').as_posix(),
             "TW_APP_DIR='%s'" % (self.host / 'app').as_posix(),
+            "TW_ENV_DIR='%s'" % self.env_dir.as_posix(),
             "TW_PYTHON='%s'" % _posix(sys.executable),
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
             'TW_STATE_OWNER_UID=%d' % (os.getuid() if os.name == 'posix' else 0),
             'TW_STATE_MODE_CHECK=%d' % (1 if os.name == 'posix' else 0), '']).encode('utf-8')))
         os.chmod(self.host / 'state', 0o700)
 
-    def run(self, stdin, extra_env=None):
-        return run_script(self.script, stdin, extra_env)
+    def run(self, stdin, extra_env=None, script='deploy.sh', args=()):
+        env = {'TW_FAKE_DIR': _posix(self.fake)}
+        env.update(extra_env or {})
+        return run_script(self.ops / script, stdin, env, args)
 
     def cleanup(self):
         self._tmp.cleanup()
