@@ -90,5 +90,29 @@ class SnapshotRefusalTests(SnapshotCommandTestCase):
         self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
 
 
+class SnapshotRevalidationTests(SnapshotCommandTestCase):
+    """Achado 1: the source is re-proven untouched and unheld immediately before snapshot A."""
+
+    def test_a_change_after_the_freeze_or_a_new_holder_refuses_before_any_copy(self):
+        cases = {
+            'write after the freeze (root ignores the read-only bit)': 'write',
+            'process holding the file at snapshot time': 'holder',
+        }
+        for name, how in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                self.host.frozen()
+                if how == 'write':
+                    self.writer.execute("INSERT INTO booking VALUES (80, 1, 'after freeze')")
+                    self.writer.commit()
+                else:
+                    (self.host.ops.fake / 'fuser.rc').write_bytes(b'0')
+                done = self.host.cutover('snapshot')
+                self.assertEqual(done.returncode, 80, done.stderr)
+                self.assertEqual(self.state().phase, 'frozen')
+                self.assertEqual(list(self.private().glob('*.db')) if self.private().exists() else [], [])
+                self.assertNotIn('after freeze', done.stdout + done.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

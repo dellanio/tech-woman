@@ -114,7 +114,24 @@ def _staged(host):
     (fake / 'ps').write_bytes(b'tech-woman\nother-service\n')
     (fake / 'timers').write_bytes(b'0 timers listed.\n')
     (fake / 'crontab').write_bytes(b'# no entries\n')
+    host.write_inventory(sealed)
     return candidate, state
+
+
+INVENTORY_WRITERS = [{'id': 'tech-woman', 'kind': 'container'}, {'id': 'tech-woman-mailer', 'kind': 'container'},
+                     {'id': 'tech-woman-backup.service', 'kind': 'systemd-unit'},
+                     {'id': 'root-crontab-sync', 'kind': 'cron'}, {'id': 'pgadmin-operator-session', 'kind': 'external'}]
+
+
+def _write_inventory(host, sealed, **changes):
+    """Operator's closed inventory of every SQLite writer for this candidate (fixed path in the state dir)."""
+    inventory = {'schema': 1, 'candidate_sha256': sealed, 'complete': True, 'decision_ref': 'dec-1',
+                 'writers': [dict(w) for w in INVENTORY_WRITERS]}
+    inventory.update(changes)
+    path = host.state_dir / 'writers-inventory.json'
+    path.write_text(json.dumps(inventory))
+    os.chmod(path, 0o644)
+    return inventory
 
 
 def _sqlite(host, wal=True):
@@ -135,11 +152,21 @@ def _log_text(host):
     return log.read_bytes().decode() if log.exists() else ''
 
 
+def source_digest(db_path):
+    """Contract of freeze.db_sha256: sha256 of the database file followed by its WAL (empty if absent)."""
+    import hashlib
+    db_path = pathlib.Path(db_path)
+    wal = pathlib.Path(str(db_path) + '-wal')
+    return hashlib.sha256(db_path.read_bytes() + (wal.read_bytes() if wal.exists() else b'')).hexdigest()
+
+
 def _frozen(host, quiet_seconds=1):
     candidate, state = _staged(host)
+    db = host.ops.host / 'app/dados/tech-woman.db'
     state.transition('frozen', NOW_FIXED, freeze={
         'at': NOW_FIXED, 'cutoff_at': NOW_FIXED, 'quiet_seconds': quiet_seconds, 'ip': ORIGINAL_IP,
         'original_container': 'tech-woman-sqlite-original', 'original_image': ORIGINAL_IMAGE,
+        'db_sha256': source_digest(db) if db.exists() else '0' * 64,
         'writers_checked': ['app-container', 'mailer-containers', 'timers', 'cron', 'file-handles', 'quiet-window']})
     return candidate, state
 
@@ -193,6 +220,7 @@ def _pg_open(host, last_good=OLD_PG_DIGEST, known=(OLD_PG_DIGEST,), schema_aggre
     return candidate, state
 
 
+Host.write_inventory = _write_inventory
 Host.pg_open = _pg_open
 Host.imported = _imported
 Host.snapshotted = _snapshotted

@@ -2,7 +2,13 @@
 # Read-only inspection only; anything else is a tripwire. Output comes from $TW_FAKE_DIR/timers.
 source "$(dirname "$0")/_common.sh"
 case "${1:-}" in
-  list-timers|list-unit-files|list-units|is-active)
+  is-active)
+    tw_log systemctl false "$@"
+    f="${TW_FAKE_DIR:-/nonexistent}/active/${2:-}"
+    if [[ -f "$f" ]]; then cat "$f"; [[ "$(cat "$f")" == active ]] && exit 0; exit 3; fi
+    echo inactive
+    exit 3 ;;
+  list-timers|list-unit-files|list-units)
     tw_log systemctl false "$@"
     scenario=timers
     [[ "$1" == list-unit-files ]] && scenario=unit-files

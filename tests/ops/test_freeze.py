@@ -1,7 +1,7 @@
-import hashlib, threading, time, unittest
+import hashlib, os, threading, time, unittest
 
 from tests.ops import harness
-from tests.ops.hostfixture import ORIGINAL_IMAGE, ORIGINAL_IP, Host
+from tests.ops.hostfixture import INVENTORY_WRITERS, ORIGINAL_IMAGE, ORIGINAL_IP, Host, source_digest
 
 cutover = harness.load_ops_module('cutover')
 MUTATING = ('stop', 'rename', 'rm', 'start', 'run')
@@ -167,6 +167,70 @@ class FreezeBroaderWritersTests(FreezeTestCase):
     def test_a_cron_location_that_cannot_be_read_proves_nothing_and_refuses_with_83(self):
         (self.host.ops.host / 'cron').rmdir()
         self.assert_unfrozen_and_available(self.freeze(), 83)
+
+
+class FreezeInventoryTests(FreezeTestCase):
+    """Achado 1: a keyword scan cannot prove every writer is gone; the operator's closed inventory is required."""
+
+    def sealed(self):
+        return self.state().candidate_sha256
+
+    def test_without_a_valid_closed_inventory_for_this_candidate_nothing_is_touched(self):
+        writers = [dict(w) for w in INVENTORY_WRITERS]
+        cases = {
+            'missing inventory': (None, 80),
+            'incomplete (unknown writers remain)': ({'complete': False}, 80),
+            'inventory of another candidate': ({'candidate_sha256': 'f' * 64}, 70),
+            'app container not listed': ({'writers': [w for w in writers if w['id'] != 'tech-woman']}, 80),
+            'unknown kind': ({'writers': writers + [{'id': 'x', 'kind': 'guess'}]}, 64),
+            'shell in a unit id': ({'writers': writers + [{'id': 'a;rm -rf /', 'kind': 'systemd-unit'}]}, 64),
+            'command substitution in an id': ({'writers': writers + [{'id': '$(id)', 'kind': 'container'}]}, 64),
+            'duplicate id': ({'writers': writers + [dict(writers[0])]}, 64),
+            'extra field': ({'note': 'trust me'}, 64),
+        }
+        for name, (changes, code) in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                path = self.host.state_dir / 'writers-inventory.json'
+                if changes is None:
+                    path.unlink()
+                else:
+                    self.host.write_inventory(self.sealed(), **changes)
+                done = self.freeze()
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assertEqual((self.state().phase, self.state().seq), ('prepared', 2))
+                self.assertEqual(mutations(self.host.cutover_calls()), [])
+                self.assertNotIn('rm -rf', done.stderr)
+                self.assertNotIn('$(id)', done.stderr)
+
+    def test_a_listed_writer_that_is_still_running_refuses_and_restores(self):
+        cases = {
+            'listed unit still active': ('active/tech-woman-backup.service', b'active\n'),
+            'listed container still running': ('ps', b'tech-woman\ntech-woman-mailer\n'),
+        }
+        for name, (file, content) in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                target = self.host.ops.fake / file
+                target.parent.mkdir(exist_ok=True)
+                target.write_bytes(content)
+                self.assert_unfrozen_and_available(self.freeze(), 80)
+
+    def test_freeze_binds_the_inventory_and_write_protects_the_source_at_once(self):
+        done = self.freeze()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        freeze = self.state().data['freeze']
+        inventory = (self.host.state_dir / 'writers-inventory.json').read_bytes()
+        self.assertEqual(freeze['inventory_sha256'], hashlib.sha256(inventory).hexdigest())
+        self.assertEqual(freeze['attested_only'], ['root-crontab-sync', 'pgadmin-operator-session'])
+        self.assertEqual(freeze['db_sha256'], source_digest(self.db))
+        self.assertTrue(freeze['write_protected'])
+        self.assertEqual(os.stat(self.db).st_mode & 0o222, 0)
+        chattr = [c['args'] for c in self.host.cutover_calls() if c['cmd'] == 'chattr']
+        self.assertIn('+i', [a[0] for a in chattr])
+        active = [c['args'] for c in self.host.cutover_calls() if c['cmd'] == 'systemctl' and c['args'][0] == 'is-active']
+        self.assertEqual(active, [['is-active', 'tech-woman-backup.service']])
+        self.assertNotIn('pgadmin-operator-session', done.stdout + done.stderr)
 
 
 class FreezeRestoreFailureTests(FreezeTestCase):
