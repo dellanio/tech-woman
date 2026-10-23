@@ -1,7 +1,7 @@
 import hashlib, json, os, pathlib, sqlite3, subprocess, sys, threading, time, unittest
 
 from tests.ops import harness
-from tests.ops.hostfixture import Host
+from tests.ops.hostfixture import Host, source_digest
 from tests.ops.test_snapshot import LEGACY
 
 cutover = harness.load_ops_module('cutover')
@@ -80,10 +80,12 @@ class SnapshotRefusalTests(SnapshotCommandTestCase):
     def test_corrupt_source_and_wrong_phase_are_refused_without_state_change(self):
         self.host.staged()  # still prepared: not frozen
         self.assertEqual(self.host.cutover('snapshot').returncode, 75)
-        self.state().transition('frozen', '2026-10-23T12:00:00Z', freeze={'quiet_seconds': 1, 'at': 'x', 'cutoff_at': 'x'})
         self.writer.execute('PRAGMA foreign_keys=OFF')
         self.writer.execute('INSERT INTO booking VALUES (70, 4040, ?)', ('orphan',))
         self.writer.commit()
+        # the corrupt file is what was frozen (same digest), so the refusal comes from the integrity/FK checks
+        self.state().transition('frozen', '2026-10-23T12:00:00Z', freeze={'quiet_seconds': 1, 'at': 'x', 'cutoff_at': 'x',
+                                                                          'db_sha256': source_digest(self.db)})
         done = self.host.cutover('snapshot')
         self.assertEqual(done.returncode, 81, done.stderr)
         self.assertEqual(self.state().phase, 'frozen')

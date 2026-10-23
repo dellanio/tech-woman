@@ -440,14 +440,33 @@ def cmd_freeze(paths, flags):
     if not window['authorized_at'] <= _now() < window['expires_at']:
         raise StateError(73, 'outside the authorised window')
     freeze = _sibling('freeze')
+    inventory_path = pathlib.Path(paths['TW_STATE_DIR']) / 'writers-inventory.json'
     try:
-        record = freeze.freeze(paths, int(quiet))
+        _check_private_file(inventory_path, _policy(paths))
+        inventory_bytes = inventory_path.read_bytes()
+        inventory = json.loads(inventory_bytes.decode('utf-8'))
+    except (OSError, ValueError, StateError):
+        raise StateError(80, 'no readable, root-owned writers inventory for this candidate: nothing was touched')
+    try:
+        writers = freeze.check_inventory(inventory, state.candidate_sha256)
+        record = freeze.freeze(paths, int(quiet), writers)
     except freeze.Refusal as refusal:
         raise StateError(refusal.code, str(refusal))
     now = _now()
-    record.update(at=now, cutoff_at=now)
+    record.update(at=now, cutoff_at=now, inventory_sha256=_sha256(inventory_bytes))
     state.transition('frozen', now, freeze=record)
     print(json.dumps({'phase': 'frozen', 'cutoff_at': now, 'writers_checked': record['writers_checked']}))
+
+
+def _check_private_file(path, policy):
+    """An operator input file: a plain file, owned by the state owner, not writable by group/others."""
+    info = policy.lstat(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise StateError(70, 'not a plain file')
+    if policy.owner_uid is not None and info.st_uid != policy.owner_uid:
+        raise StateError(70, 'wrong owner')
+    if policy.check_mode and info.st_mode & 0o022:
+        raise StateError(70, 'writable by others')
 
 
 def _db_files(paths):
@@ -465,6 +484,16 @@ def cmd_snapshot(paths, flags):
     private.mkdir(exist_ok=True)
     os.chmod(private, 0o700)
     tag = str(state.seq)
+    freeze, runner = _sibling('freeze'), hostops.Runner(paths)
+    db = paths['TW_DB_FILE']
+    try:
+        holders = runner.run(['fuser', '-v', db, db + '-wal', db + '-shm'], ok=(0, 1))
+    except hostops.HostError as error:
+        raise StateError(83, str(error))
+    if holders.returncode == 0:
+        raise StateError(80, 'a process holds the database files again since the freeze; nothing was copied')
+    if freeze.source_digest(db) != state.data['freeze'].get('db_sha256'):
+        raise StateError(80, 'the database changed since the freeze (a writer outside the inventory?); nothing was copied')
     try:
         first = snapshot.backup(paths['TW_DB_FILE'], private / (tag + '-A.db'))
         time.sleep(state.data['freeze']['quiet_seconds'])
@@ -475,7 +504,7 @@ def cmd_snapshot(paths, flags):
         raise StateError(81, 'SQLite refused the snapshot')
     if first['checksum'] != second['checksum'] or first['counts'] != second['counts']:
         raise StateError(81, 'the database changed between snapshot A and B: a writer is still active')
-    runner, immutable = hostops.Runner(paths), True
+    immutable = True
     for path in _db_files(paths):
         os.chmod(path, os.stat(path).st_mode & ~0o222)
         try:

@@ -1,9 +1,10 @@
 """Pre-write freeze of every SQLite writer (operator CLI only). Exit codes: 80 writer present, 83 host command failed.
 
 Order (each confirmation is recorded in freeze.writers_checked): maintenance container in place of the app,
-no other tech-woman container, no timer/cron entry, no open file handle on the database files, then a quiet
-window in which size/mtime/data_version/content hash of the database stay identical. Any failure puts the
-original container back before returning, so a refused freeze never costs availability.
+no other tech-woman container, every writer of the operator's closed inventory stopped, no timer/cron/unit entry,
+no open file handle on the database files, then a quiet window in which size/mtime/data_version/content hash of the
+database stay identical; the files are then write-protected at once. Any failure puts the original container back
+before returning (or exits 84 saying it could NOT), so a refused freeze never claims availability it does not have.
 """
 import hashlib, os, pathlib, re, sqlite3, time
 
@@ -33,6 +34,71 @@ def _sample(db_path, connection):
             parts.append((suffix, info.st_size, info.st_mtime_ns))
     digest = hashlib.sha256(pathlib.Path(db_path).read_bytes()).hexdigest()
     return parts, connection.execute('PRAGMA data_version').fetchone()[0], digest
+
+
+INVENTORY_KINDS = {'container', 'systemd-unit', 'cron', 'process', 'external'}
+ATTESTED_ONLY_KINDS = ('cron', 'process', 'external')
+WRITER_ID = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9@._:-]{0,119}\Z')
+STILL_RUNNING = {'active', 'activating', 'reloading', 'deactivating'}
+
+
+def check_inventory(inventory, candidate_sha256):
+    """The operator's closed list of every writer of the SQLite file, bound to this candidate.
+
+    Deny by default: anything malformed is 64, another candidate is 70, an open or partial list is 80. Containers
+    and systemd units are verified against the host; cron/process/external entries can only be attested by the
+    operator and are recorded as such (attested_only), never presented as proven.
+    """
+    if type(inventory) is not dict or sorted(inventory) != ['candidate_sha256', 'complete', 'decision_ref', 'schema',
+                                                             'writers']:
+        raise Refusal(64, 'writers inventory has an unexpected shape')
+    writers = inventory['writers']
+    if not (inventory['schema'] == 1 and type(inventory['schema']) is int and type(inventory['complete']) is bool
+            and type(inventory['decision_ref']) is str
+            and re.fullmatch(r'[A-Za-z0-9._-]{1,64}', inventory['decision_ref']) is not None
+            and type(writers) is list and writers):
+        raise Refusal(64, 'writers inventory has invalid values')
+    seen = set()
+    for writer in writers:
+        if type(writer) is not dict or sorted(writer) != ['id', 'kind'] or writer['kind'] not in INVENTORY_KINDS \
+                or type(writer['id']) is not str or not WRITER_ID.match(writer['id']) or writer['id'] in seen:
+            raise Refusal(64, 'writers inventory has an invalid entry')
+        seen.add(writer['id'])
+    if inventory['candidate_sha256'] != candidate_sha256:
+        raise Refusal(70, 'writers inventory was made for another candidate')
+    if not inventory['complete']:
+        raise Refusal(80, 'writers inventory is not complete: unknown writers may remain')
+    if {'id': CONTAINER, 'kind': 'container'} not in writers:
+        raise Refusal(80, 'writers inventory does not list the application container')
+    return writers
+
+
+def source_digest(db_path):
+    """sha256 of the database file followed by its WAL: any committed write changes it."""
+    db_path = pathlib.Path(db_path)
+    wal = pathlib.Path(str(db_path) + '-wal')
+    digest = hashlib.sha256(db_path.read_bytes())
+    if wal.exists():
+        digest.update(wal.read_bytes())
+    return digest.hexdigest()
+
+
+def db_files(db_path):
+    return [p for p in (pathlib.Path(db_path), pathlib.Path(str(db_path) + '-wal'), pathlib.Path(str(db_path) + '-shm'))
+            if p.exists()]
+
+
+def write_protect(runner, db_path):
+    """chmod a-w on the database files and chattr +i where available. Root can still write: this stops
+    accidental writers, it is not a guarantee against root. Returns whether every file became immutable."""
+    immutable = True
+    for path in db_files(db_path):
+        os.chmod(path, os.stat(path).st_mode & ~0o222)
+        try:
+            runner.run(['chattr', '+i', str(path)])
+        except hostops.HostError:
+            immutable = False
+    return immutable
 
 
 def _scan_cron(paths):
@@ -72,7 +138,7 @@ def _back_out(runner, raised, reason, code):
     raise Refusal(code, reason)
 
 
-def freeze(paths, quiet_seconds):
+def freeze(paths, quiet_seconds, writers):
     """Returns the freeze record for the state file, or raises Refusal after restoring the original service."""
     runner = hostops.Runner(paths)
     network, db = paths['TW_NETWORK'], pathlib.Path(paths['TW_DB_FILE'])
@@ -97,6 +163,13 @@ def freeze(paths, quiet_seconds):
         names = runner.run(['docker', 'ps', '--format', '{{.Names}}']).stdout.split()
         if any(name.startswith('tech-woman-') and name != ORIGINAL for name in names):
             raise Refusal(80, 'another tech-woman container is running (mailer or job)')
+        for writer in writers:
+            if writer['kind'] == 'container' and writer['id'] != CONTAINER and writer['id'] in names:
+                raise Refusal(80, 'a listed writer container is still running')
+            if writer['kind'] == 'systemd-unit':
+                state = runner.run(['systemctl', 'is-active', writer['id']], ok=(0, 1, 2, 3, 4)).stdout.strip()
+                if state in STILL_RUNNING:
+                    raise Refusal(80, 'a listed systemd unit is still running')
         timers = runner.run(['systemctl', 'list-timers', '--all', '--no-pager']).stdout
         if re.search('tech-woman', timers, re.I):
             raise Refusal(80, 'a systemd timer mentions tech-woman')
@@ -120,9 +193,12 @@ def freeze(paths, quiet_seconds):
             connection.close()
         if first != second:
             raise Refusal(80, 'the database changed during the quiet window')
+        digest = source_digest(db)
+        immutable = write_protect(runner, db)
     except hostops.HostError as error:
         _back_out(runner, raised, str(error), error.code)
     except Refusal as refusal:
         _back_out(runner, raised, str(refusal), refusal.code)
     return {'original_container': ORIGINAL, 'original_image': image, 'ip': ip, 'quiet_seconds': quiet_seconds,
-            'writers_checked': list(WRITERS)}
+            'writers_checked': list(WRITERS), 'db_sha256': digest, 'write_protected': True, 'immutable': immutable,
+            'attested_only': [w['id'] for w in writers if w['kind'] in ATTESTED_ONLY_KINDS]}
