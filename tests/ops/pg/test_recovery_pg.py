@@ -181,5 +181,107 @@ class RestartRecoveryTests(RecoveryWorld):
         self.assert_never_sqlite()
 
 
+class RestoreRecoveryTests(RecoveryWorld):
+    """R-B: an older dump restored in isolation proves what it lacks; recovery is a RECENT complete dump of the
+    intact database, restored in isolation and confronted row by row with the source (no partial delta)."""
+
+    def daily_dump(self):
+        """What the host's daily mechanism produced before the reservation (pg_dump -Fc of the whole database)."""
+        path = self.host.ops.host / 'backups' / 'daily-20261023.dump'
+        with open(path, 'wb') as out:
+            done = subprocess.run(['pg_dump', '-Fc', '-d', self.db], stdout=out, stderr=subprocess.PIPE, env=self.cluster.env())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return path.name
+
+    def writes_after_the_dump(self):
+        first = self.reserve('p1@example.invalid')
+        self.assertEqual(self.host.cutover('record-first-write').returncode, 0)
+        dump = self.daily_dump()
+        second = self.reserve('p2@example.invalid')                     # new reservation after the dump
+        self.q("update enrollment set status='cancelled' where id=%d" % first)  # and a cancellation (UPDATE)
+        return dump, first, second
+
+    def table_digests(self, db):
+        rows = self.q("select n.nspname||'.'||c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace "
+                      "where c.relkind='r' and n.nspname not in ('pg_catalog','information_schema') "
+                      "and n.nspname not like 'pg\\_%' order by 1", db).split()
+        return {t: self.q("select count(*)||':'||coalesce(md5(string_agg(x::text, '|' order by x::text)),'') from %s x"
+                          % '.'.join('"%s"' % p for p in t.split('.')), db).strip() for t in rows}
+
+    def test_an_older_dump_lacks_the_reservation_and_the_cancellation_and_says_so(self):
+        dump, first, second = self.writes_after_the_dump()
+        done = self.host.cutover('recover', '--mode', 'compare', '--dump', dump)
+        self.assertEqual(done.returncode, 86, done.stderr)
+        report = json.loads(done.stdout)
+        self.assertFalse(report['equal'])
+        differences = report['differences']
+        self.assertEqual(differences['public.enrollment'], {'only_live': 1, 'only_restored': 0, 'changed': 1})
+        self.assertEqual(differences['public.match'], {'only_live': 1, 'only_restored': 0, 'changed': 1})
+        self.assertEqual(differences['public.email_job'], {'only_live': 1, 'only_restored': 0, 'changed': 1})
+        self.assertEqual(differences['public.audit_event'], {'only_live': 2, 'only_restored': 0, 'changed': 0})
+        restored = report['restored_db']
+        self.assertTrue(restored.startswith(self.db + '_restore_'))
+        # explicit: the isolated restore of the older dump does NOT contain the reservation made after it
+        self.assertEqual(self.q("select count(*) from enrollment where id=%d" % second, restored).strip(), '0')
+        self.assertEqual(self.q("select status from enrollment where id=%d" % first, restored).strip(), 'active')
+        self.assertEqual(self.state().phase, 'pg_write_open')  # inspection only
+        self.assert_no_pii(done)
+        self.assert_never_sqlite()
+
+    def test_recovery_is_a_recent_complete_dump_proven_identical_to_the_intact_source(self):
+        dump, first, second = self.writes_after_the_dump()
+        live = self.table_digests(self.db)
+        done = self.host.cutover('recover', '--mode', 'reconcile')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        report = json.loads(done.stdout)
+        self.assertTrue(report['equal'])
+        self.assertEqual(report['differences'], {})
+        self.assertTrue(report['schema_equal'])
+        self.assertEqual(report['phase'], 'pg_write_open')
+        restored = report['restored_db']
+        # independent check: every row of every table, ids/status/timestamps included, sequences too
+        self.assertEqual(self.table_digests(restored), live)
+        seq = "select string_agg(sequencename||'='||coalesce(last_value::text,''), ',' order by 1) from pg_sequences"
+        self.assertEqual(self.q(seq, restored), self.q(seq))
+        self.assertEqual(self.q("select status, cancelled_at is not null from enrollment where id=%d" % first, restored).strip(), 'cancelled|t')
+        self.assertEqual(self.q("select count(*) from match where enrollment_id=%d" % second, restored).strip(), '1')
+        recovery_dump = self.host.ops.host / 'backups' / report['dump']
+        self.assertNotEqual(report['dump'], dump)
+        if os.name == 'posix':
+            self.assertEqual(os.stat(recovery_dump).st_mode & 0o777, 0o600)
+        recovery = self.state().data['recovery']
+        self.assertEqual((recovery['mode'], recovery['result'], recovery['restored_db']), ('reconcile', 'ok', restored))
+        import hashlib
+        self.assertEqual(recovery['dump_sha256'], hashlib.sha256(recovery_dump.read_bytes()).hexdigest())
+        self.assert_no_pii(done)
+        self.assert_never_sqlite()
+
+    def test_an_update_that_creates_no_new_id_is_still_a_difference(self):
+        dump = self.daily_dump()
+        self.q("update mentor set availability='noites' where email='m1@example.invalid'")  # no row above any id
+        done = self.host.cutover('recover', '--mode', 'compare', '--dump', dump)
+        self.assertEqual(done.returncode, 86, done.stderr)
+        self.assertEqual(json.loads(done.stdout)['differences'],
+                         {'public.mentor': {'only_live': 0, 'only_restored': 0, 'changed': 1}})
+
+    def test_without_a_readable_live_database_nothing_is_restored_and_the_rpo_is_stated(self):
+        self.reserve('p1@example.invalid')
+        # the PostgreSQL container is gone: every `docker exec` into it fails
+        (self.host.ops.fake / 'pg-passthrough').unlink()
+        (self.host.ops.fake / 'exec.rc').write_bytes(b'1')
+        for mode in (['--mode', 'reconcile'], ['--mode', 'restart']):
+            with self.subTest(mode=mode[1]):
+                done = self.host.cutover('recover', *mode)
+                self.assertEqual(done.returncode, 85, done.stderr)
+                self.assertIn('ate 24h (dump diario)', done.stderr)
+                self.assertIn('decision', done.stderr)
+                self.assertIn('no success is claimed', done.stderr)
+                self.assertEqual(done.stdout, '')
+                self.assertEqual(self.state().phase, 'recovering')
+        self.assertEqual(self.q("select count(*) from pg_database where datname like '%s%%restore%%'" % self.db).strip(), '0')
+        self.assertEqual([c for c in self.host.cutover_calls() if c['cmd'] == 'docker' and c['args'][0] in ('start', 'run')], [])
+        self.assert_never_sqlite()
+
+
 if __name__ == '__main__':
     unittest.main()
