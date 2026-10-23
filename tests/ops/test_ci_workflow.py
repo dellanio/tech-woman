@@ -76,6 +76,21 @@ class StepOrderTests(unittest.TestCase):
             block = steps(text)[position(text, needle)]
             self.assertRegex(block, r'MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127\.0\.0\.1:5432/postgres')
 
+    def test_ops_postgres_suites_run_on_their_own_disposable_cluster_with_real_commands(self):
+        text = ci()
+        install = position(text, 'apt-get install -y --no-install-recommends postgresql-16')
+        python_pg = position(text, 'python3 -m unittest -v tests.ops.pg.test_recovery_pg tests.ops.pg.test_preflight_pg')
+        ts_pg = position(text, 'tests/ops/pg/*.test.ts')
+        self.assertLess(install, python_pg)
+        self.assertLess(python_pg, ts_pg)
+        self.assertLess(position(text, 'pnpm test:pg'), python_pg)
+        for index in (python_pg, ts_pg):
+            block = steps(text)[index]
+            self.assertIn('WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg', block)
+            self.assertIn("WP005_PG_PORT: '55346'", block)
+            self.assertIn('PG_BIN: /usr/lib/postgresql/16/bin', block)
+        self.assertNotIn('sudo -u postgres', text)  # the test cluster runs as the runner user, never as a system service
+
     def test_image_is_built_without_push_verified_and_the_facts_are_summarised(self):
         text = ci()
         image = steps(text)[position(text, 'docker build')]
