@@ -102,3 +102,31 @@ test('sessão limitada sempre volta à troca; destino só local; logout 204 ence
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+test('esqueci a senha: 202 neutro idêntico para conta existente e inexistente, sem prometer envio',{timeout:240_000},async()=>{
+ const email=unique('forgot');await ui.temporaryPassword(email);
+ const {page,context}=await ui.newPage();
+ try{
+  await page.goto(ui.origin+'/login');await page.getByRole('link',{name:/Esqueci minha senha/}).click();
+  await page.waitForURL(u=>u.pathname==='/recuperar-senha');
+  const texts:string[]=[];
+  for(const addr of [email,unique('nobody')]){
+   await page.goto(ui.origin+'/recuperar-senha');
+   const input=page.getByLabel('E-mail');assert.equal(await input.getAttribute('autocomplete'),'email');
+   await input.fill(addr);
+   const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/auth/password/forgot')),page.getByRole('button',{name:/Solicitar redefinição/}).click()]);
+   assert.equal(response.status(),202);
+   const status=page.getByRole('main').getByRole('status').filter({hasText:/Solicitação recebida/});await status.waitFor();
+   const text=(await status.innerText()).trim();texts.push(text);
+   assert.equal(text.includes(addr),false,'mensagem não ecoa o e-mail');
+   assert.match(text,/não confirma envio nem entrega/);assert.match(text,/NÃO ENVIADA/);
+   assert.doesNotMatch(text,/enviamos|foi enviad|entregue|chegou|verifique sua caixa/i);
+   assert.equal(await page.getByRole('link',{name:/Já tenho um código/}).getAttribute('href'),'/redefinir-senha');
+  }
+  assert.equal(texts[0],texts[1],'resposta visual idêntica: não revela existência de conta');
+  const mail=await ui.drain();assert.ok(mail.every(m=>m.to.toLowerCase()===email.toLowerCase()),'só a conta existente gera job');
+  assert.ok(mail.length<=1);
+  for(const m of mail)assert.equal((await page.content()).includes(m.secret),false);
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
