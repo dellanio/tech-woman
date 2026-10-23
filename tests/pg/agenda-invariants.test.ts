@@ -153,7 +153,7 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
   const e=(await ok("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id",[participant,c])).rows[0].id;
   await ok("update enrollment set status='cancelled' where id=$1",[e]);
   await ok("update participant set goal='leadership',moment='returning',interests='[\"dados\"]',skills='[\"gestao\"]',area='dados',active=true where id=$1",[participant]);
-  await ok("update mentor set display_name='Nova',trajectory='t2',specialties='[]',availability='a2',capacity=3,active=true where id=$1",[mentor]);
+  await ok("update mentor set display_name='Nova',trajectory='t2',specialties='[\"dados\"]',availability='a2',capacity=3,active=true where id=$1",[mentor]);
   assert.equal((await ok('select id,goal,moment,interests,skills,area,active,version from participant_editor where id=$1',[participant])).rowCount,1);
   assert.equal((await ok('select id,display_name,trajectory,specialties,availability,capacity,active,demo,version from mentor_editor where id=$1',[mentor])).rowCount,1);
   await ok('select id,goal,active from participant');await ok('select id,display_name,active from mentor');
@@ -173,6 +173,48 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
  const viewCols=(await db.query("select table_name,string_agg(column_name,',' order by column_name) cols from information_schema.columns where table_name in ('participant_editor','mentor_editor') group by table_name order by table_name")).rows;
  for(const v of viewCols)assert.doesNotMatch(v.cols,/email|token|user_id|consent|hash/,`${v.table_name} sem colunas sensíveis`);
  assert.equal(viewCols.length,2);
+}));
+
+test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASCII 1..80, name 1..120, description ≤1000); perfil valida só as colunas alteradas (enums, tags, área, limites); legado incomum preservado e cancelamento livre', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db,{specialties:['dados']}),participant=await addParticipant(db);
+ const cohort=await addCohort(db,await addMentorTopic(db,mentor,await addTopic(db)));
+ const enrollment=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text id",[participant,cohort])).rows[0].id;
+ // legado incomum gravado como dono (importador): enums/área livres, arrays vazios, textos com espaços — continua aceito no INSERT do dono
+ const legacy=(await db.query("insert into participant(email,goal,moment,interests,skills,area,token_hash,consent_version) values('legado@example.invalid','objetivo-antigo','momento-antigo','[]','[]','Área livre antiga',$1,'v0') returning id::text id",['f'.repeat(64)])).rows[0].id;
+ const legacyMentor=(await db.query("insert into mentor(email,trajectory,specialties,availability,capacity,active) values('lm@example.invalid','  trajetória antiga ','[]','',50,true) returning id::text id")).rows[0].id;
+ const rowOf=async(table:string,id:string)=>(await db.query(`select to_jsonb(x)-'version'-'updated_at'-'active'-'goal'-'display_name' j from ${table} x where id=$1`,[id])).rows[0].j;
+ const legacyBefore=[await rowOf('participant',legacy),await rowOf('mentor',legacyMentor)];
+ await withClients(url,[EDITOR],async b=>{
+  const ok=(sql:string,args:unknown[]=[])=>b.query(sql,args);
+  const rejected=(sql:string,args:unknown[]=[],constraint?:string)=>pgFails(b.query(sql,args),'23514',constraint);
+  for(const [slug,name,description] of [['Não Kebab','Nome',''],['ok-slug','',''],['ok-slug-2','   ',''],['a'.repeat(81),'Nome',''],['-inicio','Nome',''],['a--b','Nome',''],['fim-','Nome',''],
+   ['maiuscula-A','Nome',''],['nome-longo','n'.repeat(121),''],['descricao-longa','Nome','d'.repeat(1001)]])
+   await rejected('insert into topic(slug,name,description) values($1,$2,$3)',[slug,name,description]);
+  const topic=(await ok("insert into topic(slug,name,description) values($1,'Tema válido',$2) returning id",['a'.repeat(80),'d'.repeat(1000)])).rows[0].id;
+  for(const sql of ["update topic set name='' where id=$1","update topic set name=repeat('n',121) where id=$1","update topic set description=repeat('d',1001) where id=$1"])await rejected(sql,[topic]);
+  await ok("update topic set name='Outro nome',description='' where id=$1",[topic]);
+  for(const set of ["goal='bogus'","moment='x'","interests='[\"x\"]'","interests='[]'","interests='[\"dados\",\"dados\"]'","interests='[\"dados\",\"design\",\"produto\",\"desenvolvimento\"]'",
+   "skills='[\"dados\"]'","skills='[]'","area='qualquer'","area='outra: '","area='outra:  '","area=null","area='outra: '||repeat('x',81)"]){
+   await rejected(`update participant set ${set} where id=$1`,[participant],'participant_profile_format');
+   await rejected(`update participant_editor set ${set} where id=$1`,[participant],'participant_profile_format');
+  }
+  for(const set of ["specialties='[]'","specialties='[\"x\"]'","specialties='[\"dados\",\"dados\"]'","trajectory=''","trajectory='   '","availability=''","display_name=''","display_name=repeat('n',121)","capacity=51"]){
+   await rejected(`update mentor set ${set} where id=$1`,[mentor],'mentor_profile_format');
+   await rejected(`update mentor_editor set ${set} where id=$1`,[mentor],'mentor_profile_format');
+  }
+  // payload público suportado: 'outra: texto', tags do contrato, limites; display_name pode voltar a NULL (cadastro antigo sem nome)
+  await ok("update participant set area='outra: Saúde',interests='[\"dados\",\"design\"]',skills='[\"gestao\",\"codigo\",\"analise\",\"comunicacao\"]',goal='transition',moment='starting' where id=$1",[participant]);
+  await ok("update mentor set specialties='[\"produto\",\"dados\",\"design\"]',trajectory=repeat('t',1000),availability=repeat('a',300),capacity=50,display_name=null where id=$1",[mentor]);
+  // legado: UPDATE de active/goal/display_name não valida dados históricos não alterados
+  await ok('update participant set active=false where id=$1',[legacy]);await ok("update participant_editor set goal='growth' where id=$1",[legacy]);
+  await ok('update mentor set active=false where id=$1',[legacyMentor]);await ok("update mentor_editor set display_name='Nome novo' where id=$1",[legacyMentor]);
+  await ok("update participant set interests=interests,area=area where id=$1",[legacy]);
+  // cancelamento da editora não depende do perfil
+  await ok("update enrollment set status='cancelled' where id=$1",[enrollment]);
+ });
+ assert.deepEqual([await rowOf('participant',legacy),await rowOf('mentor',legacyMentor)],legacyBefore,'legado incomum preservado sem normalização');
+ assert.equal((await db.query('select status from enrollment where id=$1',[enrollment])).rows[0].status,'cancelled');
+ assert.deepEqual((await db.query('select area,interests from participant where id=$1',[participant])).rows[0],{area:'outra: Saúde',interests:['dados','design']});
 }));
 
 const AGENDA_TABLES=['topic','mentor_topic','cohort','enrollment','mentor','participant'];
