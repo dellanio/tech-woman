@@ -130,6 +130,12 @@ def _calls(host):
     return [json.loads(line) for line in log.read_bytes().decode().splitlines() if line]
 
 
+def _log_text(host):
+    log = host.work / 'cutover-calls.jsonl'
+    return log.read_bytes().decode() if log.exists() else ''
+
+
+Host.cutover_log_text = _log_text
 Host.staged = _staged
 Host.sqlite = _sqlite
 Host.cutover_calls = _calls

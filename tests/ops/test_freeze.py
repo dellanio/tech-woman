@@ -94,12 +94,16 @@ class FreezeRefusalTests(FreezeTestCase):
 
     def test_a_write_during_the_quiet_window_refuses_the_freeze(self):
         def late_writer():
-            time.sleep(0.4)
+            # wait for the freeze to reach the file-handle check, then write inside the quiet window
+            deadline = time.time() + 60
+            while time.time() < deadline and '"cmd":"fuser"' not in self.host.cutover_log_text():
+                time.sleep(0.05)
+            time.sleep(0.6)
             self.writer.execute("INSERT INTO booking VALUES (50, 1, 'late')")
             self.writer.commit()
         thread = threading.Thread(target=late_writer)
         thread.start()
-        done = self.freeze(seconds='2')
+        done = self.freeze(seconds='4')
         thread.join()
         self.assert_unfrozen_and_available(done, 80)
 

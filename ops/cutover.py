@@ -394,7 +394,68 @@ def cmd_register_stage(paths):
     print(json.dumps({'phase': 'prepared', 'staged': attestation['digest']}))
 
 
-COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status, 'phase': cmd_phase, 'register-stage': cmd_register_stage}
+def _sibling(name):
+    sys.path.insert(0, str(HERE))
+    try:
+        return __import__(name)
+    finally:
+        sys.path.remove(str(HERE))
+
+
+def _flags(args, allowed):
+    """--name value pairs, only the allowed names, each at most once."""
+    if len(args) % 2:
+        raise StateError(64, 'flags come in --name value pairs')
+    flags = {}
+    for i in range(0, len(args), 2):
+        name = args[i][2:] if args[i].startswith('--') else None
+        if name not in allowed or name in flags:
+            raise StateError(64, 'unexpected argument')
+        flags[name] = args[i + 1]
+    return flags
+
+
+def _sealed_state(paths, manifest, phase):
+    """Marker + candidate that belong together, in the phase an operator command requires."""
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != phase:
+        raise StateError(75, 'phase %s does not allow this command' % state.phase)
+    candidate = _sealed_candidate(paths, manifest)
+    if _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes()) != state.candidate_sha256:
+        raise StateError(70, 'candidate.json is not the one recorded by prepare')
+    return state, candidate
+
+
+def cmd_freeze(paths, flags):
+    quiet = flags.get('quiet-seconds', '5')
+    if not (quiet.isdigit() and 1 <= int(quiet) <= 600):
+        raise StateError(64, '--quiet-seconds must be 1..600')
+    manifest = _manifest()
+    state, candidate = _sealed_state(paths, manifest, 'prepared')
+    if not state.data.get('staged'):
+        raise StateError(75, 'no staged image is registered; run deploy stage and register-stage first')
+    window = candidate['window']
+    if not window['authorized_at'] <= _now() < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    freeze = _sibling('freeze')
+    try:
+        record = freeze.freeze(paths, int(quiet))
+    except freeze.Refusal as refusal:
+        raise StateError(refusal.code, str(refusal))
+    now = _now()
+    record.update(at=now, cutoff_at=now)
+    state.transition('frozen', now, freeze=record)
+    print(json.dumps({'phase': 'frozen', 'cutoff_at': now, 'writers_checked': record['writers_checked']}))
+
+
+COMMANDS = {
+    'prepare': lambda paths, flags: cmd_prepare(paths),
+    'status': lambda paths, flags: cmd_status(paths),
+    'phase': lambda paths, flags: cmd_phase(paths),
+    'register-stage': lambda paths, flags: cmd_register_stage(paths),
+    'freeze': cmd_freeze,
+}
+FLAG_NAMES = {'freeze': ['quiet-seconds']}
 
 
 def main(argv):
@@ -407,10 +468,11 @@ def main(argv):
                 return 64
             cmd_gate(read_paths(), flags)
             return 0
-        if len(argv) != 2 or argv[1] not in COMMANDS:
+        if len(argv) < 2 or argv[1] not in COMMANDS:
             print('usage: cutover.py {%s|gate}' % '|'.join(sorted(COMMANDS)), file=sys.stderr)
             return 64
-        COMMANDS[argv[1]](read_paths())
+        flags = _flags(argv[2:], FLAG_NAMES.get(argv[1], []))
+        COMMANDS[argv[1]](read_paths(), flags)
         return 0
     except StateError as error:
         print('cutover: %s' % error, file=sys.stderr)
