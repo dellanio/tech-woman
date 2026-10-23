@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import * as topics from '../../src/app/api/v1/topics/route';
 import * as topic from '../../src/app/api/v1/topics/[id]/route';
-import {withDb,addTopic,addParticipant,mentorWithCohort} from './agenda-harness';
-import {actorOf,as,call,code,etagOf,snapshot,type Reply} from './agenda-api-kit';
+import * as mentorTopics from '../../src/app/api/v1/mentors/[mentorId]/topics/route';
+import * as reorder from '../../src/app/api/v1/mentors/[mentorId]/topics/reorder/route';
+import * as mentorTopic from '../../src/app/api/v1/mentor-topics/[id]/route';
+import {withDb,addTopic,addMentor,addParticipant,addCohort,mentorWithCohort} from './agenda-harness';
+import {actorOf,mentorActor,as,call,code,etagOf,snapshot,sameShape,type Reply} from './agenda-api-kit';
 
 const ids=(r:Reply)=>r.json.data.map((x:{id:string})=>x.id);
 
@@ -65,4 +68,58 @@ test('topics: envelope/ETag, admin cria com Idempotency-Key (replay e corpo dive
  const audit=(await db.query("select actor_user_id,action,entity_id,changed_fields from audit_event where entity_type='topic' order by id")).rows;
  assert.deepEqual(audit.map(a=>[a.actor_user_id,a.action,a.entity_id]),[[admin.id,'topic.create',id],[admin.id,'topic.update',id],[admin.id,'topic.deactivate',third]]);
  assert.deepEqual(audit[1].changed_fields,['name']);
+}));
+
+test('mentor topics: mentora própria e admin escrevem (Idempotency-Key), team só lê, outra mentora/participante 404; limite 2/repetição 409; reorder atômico; PATCH/DELETE com If-Match; mentora protegida oculta ao admin',()=>withDb(async({db})=>{
+ const admin=await actorOf(db,['admin']),team=await actorOf(db,['team']),participant=await actorOf(db,['participant']);
+ const own=await mentorActor(db),other=await mentorActor(db);const t1=await addTopic(db),t2=await addTopic(db),t3=await addTopic(db),off=await addTopic(db,{active:false});
+ const M=own.mentorId,base=`/api/v1/mentors/${M}/topics`;const O=as(own);const params={mentorId:M};
+ const key=randomUUID();
+ let r=await O.send(mentorTopics.POST,base,{body:{topicId:t1,position:1},params,key});
+ assert.equal(r.status,201);assert.deepEqual(Object.keys(r.json.data).sort(),['id','mentorId','position','topicId','version']);
+ assert.deepEqual([r.json.data.mentorId,r.json.data.topicId,r.json.data.position],[M,t1,1]);assert.equal(etagOf(r),r.json.data.version);const l1=r.json.data.id;
+ r=await O.send(mentorTopics.POST,base,{body:{position:1,topicId:t1},params,key});assert.deepEqual([r.status,r.json.data.id],[201,l1],'replay');
+ r=await O.send(mentorTopics.POST,base,{body:{topicId:t2,position:1},params,key});assert.deepEqual([r.status,code(r)],[409,'IDEMPOTENCY_CONFLICT']);
+ r=await as(admin).send(mentorTopics.POST,base,{body:{topicId:t2,position:2},params,key:randomUUID()});assert.equal(r.status,201,'admin agenda o domínio');const l2=r.json.data.id;
+ for(const body of [{topicId:t3,position:1},{topicId:t1,position:2}]){r=await O.send(mentorTopics.POST,base,{body,params,key:randomUUID()});assert.deepEqual([JSON.stringify(body),r.status,code(r)],[JSON.stringify(body),409,'TOPIC_LIMIT']);}
+ const solo=await mentorActor(db);
+ for(const body of [{topicId:off,position:1},{topicId:'999999',position:1},{topicId:t1,position:3},{topicId:7,position:1},{topicId:t1,position:1,mentorId:M},{topicId:t1}]){
+  r=await as(solo).send(mentorTopics.POST,`/api/v1/mentors/${solo.mentorId}/topics`,{body,params:{mentorId:solo.mentorId},key:randomUUID()});assert.deepEqual([JSON.stringify(body),r.status,code(r)],[JSON.stringify(body),422,'INVALID_INPUT']);
+ }
+ const before=await snapshot(db);
+ const denied=[await as(other).send(mentorTopics.POST,base,{body:{topicId:t3,position:1},params,key:randomUUID()}),await as(participant).send(mentorTopics.POST,base,{body:{topicId:t3,position:1},params,key:randomUUID()}),
+  await as(other).get(mentorTopics.GET,base,params),await as(participant).get(mentorTopics.GET,base,params),await O.get(mentorTopics.GET,'/api/v1/mentors/999999/topics',{mentorId:'999999'}),
+  await as(other).get(mentorTopic.GET,`/api/v1/mentor-topics/${l1}`,{id:l1}),await as(other).send(mentorTopic.DELETE,`/api/v1/mentor-topics/${l1}`,{method:'DELETE',params:{id:l1},version:'1'}),
+  await as(other).send(reorder.POST,`${base}/reorder`,{body:{firstId:l2,secondId:l1},params})];
+ for(const d of denied){assert.deepEqual([d.status,code(d)],[404,'NOT_FOUND']);assert.equal(sameShape(d,denied[0]),true);}
+ r=await as(team).send(mentorTopics.POST,base,{body:{topicId:t3,position:1},params,key:randomUUID()});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ assert.equal(await snapshot(db),before,'recusas sem mutação');
+ for(const who of [own,admin,team]){r=await as(who).get(mentorTopics.GET,base,params);assert.deepEqual(r.json.data.map((x:{id:string;position:number})=>[x.id,x.position]),[[l1,1],[l2,2]]);assert.deepEqual(r.json.page,{nextCursor:null});}
+ // reorder: só os dois vínculos da própria mentora, posições finais 1/2, sem terceiro temporário
+ for(const body of [{firstId:l1,secondId:l1},{firstId:l1,secondId:'999999'},{firstId:l2},{firstId:l2,secondId:l1,position:1}]){r=await O.send(reorder.POST,`${base}/reorder`,{body,params});assert.deepEqual([JSON.stringify(body),r.status,code(r)],[JSON.stringify(body),422,'INVALID_INPUT']);}
+ r=await O.send(reorder.POST,`${base}/reorder`,{body:{firstId:l2,secondId:l1},params});
+ assert.equal(r.status,200);assert.deepEqual(r.json.data.map((x:{id:string;position:number})=>[x.id,x.position]),[[l2,1],[l1,2]]);
+ assert.equal((await db.query('select count(*)::int n from mentor_topic where mentor_id=$1',[M])).rows[0].n,2);
+ r=await as(solo).send(reorder.POST,`/api/v1/mentors/${solo.mentorId}/topics/reorder`,{body:{firstId:l1,secondId:l2},params:{mentorId:solo.mentorId}});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT'],'vínculos de outra mentora');
+ // GET/PATCH/DELETE por id
+ r=await O.get(mentorTopic.GET,`/api/v1/mentor-topics/${l1}`,{id:l1});assert.deepEqual([r.status,r.json.data.position],[200,2]);const v1=etagOf(r);
+ r=await O.send(mentorTopic.PATCH,`/api/v1/mentor-topics/${l1}`,{method:'PATCH',body:{position:1},params:{id:l1},version:v1});assert.deepEqual([r.status,code(r)],[409,'TOPIC_LIMIT'],'posição ocupada: troca só via reorder');
+ for(const bad of [{topicId:t3},{mentorId:solo.mentorId},{position:3},{}]){r=await O.send(mentorTopic.PATCH,`/api/v1/mentor-topics/${l1}`,{method:'PATCH',body:bad,params:{id:l1},version:v1});assert.deepEqual([JSON.stringify(bad),r.status,code(r)],[JSON.stringify(bad),422,'INVALID_INPUT']);}
+ r=await O.send(mentorTopic.PATCH,`/api/v1/mentor-topics/${l1}`,{method:'PATCH',body:{position:2},params:{id:l1}});assert.deepEqual([r.status,code(r)],[428,'PRECONDITION_REQUIRED']);
+ await addCohort(db,l2);const v2=etagOf(await O.get(mentorTopic.GET,`/api/v1/mentor-topics/${l2}`,{id:l2}));
+ r=await O.send(mentorTopic.DELETE,`/api/v1/mentor-topics/${l2}`,{method:'DELETE',params:{id:l2},version:v2});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE'],'turma referencia o vínculo');
+ r=await O.send(mentorTopic.DELETE,`/api/v1/mentor-topics/${l1}`,{method:'DELETE',params:{id:l1},version:String(Number(v1)+3)});assert.deepEqual([r.status,code(r)],[412,'VERSION_MISMATCH']);
+ r=await as(team).send(mentorTopic.DELETE,`/api/v1/mentor-topics/${l1}`,{method:'DELETE',params:{id:l1},version:v1});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ r=await O.send(mentorTopic.DELETE,`/api/v1/mentor-topics/${l1}`,{method:'DELETE',params:{id:l1},version:v1});assert.equal(r.status,204);
+ r=await O.send(mentorTopic.PATCH,`/api/v1/mentor-topics/${l2}`,{method:'PATCH',body:{position:2},params:{id:l2},version:v2});assert.deepEqual([r.status,r.json.data.position],[200,2]);
+ // mentora vinculada a conta admin: ela mesma gere a própria agenda; o CRUD comum de outro admin não a enxerga
+ const boss=await mentorActor(db,{roles:['admin','mentor']});const bossBase=`/api/v1/mentors/${boss.mentorId}/topics`;
+ r=await as(boss).send(mentorTopics.POST,bossBase,{body:{topicId:t1,position:1},params:{mentorId:boss.mentorId},key:randomUUID()});assert.equal(r.status,201);const bl=r.json.data.id;
+ const hidden=[await as(admin).get(mentorTopics.GET,bossBase,{mentorId:boss.mentorId}),await as(team).get(mentorTopic.GET,`/api/v1/mentor-topics/${bl}`,{id:bl}),
+  await as(admin).send(mentorTopics.POST,bossBase,{body:{topicId:t2,position:2},params:{mentorId:boss.mentorId},key:randomUUID()}),
+  await as(admin).send(mentorTopic.DELETE,`/api/v1/mentor-topics/${bl}`,{method:'DELETE',params:{id:bl},version:'1'})];
+ for(const h of hidden)assert.deepEqual([h.status,code(h)],[404,'NOT_FOUND']);
+ const audit=(await db.query("select actor_user_id,action from audit_event where entity_type='mentor_topic' order by id")).rows.map(a=>[a.actor_user_id,a.action]);
+ assert.deepEqual(audit,[[own.id,'mentor_topic.create'],[admin.id,'mentor_topic.create'],[own.id,'mentor_topic.reorder'],[own.id,'mentor_topic.delete'],[boss.id,'mentor_topic.create']]);
+ void addMentor;
 }));
