@@ -49,7 +49,7 @@ jobs:
       # The ops recovery/limits/preflight suites need their OWN disposable PostgreSQL 16 cluster (initdb, crash
       # restart, login-time role settings): server binaries only; the cluster runs as the runner user, never as a service.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-16
-      - run: python3 -m unittest -v tests.ops.pg.test_recovery_pg tests.ops.pg.test_preflight_pg
+      - run: python3 -m unittest -v tests.ops.pg.test_recovery_pg tests.ops.pg.test_preflight_pg tests.ops.pg.test_rehearsal_pg
         env:
           WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg
           WP005_PG_PORT: '55346'
