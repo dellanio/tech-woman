@@ -10,6 +10,7 @@ import * as session from '../../src/app/api/v1/auth/session/route';
 import * as service from '../../src/lib/service';
 import * as email from '../../src/lib/email';
 import {withDb,addUser,sessionFor,synthetic,linkFixture} from './identity-harness.test';
+import {runPrivilegedAccount} from '../../scripts/privileged-account';
 import {call,sessionCookie,type Reply} from './identity-http-kit.test';
 
 const LOGIN='/api/admin/login',LOGOUT='/api/admin/logout';
@@ -115,4 +116,24 @@ test('service legado: overview/decide/change/remove-demo excluem linhas de domí
  const common=await addUser(db,{email:'comum@example.invalid',password:pw});assert.equal(await service.authenticate(common.email,pw),null);
  assert.equal((await db.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n,0,'authenticate não deixa sessão viva');
  void email;void sessionFor;void tokenDigest;void (null as unknown as Pool);
+}));
+
+test('service legado: elevação offline segura o lock de app_user; setMentorActive/decide/adminChange/removeDemoMentors esperam e viram 404 sem mutação',async()=>withDb(async({db,url})=>{
+ const u=await addUser(db,{email:'elev@example.invalid',password:synthetic(),roles:['participant','mentor']});
+ const insP=(id:number,addr:string,userId:string|null=null)=>db.query("insert into participant(id,email,goal,moment,interests,skills,area,token_hash,consent_version,user_id) values($1,$2,'growth','working','[\"dados\"]','[\"analise\"]','dados',$3,'v0',$4)",[id,addr,String(id).padStart(64,'b'),userId]);
+ const insM=(id:number,addr:string,opts:{demo?:boolean;userId?:string|null}={})=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity,active,demo,demo_name,user_id) values($1,$2,'t','[\"dados\"]','a',3,true,$3,$4,$5)",[id,addr,opts.demo??false,opts.demo?`Demo ${id}`:null,opts.userId??null]);
+ await insP(1,'p1@example.invalid');await insP(2,'p2@example.invalid');await insP(10,u.email,u.id);
+ await insM(20,u.email,{userId:u.id});await insM(21,'Elev@Example.invalid',{demo:true});await insM(22,' ELEV@example.invalid ');await insM(23,'demo.livre@example.invalid',{demo:true});
+ await useOwnerPool(url);
+ const rejects=async(p:Promise<unknown>)=>p.then(()=>'resolved',e=>e instanceof service.Invalid?`${e.status}`:'UNEXPECTED');
+ const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+ let pending:Promise<unknown[]>=Promise.resolve([]);
+ const elevated=await runPrivilegedAccount(['grant-admin','--user-id',u.id,'--confirm'],{MIGRATION_DATABASE_URL:url},{afterLock:async()=>{
+  pending=Promise.all([rejects(service.setMentorActive(20,false)),rejects(service.setMentorActive(22,false)),rejects(service.decide(1,20,'approve')),rejects(service.adminChange(2,20,'reassign')),rejects(service.adminChange(10,null,'cancel')),service.removeDemoMentors()]);
+  await sleep(600);
+ }});
+ assert.deepEqual(elevated,{code:'ok'});
+ assert.deepEqual(await pending,['404','404','404','404','404',{status:'1 mentoras de demonstração desativadas.'}],'quem esperava o lock enxerga o dono já protegido');
+ assert.deepEqual((await db.query('select id::int,active from mentor order by id')).rows,[{id:20,active:true},{id:21,active:true},{id:22,active:true},{id:23,active:false}]);
+ assert.equal((await db.query('select count(*)::int n from match')).rows[0].n,0,'nenhum par criado');
 }));
