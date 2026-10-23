@@ -9,7 +9,11 @@ import * as mentorOne from '../../src/app/api/v1/admin/mentors/[id]/route';
 import * as matches from '../../src/app/api/v1/admin/matches/route';
 import * as matchOne from '../../src/app/api/v1/admin/matches/[id]/route';
 import {runPrivilegedAccount} from '../../scripts/privileged-account';
-import {withDb,withClients,addParticipant,addMentor,linkFixture,mentorWithCohort,pidOf,waitLocked} from './agenda-harness';
+import {sql} from 'drizzle-orm';
+import {invoke} from '../../src/lib/agenda';
+import {HttpError} from '../../src/lib/auth';
+import {tokenDigest} from '../../src/lib/db';
+import {withDb,withClients,connect,addParticipant,addMentor,linkFixture,mentorWithCohort,pidOf,waitLocked,EDITOR} from './agenda-harness';
 import {actorOf,as,code,etagOf,sameShape,snapshot,type Actor,type Reply} from './agenda-api-kit';
 
 const P='/api/v1/admin/participants',M='/api/v1/admin/mentors';
@@ -180,4 +184,69 @@ test('admin matches: sugestão com score/razões do servidor (ranking legado), p
  assert.deepEqual((await db.query('select score,reasons from match where id=$1',[legacy])).rows[0],{score:7,reasons:['legado']},'score/razões intactos');
  const audit=(await db.query("select actor_user_id,action,changed_fields from audit_event where entity_type='match' order by id")).rows;
  assert.deepEqual(audit.map(a=>[a.actor_user_id,a.action]),[[admin.id,'match.create'],[admin.id,'match.update'],[admin.id,'match.update'],[admin.id,'match.cancel']]);
+}));
+
+test('retry integral: 40001/40P01 refazem a transação inteira até 3 tentativas sem efeito parcial; a 3ª falha vira 409 RETRY_TRANSACTION',()=>withDb(async({db})=>{
+ // Fixture só do teste (dono do banco): falha transitória controlada por sequence (nextval não é desfeito no rollback); o INSERT anterior é.
+ await db.query('create table public.tw_retry_probe(n int)');await db.query('create sequence public.tw_retry_seq');
+ await db.query(`create function public.tw_retry_flaky(p_fail int, p_code text) returns text language plpgsql as $$
+  begin insert into public.tw_retry_probe values (1); if nextval('public.tw_retry_seq') <= p_fail then raise exception 'transient' using errcode = p_code; end if; return 'ok'; end $$`);
+ await db.query('grant insert on public.tw_retry_probe to techwoman_runtime');await db.query('grant usage on sequence public.tw_retry_seq to techwoman_runtime');
+ for(const errcode of ['40001','40P01']){
+  await db.query('truncate public.tw_retry_probe');await db.query("select setval('public.tw_retry_seq',1,false)");
+  assert.equal(await invoke<string>(sql`select public.tw_retry_flaky(2, ${errcode}) as r`),'ok');
+  assert.deepEqual([(await db.query('select last_value::int v from public.tw_retry_seq')).rows[0].v,(await db.query('select count(*)::int n from public.tw_retry_probe')).rows[0].n],[3,1],`${errcode}: 3 tentativas, só o commit final deixa efeito`);
+  await db.query('truncate public.tw_retry_probe');await db.query("select setval('public.tw_retry_seq',1,false)");
+  await assert.rejects(invoke(sql`select public.tw_retry_flaky(9, ${errcode}) as r`),(e:unknown)=>e instanceof HttpError&&e.code==='RETRY_TRANSACTION'&&e.status===409);
+  assert.deepEqual([(await db.query('select last_value::int v from public.tw_retry_seq')).rows[0].v,(await db.query('select count(*)::int n from public.tw_retry_probe')).rows[0].n],[3,0],`${errcode}: para na 3ª tentativa, nada persiste`);
+ }
+}));
+
+test('retry real: vínculo da participante muda enquanto a escrita espera o guard → 40001 interno, transação refeita trava a nova dona e aplica a proteção (404 sem mutação)',()=>withDb(async({db,url})=>{
+ const admin=await actorOf(db,['admin']);const pid=await addParticipant(db,{userId:null,email:'legado@example.invalid'});const v=etagOf(await pGet(admin,pid));
+ const owner=await actorOf(db,['admin','participant'],{email:'dona@example.invalid'});
+ const before=await snapshot(db);
+ await withClients(url,[undefined],async c=>{
+  // ativação/vinculação concorrente segura o guard (trigger de participant) até o commit
+  await c.query('begin');await c.query('update participant set user_id=$2 where id=$1',[pid,owner.id]);
+  const pending=pPatch(admin,pid,{goal:'leadership'},v);
+  const waiting=async()=>{for(let i=0;i<200;i++){const r=await db.query("select pid from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and pid<>$1",[await pidOf(c)]);if(r.rowCount)return r.rows[0].pid as number;await new Promise(r=>setTimeout(r,25));}throw new Error('não bloqueou');};
+  await waitLocked(db,await waiting());await c.query('commit');
+  const r=await pending;assert.deepEqual([r.status,code(r)],[404,'NOT_FOUND'],'após o retry a linha pertence a admin → oculta');
+ });
+ const after=JSON.parse(await snapshot(db));const prev=JSON.parse(before);
+ assert.deepEqual(after.participants.map((p:{goal:string})=>p.goal),prev.participants.map((p:{goal:string})=>p.goal),'nenhuma alteração de domínio');
+ assert.equal((await db.query("select count(*)::int n from audit_event where entity_type='participant'")).rows[0].n,0);
+}));
+
+test('segurança SQL das operações: owner NOLOGIN e search_path fixo; runtime executa só operações (nunca helpers, ranking, elegibilidade, contexto); editora/mailer/PUBLIC sem EXECUTE; digest forjado → 401',()=>withDb(async({db,url})=>{
+ const fns=(await db.query(`select p.proname,pg_get_userbyid(p.proowner)::text owner,p.prosecdef,p.proconfig,
+   has_function_privilege('techwoman_runtime',p.oid,'EXECUTE') runtime,has_function_privilege('techwoman_beatriz',p.oid,'EXECUTE') editor,has_function_privilege('techwoman_mailer',p.oid,'EXECUTE') mailer,
+   exists(select 1 from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a where a.privilege_type='EXECUTE' and a.grantee=0) public_exec
+  from pg_proc p where p.pronamespace='internal'::regnamespace and (p.proname like 'api\\_%' or p.proname in ('lock_user_set','lock_users','agenda_ranking','enrollment_check_eligible','enrollment_effects'))`)).rows;
+ const operations=new Set(['api_topic_list','api_topic_get','api_topic_create','api_topic_update','api_mentor_topic_list','api_mentor_topic_get','api_mentor_topic_create','api_mentor_topic_reorder','api_mentor_topic_update','api_mentor_topic_delete',
+  'api_cohort_list','api_cohort_get','api_cohort_create','api_cohort_update','api_catalog_mentors','api_catalog_mentor','api_catalog_cohorts','api_recommendations','api_my_enrollments','api_enroll','api_my_enrollment_cancel',
+  'api_admin_domain_list','api_admin_domain_get','api_admin_domain_create','api_admin_domain_update','api_match_list','api_match_get','api_match_create','api_match_update',
+  'api_admin_enrollment_list','api_admin_enrollment_get','api_admin_enrollment_cancel','api_admin_enrollment_reassign']);
+ const identity=new Set(['api_session_actor','api_account_create','lock_user_set','lock_users']);
+ assert.ok(fns.length>=operations.size+identity.size+10);
+ for(const f of fns){
+  assert.deepEqual([f.proname,f.proconfig?.[0]],[f.proname,'search_path=pg_catalog, pg_temp']);
+  assert.deepEqual([f.proname,f.public_exec,f.editor,f.mailer],[f.proname,false,false,false]);
+  if(!identity.has(f.proname))assert.equal(f.owner,'techwoman_owner',f.proname);
+  assert.equal(f.runtime,operations.has(f.proname),`${f.proname}: runtime só nas operações`);
+  if(operations.has(f.proname))assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
+ }
+ const role=(await db.query("select rolcanlogin,rolbypassrls,rolsuper from pg_roles where rolname='techwoman_owner'")).rows[0];assert.deepEqual(role,{rolcanlogin:false,rolbypassrls:false,rolsuper:false});
+ // runtime real: contexto/ator não são graváveis nem legíveis; helper de autenticação e ranking negados
+ const runtime=await connect(url,'techwoman_runtime');
+ try{
+  for(const q of ["insert into internal.api_context(xact,actor,request) values(pg_current_xact_id(),gen_random_uuid(),gen_random_uuid())","select * from internal.api_context",
+   `select internal.api_auth('${'a'.repeat(64)}',null,null)`,'select internal.agenda_ranking(1,1)','select internal.enrollment_check_eligible(1,1)',"select internal.api_fail('NOT_FOUND')","select internal.api_account_create('x@example.invalid','participant')"])
+   await assert.rejects(runtime.query(q),(e:{code?:string})=>e.code==='42501',q);
+  await assert.rejects(runtime.query('select internal.api_topic_list($1,null,20)',[tokenDigest('forjado')]),(e:{message?:string;hint?:string})=>e.message==='AUTH_REQUIRED'&&e.hint==='tw_api');
+  await assert.rejects(runtime.query('insert into topic(slug,name) values($1,$2)',['x','x']),(e:{code?:string})=>e.code==='42501','runtime sem DML direto de agenda');
+ }finally{await runtime.end();}
+ const editor=await connect(url,EDITOR);
+ try{await assert.rejects(editor.query('select internal.api_topic_list($1,null,20)',['a'.repeat(64)]),(e:{code?:string})=>e.code==='42501');}finally{await editor.end();}
 }));
