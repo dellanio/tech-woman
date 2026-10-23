@@ -127,6 +127,42 @@ class SealTests(unittest.TestCase):
         self.assertEqual(candidate['image']['repository'], 'ghcr.io/dellanio/tech-woman')
         self.assertEqual(sorted(candidate['image']['entrypoints']), ['mailer', 'migrator', 'web'])
 
+    def test_seal_refuses_unproven_candidate_with_stable_exit_code_and_writes_nothing(self):
+        def drop(d, *path):
+            for key in path[:-1]:
+                d = d[key]
+            del d[path[-1]]
+
+        def put(d, value, *path):
+            for key in path[:-1]:
+                d = d[key]
+            d[path[-1]] = value
+
+        cases = {
+            'ci not success': (71, lambda f: put(f, 'failure', 'ci', 'conclusion')),
+            'ci other head': (71, lambda f: put(f, 'e' * 40, 'ci', 'head_sha')),
+            'ci other tree': (71, lambda f: put(f, 'e' * 40, 'ci', 'tree')),
+            'gate red': (71, lambda f: put(f, 'red', 'gates', 'GATE-002')),
+            'gate missing': (71, lambda f: drop(f, 'gates', 'GATE-003')),
+            'measured zero': (73, lambda f: put(f, 0, 'window', 'measured_seconds')),
+            'measured bool': (73, lambda f: put(f, True, 'window', 'measured_seconds')),
+            'window not ordered': (73, lambda f: put(f, '2026-10-23T11:00:00Z', 'window', 'expires_at')),
+            'window no decision': (73, lambda f: put(f, '', 'window', 'decision_ref')),
+            'window bad date': (73, lambda f: put(f, '2026-10-23 12:00', 'window', 'authorized_at')),
+            'recovery evidence short': (78, lambda f: put(f, 'abc', 'recovery_evidence_sha256')),
+            'rpo empty': (78, lambda f: put(f, '', 'rpo_declared')),
+            'unknown fact': (70, lambda f: put(f, 1, 'surprise')),
+            'head not sha': (70, lambda f: put(f, 'HEAD', 'tested_head')),
+            'tree not sha': (70, lambda f: put(f, 'z' * 40, 'tested_tree')),
+        }
+        for name, (code, mutate) in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                facts = good_facts()
+                mutate(facts)
+                done, out, _, _ = self.seal(pathlib.Path(tmp), facts)
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assertFalse(out.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
