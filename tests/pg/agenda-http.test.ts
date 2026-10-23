@@ -120,6 +120,6 @@ test('mentor topics: mentora própria e admin escrevem (Idempotency-Key), team s
   await as(admin).send(mentorTopic.DELETE,`/api/v1/mentor-topics/${bl}`,{method:'DELETE',params:{id:bl},version:'1'})];
  for(const h of hidden)assert.deepEqual([h.status,code(h)],[404,'NOT_FOUND']);
  const audit=(await db.query("select actor_user_id,action from audit_event where entity_type='mentor_topic' order by id")).rows.map(a=>[a.actor_user_id,a.action]);
- assert.deepEqual(audit,[[own.id,'mentor_topic.create'],[admin.id,'mentor_topic.create'],[own.id,'mentor_topic.reorder'],[own.id,'mentor_topic.delete'],[boss.id,'mentor_topic.create']]);
+ assert.deepEqual(audit,[[own.id,'mentor_topic.create'],[admin.id,'mentor_topic.create'],[own.id,'mentor_topic.reorder'],[own.id,'mentor_topic.delete'],[own.id,'mentor_topic.update'],[boss.id,'mentor_topic.create']]);
  void addMentor;
 }));

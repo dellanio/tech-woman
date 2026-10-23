@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseDomainListQuery, parseSqlId, parseTopic, parseTopicPatch, type ErrorCode, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type ErrorCode, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -102,3 +102,25 @@ export function updateTopic(token: string, id: string, version: string, body: un
 }
 export const deactivateTopic = (token: string, id: string, version: string) =>
   invoke<TopicDto>(sql`select internal.api_topic_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${'{"active":false}'}::jsonb, 'deactivate') as r`);
+
+// ---- Temas da mentora ----
+const listOf = <T>(items: T[] | null): Page<T> => ({ items: items ?? [], nextCursor: null });
+export const listMentorTopics = async (token: string, mentorId: string) => listOf(await invoke<MentorTopicDto[]>(sql`select internal.api_mentor_topic_list(${digestOf(token)}, ${routeId(mentorId)}::bigint) as r`));
+export const getMentorTopic = (token: string, id: string) => invoke<MentorTopicDto>(sql`select internal.api_mentor_topic_get(${digestOf(token)}, ${routeId(id)}::bigint) as r`);
+export function createMentorTopic(token: string, mentorId: string, idem: Idempotent, body: unknown) {
+  const mentor = routeId(mentorId);
+  const dto = parseMentorTopic(body);
+  return invoke<MentorTopicDto>(sql`select internal.api_mentor_topic_create(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${mentor}::bigint, ${JSON.stringify(dto)}::jsonb) as r`);
+}
+export async function reorderMentorTopics(token: string, mentorId: string, body: unknown) {
+  const mentor = routeId(mentorId);
+  const dto = parseReorder(body);
+  return listOf(await invoke<MentorTopicDto[]>(sql`select internal.api_mentor_topic_reorder(${digestOf(token)}, ${newRequestId()}::uuid, ${mentor}::bigint, ${JSON.stringify(dto)}::jsonb) as r`));
+}
+export function updateMentorTopic(token: string, id: string, version: string, body: unknown) {
+  const patch = parseMentorTopicPatch(body);
+  return invoke<MentorTopicDto>(sql`select internal.api_mentor_topic_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${JSON.stringify(patch)}::jsonb) as r`);
+}
+export const deleteMentorTopic = async (token: string, id: string, version: string) => {
+  await invoke<unknown>(sql`select internal.api_mentor_topic_delete(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint) as r`);
+};
