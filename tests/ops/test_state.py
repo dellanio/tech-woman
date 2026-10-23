@@ -1,4 +1,5 @@
-import json, pathlib, tempfile, unittest
+import json, os, pathlib, tempfile, unittest
+from unittest import mock
 
 from tests.ops import harness
 
@@ -149,6 +150,42 @@ class LoadIntegrityTests(StateTestCase):
                 with self.assertRaises(cutover.StateError) as caught:
                     cutover.State.load(self.dir)
                 self.assertEqual(caught.exception.code, 70, name)
+
+
+class DurabilityTests(StateTestCase):
+    def test_commit_fsyncs_the_journal_and_the_state_and_replaces_atomically(self):
+        state = self.create()
+        synced, replaced = [], []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch.object(cutover.os, 'fsync', side_effect=lambda fd: (synced.append(fd), real_fsync(fd))[1]), \
+                mock.patch.object(cutover.os, 'replace',
+                                  side_effect=lambda a, b: (replaced.append((str(a), str(b))), real_replace(a, b))[1]):
+            state.transition('frozen', NOW)
+        self.assertGreaterEqual(len(synced), 2)
+        self.assertEqual([pathlib.Path(b).name for _, b in replaced], ['state.json'])
+        self.assertNotEqual(pathlib.Path(replaced[0][0]).name, 'state.json')
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['journal.jsonl', 'state.json', 'state.lock'])
+
+    def test_failure_while_replacing_the_state_interrupts_and_leaves_a_load_error(self):
+        state = self.create()
+        before = (self.dir / 'state.json').read_bytes()
+        with mock.patch.object(cutover.os, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                state.transition('frozen', NOW)
+        self.assertEqual((self.dir / 'state.json').read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['journal.jsonl', 'state.json', 'state.lock'])
+        with self.assertRaises(cutover.StateError) as caught:
+            cutover.State.load(self.dir)
+        self.assertEqual(caught.exception.code, 70)
+
+    def test_a_second_writer_is_refused_while_the_lock_is_held(self):
+        state = self.create()
+        with cutover.exclusive(self.dir):
+            with self.assertRaises(cutover.StateError) as caught:
+                state.transition('frozen', NOW)
+        self.assertEqual(caught.exception.code, 66)
+        state.transition('frozen', NOW)
+        self.assertEqual(cutover.State.load(self.dir).phase, 'frozen')
 
 
 if __name__ == '__main__':
