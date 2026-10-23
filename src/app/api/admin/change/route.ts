@@ -1,4 +1,4 @@
-import {currentAdmin,adminCanWrite,sameOrigin,unauthorized} from '@/lib/auth';
+import {handle,requireSession} from '@/lib/auth';
 import {adminChange,setMentorActive,removeDemoMentors,Invalid} from '@/lib/service';
 export const runtime='nodejs';
 export async function POST(request:Request){

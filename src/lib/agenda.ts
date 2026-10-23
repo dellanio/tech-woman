@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type ErrorCode, type MentorTopicDto, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseCohort, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type ErrorCode, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -124,3 +124,23 @@ export function updateMentorTopic(token: string, id: string, version: string, bo
 export const deleteMentorTopic = async (token: string, id: string, version: string) => {
   await invoke<unknown>(sql`select internal.api_mentor_topic_delete(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint) as r`);
 };
+
+// ---- Turmas ----
+/** Projeção de gestão (mentora/admin/team): inclui vínculo e status, além do contrato público. */
+export type CohortAdminDto = CohortDto & { mentorTopicId: string; status: 'draft' | 'open' | 'closed' | 'cancelled' };
+export const listCohorts = (token: string, mentorTopicId: string, query: ListQuery) => {
+  const mentorTopic = routeId(mentorTopicId);
+  return page<CohortAdminDto>(query, (after, limit) => sql`select internal.api_cohort_list(${digestOf(token)}, ${mentorTopic}::bigint, ${after}::bigint, ${limit}) as r`);
+};
+export const getCohort = (token: string, id: string) => invoke<CohortAdminDto>(sql`select internal.api_cohort_get(${digestOf(token)}, ${routeId(id)}::bigint) as r`);
+export function createCohort(token: string, mentorTopicId: string, idem: Idempotent, body: unknown) {
+  const mentorTopic = routeId(mentorTopicId);
+  const dto = parseCohort(body);
+  return invoke<CohortAdminDto>(sql`select internal.api_cohort_create(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${mentorTopic}::bigint, ${JSON.stringify(dto)}::jsonb) as r`, 'cohort');
+}
+export function updateCohort(token: string, id: string, version: string, body: unknown) {
+  const patch = parseCohortPatch(body);
+  return invoke<CohortAdminDto>(sql`select internal.api_cohort_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${JSON.stringify(patch)}::jsonb, 'update') as r`, 'cohort');
+}
+export const cancelCohort = (token: string, id: string, version: string) =>
+  invoke<CohortAdminDto>(sql`select internal.api_cohort_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${'{"status":"cancelled"}'}::jsonb, 'cancel') as r`, 'cohort');
