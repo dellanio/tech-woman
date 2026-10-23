@@ -1,7 +1,7 @@
 /** UI real (Chromium + Next dev + PG16): diagnóstico/cadastro público 202 neutro, cadastro de mentora e anexo de perfil pela conta. Segredos só em memória. */
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import type {Page,Request} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 
@@ -227,4 +227,115 @@ test('prazo da mentora: falha de rede não finge encerramento e permite tentar d
   await alertText(page,/Não foi possível verificar o prazo/);
   assert.doesNotMatch(await main(page).innerText(),/encerrad/i);
  }finally{await context.close();}
+});
+
+const strong=()=>`Recife-${randomBytes(12).toString('base64url')}`;
+const roles=async(email:string)=>(await ui.db.query<{role:string}>('select r.role from user_role r join app_user u on u.id=r.user_id where u.email=$1 order by r.role',[email])).rows.map(r=>r.role);
+const sessionRoles=(page:Page)=>page.evaluate(async()=>{const r=await fetch('/api/v1/auth/session',{cache:'no-store'});const b=(await r.json()) as {data?:{state:string;user?:{roles:string[]}}};return {state:b.data?.state??`http-${r.status}`,roles:[...(b.data?.user?.roles??[])].sort()};});
+/** Conta de mentora pelo cadastro público real (202) + worker fake → senha temporária só em memória. */
+async function mentorTemporaryPassword(email:string){
+ const res=await fetch(ui.origin+'/api/v1/registrations/mentors',{method:'POST',headers:{'Content-Type':'application/json',Origin:ui.origin,'Sec-Fetch-Site':'same-origin','Idempotency-Key':randomUUID()},body:JSON.stringify({email,displayName:'Mentora Base',trajectory:'Trajetória base.',specialties:['design'],availability:'No evento.',legacyCapacity:1,consent:true})});
+ assert.equal(res.status,202);
+ const mail=(await ui.drain()).filter(m=>m.to.toLowerCase()===email.toLowerCase());assert.equal(mail.length,1);return mail[0].secret;
+}
+/** Entra com a temporária (sessão limitada) e define a definitiva pela UI. */
+async function signInTemporary(page:Page,email:string,temp:string){
+ await page.goto(ui.origin+'/login');
+ await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(temp);await page.getByRole('button',{name:'Entrar',exact:true}).click();
+ await page.waitForURL(u=>u.pathname==='/troca-senha');
+}
+async function definePassword(page:Page,temp:string){
+ const definitive=strong();ui.secrets.add(definitive);
+ await page.getByLabel('Senha atual ou temporária').fill(temp);await page.getByLabel('Nova senha',{exact:true}).fill(definitive);await page.getByLabel('Confirme a nova senha').fill(definitive);
+ await page.getByRole('button',{name:/Salvar nova senha/}).click();
+}
+async function assertSignedInForm(page:Page,email:string){
+ assert.equal(await page.getByLabel('Seu e-mail').count(),0,'conta autenticada: sem pedir e-mail');
+ assert.equal(await page.locator('input[type=password]').count(),0,'sem senha nem nova conta');
+ assert.equal(await main(page).getByRole('link',{name:/Já tenho conta/}).count(),0);
+ assert.ok((await main(page).innerText()).includes(email),'mostra em qual conta o perfil entra');
+}
+
+test('conta ativa anexa perfil de mentora sem e-mail nem credencial nova; sessão limitada passa antes pela troca',{timeout:300_000},async()=>{
+ const email=unique('multi');const temp=await ui.temporaryPassword(email);const name=`Bia Multi ${randomBytes(2).toString('hex')}`;
+ const {page,context}=await ui.newPage();
+ try{
+  await signInTemporary(page,email,temp);
+  // sessão limitada tentando anexar: conduzida à troca obrigatória, com volta ao cadastro
+  for(const route of ['/mentora','/inscricao']){
+   await page.goto(ui.origin+route);
+   await page.waitForURL(u=>u.pathname==='/troca-senha');
+   assert.equal(new URL(page.url()).searchParams.get('next'),route);
+  }
+  assert.equal((await sessionRoles(page)).state,'password_change_required');
+  await page.goto(ui.origin+'/mentora');await page.waitForURL(u=>u.pathname==='/troca-senha');
+  await definePassword(page,temp);
+  await page.waitForURL(u=>u.pathname==='/mentora');
+  await page.getByLabel('Nome de exibição').waitFor();
+  await assertSignedInForm(page,email);
+  await ui.drain();
+  await mentorFields(page,name);
+  const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/me/profiles/mentor')),page.getByRole('button',{name:/Adicionar perfil de mentora/}).click()]);
+  assert.equal(response.status(),201);
+  assert.deepEqual(body(response.request()),{displayName:name,trajectory:'Dez anos entre dados e produto em Recife.',specialties:['dados'],availability:'Encontros presenciais no dia do evento.',legacyCapacity:2,consent:true});
+  assert.ok((response.request().headers()['x-csrf-token']??'').length>0,'mutação autenticada com CSRF');
+  await main(page).getByRole('status').filter({hasText:/Perfil de mentora criado/}).waitFor();
+  assert.equal(await main(page).getByRole('link',{name:/Ir para Sua conta/}).getAttribute('href'),'/conta');
+  assert.doesNotMatch(await main(page).innerText(),/revis|aprova|Agendar/i);
+  assert.deepEqual(await roles(email),['mentor','participant']);
+  assert.deepEqual(await sessionRoles(page),{state:'authenticated',roles:['mentor','participant']});
+  assert.equal((await ui.db.query('select 1 from app_user where email_key=lower($1)',[email])).rowCount,1,'mesma conta, nenhuma nova');
+  assert.equal((await ui.drain()).filter(m=>m.to.toLowerCase()===email.toLowerCase()).length,0,'nenhuma credencial nova emitida');
+  // perfis já existentes: sem formulário, caminho para a conta
+  for(const [route,label] of [['/inscricao',/já tem perfil de participante/],['/mentora',/já tem perfil de mentora/]] as const){
+   await page.goto(ui.origin+route);
+   await main(page).getByRole('status').filter({hasText:label}).waitFor();
+   assert.equal(await main(page).getByRole('link',{name:/Ir para Sua conta/}).getAttribute('href'),'/conta');
+   assert.equal(await page.getByLabel('Seu e-mail').count(),0);
+  }
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
+
+test('mentora ativa anexa diagnóstico de participante pelo mesmo DTO sem e-mail; conta administrativa recebe erro seguro e mantém o formulário',{timeout:300_000},async()=>{
+ const email=unique('mentor2p');const temp=await mentorTemporaryPassword(email);
+ const {page,context}=await ui.newPage();
+ try{
+  await signInTemporary(page,email,temp);
+  await page.goto(ui.origin+'/inscricao');await page.waitForURL(u=>u.pathname==='/troca-senha');
+  await definePassword(page,temp);
+  await page.waitForURL(u=>u.pathname==='/inscricao');
+  await stepOne(page);await stepTwo(page);
+  await assertSignedInForm(page,email);
+  const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/me/profiles/participant')),page.getByRole('button',{name:/Adicionar perfil de participante/}).click()]);
+  assert.equal(response.status(),201);
+  assert.deepEqual(body(response.request()),{goal:'growth',moment:'working',interests:['dados','produto','design'],skills:['comunicacao','analise','codigo','gestao'],area:'dados',consent:true});
+  await main(page).getByRole('status').filter({hasText:/Perfil de participante criado/}).waitFor();
+  const link=main(page).getByRole('link',{name:/Ir para Sua conta/});
+  assert.equal(await link.getAttribute('href'),'/conta');
+  assert.match(await main(page).innerText(),/escolher mentora e turma/);
+  assert.deepEqual(await roles(email),['mentor','participant']);
+  assert.equal((await ui.drain()).filter(m=>m.to.toLowerCase()===email.toLowerCase()).length,0);
+ }finally{await context.close();}
+ // conta administrativa: o backend recusa anexar pelo fluxo comum (404); a tela não revela o motivo
+ const admin=unique('admin');const adminTemp=await ui.temporaryPassword(admin);
+ const other=await ui.newPage();
+ try{
+  await signInTemporary(other.page,admin,adminTemp);
+  await other.page.goto(ui.origin+'/mentora');await other.page.waitForURL(u=>u.pathname==='/troca-senha');
+  await definePassword(other.page,adminTemp);
+  await other.page.waitForURL(u=>u.pathname==='/mentora');
+  await ui.db.query("insert into user_role(user_id,role) select id,'admin' from app_user where email=$1",[admin]);
+  await other.page.reload();
+  await other.page.getByLabel('Nome de exibição').waitFor();
+  const name='Admin Tentativa';
+  await mentorFields(other.page,name);
+  const [denied]=await Promise.all([other.page.waitForResponse(r=>r.url().endsWith('/api/v1/me/profiles/mentor')),other.page.getByRole('button',{name:/Adicionar perfil de mentora/}).click()]);
+  assert.equal(denied.status(),404);
+  const text=await alertText(other.page,/não pode receber este perfil/);
+  assert.doesNotMatch(text,/admin|404|NOT_FOUND|Não encontramos|stack/i);
+  assert.equal(await other.page.getByLabel('Nome de exibição').inputValue(),name,'campos preservados');
+  assert.equal((await ui.db.query('select 1 from mentor m join app_user u on u.id=m.user_id where u.email=$1',[admin])).rowCount,0);
+  ui.assertNoLeak();
+ }finally{await other.context.close();}
 });
