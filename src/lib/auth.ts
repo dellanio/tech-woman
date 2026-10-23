@@ -118,10 +118,10 @@ export const idempotencyKey = (request: Request) => parseIdempotencyKey(request.
 export const sessionTokenFromRequest = (request: Request) => sessionTokenFromCookieHeader(request.headers.get('cookie'));
 export type RequiredSession = { token: string; session: IdentitySession };
 /**
- * Sessão obrigatória. Ordem: Origin (mutação) → sessão (401) → escopo (403 PASSWORD_CHANGE_REQUIRED, salvo `full:false`) → CSRF (mutação) → papel (403 FORBIDDEN).
+ * Sessão obrigatória. Ordem: Origin (mutação) → sessão (401) → escopo (403 PASSWORD_CHANGE_REQUIRED, salvo `full:false`) → CSRF (mutação) → papel (403 FORBIDDEN; 404 para quem não está em `visibleTo`).
  * A autorização final de cada operação sensível é revalidada no banco, sob lock.
  */
-export async function requireSession(request: Request, options: { mutation?: boolean; full?: boolean; roles?: readonly IdentityRole[] } = {}): Promise<RequiredSession> {
+export async function requireSession(request: Request, options: { mutation?: boolean; full?: boolean; roles?: readonly IdentityRole[]; visibleTo?: readonly IdentityRole[] } = {}): Promise<RequiredSession> {
   if (options.mutation) requireOrigin(request);
   const token = sessionTokenFromRequest(request);
   const session = token ? await identitySession(token) : null;
@@ -129,6 +129,9 @@ export async function requireSession(request: Request, options: { mutation?: boo
   if (options.full !== false && session.scope !== 'full') throw new HttpError('PASSWORD_CHANGE_REQUIRED');
   if (options.mutation && !csrfValid(request, token)) throw new HttpError('CSRF_REJECTED');
   const wanted = options.roles;
+  // Rotas por ID: quem nem enxerga a área (`visibleTo`) recebe 404 idêntico ao de ID inexistente; quem enxerga mas não escreve (team) recebe 403.
+  const area = options.visibleTo;
+  if (area && !session.roles.some(role => area.includes(role))) throw new HttpError('NOT_FOUND');
   if (wanted && !session.roles.some(role => wanted.includes(role))) throw new HttpError('FORBIDDEN');
   return { token, session };
 }
