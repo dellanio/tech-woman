@@ -163,6 +163,14 @@ def _snapshotted(host):
     return candidate, state
 
 
+def _imported(host):
+    candidate, state = _snapshotted(host)
+    state.transition('imported', NOW_FIXED, **{'import': {'source_checksum': state.data['snapshot']['sha256'],
+                                                          'report_pass': True, 'run_id': 'r', 'at': NOW_FIXED}})
+    return candidate, state
+
+
+Host.imported = _imported
 Host.snapshotted = _snapshotted
 Host.frozen = _frozen
 Host.cutover_log_text = _log_text
