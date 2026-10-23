@@ -21,6 +21,10 @@ END $$;
 CREATE OR REPLACE FUNCTION internal.validate_agenda_state() RETURNS trigger
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
+ -- Máximo dois vínculos no total, inclusive com mentor_topic_position_unique adiado na troca de posições.
+ IF EXISTS (SELECT 1 FROM public.mentor_topic GROUP BY mentor_id HAVING count(*) > 2) THEN
+  RAISE EXCEPTION 'agenda_topic_limit' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_topic_limit';
+ END IF;
  IF EXISTS (
   SELECT 1 FROM public.cohort a JOIN public.mentor_topic ma ON ma.id = a.mentor_topic_id
    JOIN public.mentor_topic mb ON mb.mentor_id = ma.mentor_id
