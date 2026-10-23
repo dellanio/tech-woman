@@ -21,6 +21,16 @@ BEGIN
   ]) WITH ORDINALITY x(r, n) WHERE r IS NOT NULL ORDER BY n));
 END $$;
 --> statement-breakpoint
+-- cancelled_at acompanha só a transição (instante do cancelamento; reativar limpa); valor enviado pelo cliente é ignorado.
+CREATE OR REPLACE FUNCTION internal.enrollment_stamp() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+ IF TG_OP = 'INSERT' OR NEW.status = 'active' THEN NEW.cancelled_at := NULL;
+ ELSIF OLD.status = 'active' THEN NEW.cancelled_at := now();
+ ELSE NEW.cancelled_at := OLD.cancelled_at; END IF;
+ RETURN NEW;
+END $$;
+--> statement-breakpoint
 -- Inscrição nova/reativada: turma open com início futuro, participante/mentora/tema ativos e identidade reconciliada ativa.
 CREATE OR REPLACE FUNCTION internal.enrollment_check_eligible(p_participant bigint, p_cohort bigint) RETURNS void
 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
@@ -56,6 +66,20 @@ BEGIN
    VALUES (gen_random_uuid(), v_user, 'reservation', 0, 'queued', 'reservation:' || NEW.id::text || ':' || NEW.version::text, NEW.participant_id, NEW.id);
   INSERT INTO public.audit_event(actor_user_id, action, entity_type, entity_id, changed_fields, result, request_id)
    VALUES (NULL, 'enrollment.create', 'enrollment', NEW.id::text, '["status"]'::jsonb, 'ok', gen_random_uuid());
+ ELSIF OLD.status = 'active' AND NEW.status = 'cancelled' THEN
+  -- Cancelar não exige turma futura; histórico permanece, confirmação ainda não enviada deixa de valer.
+  UPDATE public.match SET status = 'cancelled' WHERE enrollment_id = NEW.id AND status = 'selected';
+  UPDATE public.email_job SET status = 'cancelled', updated_at = now() WHERE enrollment_id = NEW.id AND kind = 'reservation' AND status IN ('queued','unconfirmed');
+  INSERT INTO public.audit_event(actor_user_id, action, entity_type, entity_id, changed_fields, result, request_id)
+   VALUES (NULL, 'enrollment.cancel', 'enrollment', NEW.id::text, '["status"]'::jsonb, 'ok', gen_random_uuid());
+ ELSIF OLD.status = 'cancelled' AND NEW.status = 'active' THEN
+  PERFORM internal.enrollment_check_eligible(NEW.participant_id, NEW.cohort_id);
+  SELECT p.user_id INTO v_user FROM public.participant p WHERE p.id = NEW.participant_id;
+  UPDATE public.match SET status = 'selected' WHERE enrollment_id = NEW.id AND status = 'cancelled';
+  INSERT INTO public.email_job(id, user_id, kind, generation, status, dedupe_key, participant_id, enrollment_id)
+   VALUES (gen_random_uuid(), v_user, 'reservation', 0, 'queued', 'reservation:' || NEW.id::text || ':' || NEW.version::text, NEW.participant_id, NEW.id);
+  INSERT INTO public.audit_event(actor_user_id, action, entity_type, entity_id, changed_fields, result, request_id)
+   VALUES (NULL, 'enrollment.reactivate', 'enrollment', NEW.id::text, '["status"]'::jsonb, 'ok', gen_random_uuid());
  END IF;
  RETURN NULL;
 END $$;
@@ -98,7 +122,7 @@ BEGIN
  RETURN NULL;
 END $$;
 --> statement-breakpoint
-REVOKE ALL ON FUNCTION internal.agenda_ranking(bigint, bigint), internal.enrollment_check_eligible(bigint, bigint), internal.enrollment_effects() FROM PUBLIC;
+REVOKE ALL ON FUNCTION internal.agenda_ranking(bigint, bigint), internal.enrollment_stamp(), internal.enrollment_check_eligible(bigint, bigint), internal.enrollment_effects() FROM PUBLIC;
 --> statement-breakpoint
 GRANT SELECT (id, status) ON public.app_user TO techwoman_owner;
 GRANT SELECT, INSERT, UPDATE (status) ON public.match TO techwoman_owner;
@@ -108,8 +132,10 @@ GRANT USAGE ON SEQUENCE public.match_id_seq, public.audit_event_id_seq TO techwo
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA internal TO techwoman_owner;
 ALTER FUNCTION internal.agenda_ranking(bigint, bigint) OWNER TO techwoman_owner;
+ALTER FUNCTION internal.enrollment_stamp() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.enrollment_check_eligible(bigint, bigint) OWNER TO techwoman_owner;
 ALTER FUNCTION internal.enrollment_effects() OWNER TO techwoman_owner;
 REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
 --> statement-breakpoint
+CREATE TRIGGER agenda_enrollment_stamp BEFORE INSERT OR UPDATE ON public.enrollment FOR EACH ROW EXECUTE FUNCTION internal.enrollment_stamp();
 CREATE TRIGGER agenda_enrollment_effects AFTER INSERT OR UPDATE ON public.enrollment FOR EACH ROW EXECUTE FUNCTION internal.enrollment_effects();
