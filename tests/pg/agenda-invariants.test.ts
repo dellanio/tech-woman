@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
-import {OWNER,EDITOR,addUser,linkFixture,applyLocalGrants} from './agenda-harness';
+import {OWNER,EDITOR,addUser,linkFixture,applyLocalGrants,pidOf,waitLocked} from './agenda-harness';
+import {readFileSync} from 'node:fs';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -209,4 +210,34 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
  });
  assert.equal((await db.query("select string_agg(t::text,'|' order by t::text) s from (select p::text from participant p union all select m::text from mentor m) x(t)")).rows[0].s,before,'nenhuma mutação em linha protegida');
  assert.equal((await db.query("select count(*)::int n from enrollment where status='active'")).rows[0].n,2);
+}));
+
+test('lote da editora: um item inválido desfaz o statement inteiro (INSERT/UPDATE multi-linha)', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db),mt=await addMentorTopic(db,mentor,await addTopic(db)),c=await addCohort(db,mt,{from:0,capacity:2});
+ const [p1,p2,p3]=[await addParticipant(db),await addParticipant(db),await addParticipant(db)];
+ await withClients(url,[EDITOR],async b=>{
+  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,5,'open'),($1,$4,$5,5,'open')",[mt,at(3),at(4),at(3.5),at(4.5)]),'23514','agenda_mentor_overlap');
+  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) select p,$2,'active' from unnest($1::bigint[]) p",[[p1,p2,p3],c]),'23514','agenda_capacity_exceeded');
+  await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active'),($3,$2,'active')",[p1,c,p2]);
+  await pgFails(b.query('update cohort set capacity=case when id=$1 then 1 else capacity end, ends_at=ends_at where id in (select id from cohort)',[c]),'23514','agenda_capacity_exceeded');
+ });
+ assert.deepEqual((await db.query("select (select count(*)::int from cohort) cohorts,(select count(*)::int from enrollment) enrollments,(select capacity::int from cohort where id=$1) capacity",[c])).rows[0],{cohorts:1,enrollments:2,capacity:2});
+}));
+
+test('limites finitos: guard com lock_timeout próprio; script do operador fixa timeouts da editora e é idempotente', ()=>withDb(async ({db,url})=>{
+ const script=readFileSync('scripts/migration/agenda-privileges.sql','utf8');await db.query(script);await db.query(script);
+ const cfg=(await db.query('select rolconfig from pg_roles where rolname=$1',[EDITOR])).rows[0].rolconfig as string[];
+ for(const key of ['lock_timeout','statement_timeout','idle_in_transaction_session_timeout']){
+  const v=cfg.find(x=>x.startsWith(key+'='));assert.ok(v&&!/=0$/.test(v),`${key} finito para a editora: ${v}`);
+ }
+ const guard=(await db.query("select proconfig from pg_proc where oid='internal.acquire_agenda_guard()'::regprocedure")).rows[0].proconfig as string[];
+ assert.ok(guard.some(x=>/^lock_timeout=\d+s$/.test(x)),'guard com lock_timeout fixo');
+ const owner=(await db.query('select rolcanlogin,rolbypassrls from pg_roles where rolname=$1',[OWNER])).rows[0];assert.deepEqual(owner,{rolcanlogin:false,rolbypassrls:false});
+ await withClients(url,[undefined,EDITOR],async (holder,b)=>{
+  await holder.query('begin');await holder.query("insert into topic(slug,name) values('segura-guard','S')");
+  const started=Date.now();const pending=b.query("insert into topic(slug,name) values('espera-guard','E')");
+  await waitLocked(db,await pidOf(b));
+  await pgFails(pending,'55P03');assert.ok(Date.now()-started<15000,'espera pelo guard é finita');
+  await holder.query('rollback');
+ });
 }));
