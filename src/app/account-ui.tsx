@@ -52,7 +52,9 @@ export function LoginView({ next: rawNext }: { next?: string }) {
     setSession(result.data);
   }, [next, router]);
   useEffect(() => {
-    if (sessionStorage.getItem(FLASH) === 'password-set') { sessionStorage.removeItem(FLASH); setNotice('Senha definida. Sua conta está ativa.'); }
+    const flash = sessionStorage.getItem(FLASH); sessionStorage.removeItem(FLASH);
+    if (flash === 'password-set') setNotice('Senha definida. Sua conta está ativa.');
+    if (flash === 'password-reset') setNotice('Senha redefinida. Entre com a nova senha.');
     void refresh();
   }, [refresh]);
   async function submit(event: FormEvent) {
@@ -140,6 +142,58 @@ export function ForgotView({ simulated }: { simulated: boolean }) {
         {error && <p role="alert" className="visible-error">{error}</p>}
         <button className="button-primary form-main-action" disabled={busy}>{busy ? 'Solicitando…' : 'Solicitar redefinição'}</button>
         <div className="auth-links"><Link href="/redefinir-senha">Já tenho um código</Link><Link href="/login">Voltar ao acesso</Link></div>
+      </form>}
+  </AuthLayout>;
+}
+
+/** Token do link (?token= ou #token=) fica só num ref em memória: sai da URL no primeiro render e nunca vai ao DOM. */
+export function ResetView() {
+  const router = useRouter();
+  const token = useRef<string | null>(null);
+  const [fromLink, setFromLink] = useState<boolean | null>(null);
+  const [code, setCode] = useState(''), [fresh, setFresh] = useState(''), [confirm, setConfirm] = useState(''), [error, setError] = useState(''), [invalid, setInvalid] = useState(false), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const capture = () => {
+      const value = new URLSearchParams(window.location.search).get('token') ?? new URLSearchParams(window.location.hash.slice(1)).get('token');
+      if (value) {
+        token.current = value; window.history.replaceState(null, '', '/redefinir-senha');
+        // O payload inline do Next (já executado) repete a URL pedida; remove os scripts que contêm o token.
+        const forms = [value, encodeURIComponent(value)];
+        for (const script of document.querySelectorAll('script:not([src])')) if (forms.some(f => script.textContent?.includes(f))) script.remove();
+        setCode(''); setError(''); setInvalid(false);
+      }
+      setFromLink(current => !!value || (current ?? false));
+    };
+    capture();
+    // Link aberto com a página já carregada muda só o fragmento: sem novo render do servidor.
+    window.addEventListener('hashchange', capture);
+    return () => window.removeEventListener('hashchange', capture);
+  }, []);
+  const manual = () => { token.current = null; setFromLink(false); };
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const secret = fromLink ? token.current : code.trim();
+    if (!secret) { setError('Informe o código de redefinição que você recebeu.'); return; }
+    if (length(fresh) < PASSWORD_MIN || length(fresh) > PASSWORD_MAX) { setError(`A nova senha precisa ter de ${PASSWORD_MIN} a ${PASSWORD_MAX} caracteres.`); return; }
+    if (fresh !== confirm) { setError('As senhas novas não coincidem.'); return; }
+    setBusy(true); setError(''); setInvalid(false);
+    const result = await request<null>('/api/v1/auth/password/reset', { method: 'POST', body: { token: secret, newPassword: fresh }, csrf: false });
+    setBusy(false);
+    if (result.ok) { token.current = null; setCode(''); setFresh(''); setConfirm(''); sessionStorage.setItem(FLASH, 'password-reset'); router.replace('/login'); return; }
+    if (result.code === 'INVALID_RESET' || result.fields.includes('token')) { setInvalid(true); setCode(''); if (fromLink) manual(); setError(result.code === 'INVALID_RESET' ? result.message : 'Confira o código de redefinição.'); return; }
+    setError(result.code === 'INVALID_INPUT' ? `A nova senha precisa ter de ${PASSWORD_MIN} a ${PASSWORD_MAX} caracteres.` : result.message);
+  }
+  return <AuthLayout eyebrow="CONTA / REDEFINIÇÃO" kicker="NOVA SENHA" title={<>Uma senha nova, <em>só sua.</em></>} lead="Use o código de uso único (válido por 30 minutos) e escolha a nova senha. Depois disso, as sessões abertas são encerradas e você entra de novo.">
+    {fromLink === null ? <Checking label="Preparando a redefinição…"/> :
+      <form className="form-panel auth-panel" onSubmit={submit} noValidate aria-busy={busy}>
+        <p className="eyebrow">CÓDIGO DE USO ÚNICO</p><h2>Redefinir senha</h2>
+        {fromLink ? <p className="auth-note auth-linked">Código do link carregado com segurança. <button type="button" className="auth-inline" onClick={manual}>Digitar outro código</button></p> :
+          <Field id="reset-code" label="Código de redefinição" hint="Cole o código recebido. Se recebeu mais de um, use o mais recente." type="text" name="token" autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} maxLength={256} required value={code} onChange={e => setCode(e.target.value)}/>}
+        <Field id="reset-password" label="Nova senha" hint={`De ${PASSWORD_MIN} a ${PASSWORD_MAX} caracteres. Pode colar de um gerenciador de senhas.`} type="password" name="newPassword" autoComplete="new-password" minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} required value={fresh} onChange={e => setFresh(e.target.value)}/>
+        <Field id="reset-confirm" label="Confirme a nova senha" type="password" name="confirmPassword" autoComplete="new-password" minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} required value={confirm} onChange={e => setConfirm(e.target.value)}/>
+        {error && <div role="alert" className="visible-error">{error}{invalid && <> <Link href="/recuperar-senha">Solicitar novo código</Link></>}</div>}
+        <button className="button-primary form-main-action" disabled={busy}>{busy ? 'Redefinindo…' : 'Redefinir senha'}</button>
+        <div className="auth-links"><Link href="/recuperar-senha">Não tenho código</Link><Link href="/login">Voltar ao acesso</Link></div>
       </form>}
   </AuthLayout>;
 }

@@ -73,3 +73,7 @@
 @media(prefers-reduced-motion:reduce){.header-account:hover{transform:none}}
 .auth-mock{margin:16px 0 0}
 .auth-again{margin-top:20px}
+.auth-linked{margin:16px 0 0}
+.auth-inline{background:none;border:0;padding:0;color:var(--accent);font:inherit;font-weight:700;text-decoration:underline;text-underline-offset:4px;min-height:44px}
+.auth-inline:focus-visible,.visible-error a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.visible-error a{color:inherit;text-decoration:underline;text-underline-offset:3px}
