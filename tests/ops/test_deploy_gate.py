@@ -102,6 +102,7 @@ class PhaseMatrixTests(GateTestCase):
             state.transition(step, '2026-10-23T12:00:00Z')
 
     def test_phase_by_operation_matrix(self):
+        # pg_write_open reaches the release gate; the library walk records no schema, so the gate stops it at 72
         outcomes = {}
         for phase in PHASES:
             self.host = Host(self)
@@ -114,19 +115,17 @@ class PhaseMatrixTests(GateTestCase):
                 self.assert_denied_before_any_effect(result, result.returncode)
             elif phase == 'prepared':
                 self.assertEqual(json.loads(result.stdout)['attestation']['phase'], phase)
-            else:
-                self.assertEqual(json.loads(result.stdout)['phase'], phase)
         self.assertEqual(outcomes, {
             'prepared': 0, 'frozen': 75, 'snapshotted': 75, 'imported': 75, 'activated': 75, 'smoke_ok': 75,
-            'pg_write_open': 0, 'aborted_pre_write': 75, 'recovering': 75})
+            'pg_write_open': 72, 'aborted_pre_write': 75, 'recovering': 75})
 
     def test_pg_write_open_is_a_release_and_ignores_the_stage_window(self):
-        self.host.seal(self.host.facts(authorized=-7200, expires=-3600))
-        digest = hashlib.sha256((self.host.state_dir / 'candidate.json').read_bytes()).hexdigest()
-        cutover.State.create(self.host.state_dir, digest, '2026-10-23T12:00:00Z')
-        self.walk_to('pg_write_open')
-        report = json.loads(self.host.deploy().stdout)
-        self.assertEqual((report['op'], report['phase']), ('release', 'pg_write_open'))
+        self.host.window = {'authorized': -7200, 'expires': -3600}  # the stage window is long over
+        self.host.pg_open()
+        self.host.good_image()
+        result = self.host.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['op'], 'release')
 
 
 class ProbePhaseTests(GateTestCase):

@@ -103,7 +103,7 @@ NOW_FIXED = '2026-10-23T12:00:00Z'
 def _staged(host):
     """Candidate sealed, marker prepared and a staged image recorded, through the library (no SSH, no docker)."""
     import hashlib
-    candidate = host.seal()
+    candidate = host.seal(host.facts(**getattr(host, 'window', {})))
     cutover = harness.load_ops_module('cutover')
     sealed = hashlib.sha256((host.state_dir / 'candidate.json').read_bytes()).hexdigest()
     state = cutover.State.create(host.state_dir, sealed, NOW_FIXED)
