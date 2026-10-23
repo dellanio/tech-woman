@@ -78,10 +78,11 @@ class ScopeAndSyntaxTests(unittest.TestCase):
         for path in (HTTP_CONF, SERVER_CONF):
             text = read(path)
             code = '\n'.join(line for line in text.splitlines() if not line.strip().startswith('#'))
-            for forbidden in ('http {', 'worker_', 'events', 'systemctl', 'nginx -s', 'reload', 'restart', 'user ',
+            for forbidden in ('http {', 'worker_', 'events', 'systemctl', 'nginx -s', 'reload', 'restart',
                               'upstream', 'ssl_certificate', 'listen '):
                 self.assertNotIn(forbidden, code, path.name)
             self.assertEqual(re.findall(r'server_name\s+(\S+);', code), [])
+            self.assertIsNone(re.search(r'^\s*user\s', code, re.M))
             self.assertEqual(code.count('{'), code.count('}'), path.name)
             for logfile in re.findall(r'(?:access_log|error_log)\s+(\S+)', code):
                 self.assertTrue(logfile.startswith('/var/log/nginx/tech-woman') or logfile == '/dev/null', logfile)
@@ -118,7 +119,7 @@ class ScopeAndSyntaxTests(unittest.TestCase):
             tmp = pathlib.Path(tmp)
             shutil.copy(HTTP_CONF, tmp / 'http.conf')
             shutil.copy(SERVER_CONF, tmp / 'server.conf')
-            (tmp / 'proxy.conf').write_text('return 204;\n')
+            (tmp / 'tech-woman-proxy.conf').write_text('return 204;\n')
             (tmp / 'nginx.conf').write_text(
                 'pid /tmp/nginx.pid;\nevents {}\nhttp {\n  access_log off;\n  include /etc/tw/http.conf;\n'
                 '  server {\n    listen 8080;\n    server_name tech-woman.dellanio.com;\n'
