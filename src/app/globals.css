@@ -86,3 +86,5 @@
 .form-panel fieldset.field-invalid>legend{color:var(--accent)}
 .form-panel fieldset.field-invalid>legend::after{content:' *';color:var(--accent)}
 .form-panel [aria-invalid="true"]{outline:2px solid var(--accent);outline-offset:2px}
+.signup-account{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin:0 0 18px;font-size:15px;overflow-wrap:anywhere}
+.signup-account-link{margin-top:18px}

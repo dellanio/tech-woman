@@ -1,8 +1,10 @@
 'use client';
 import { useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { Frame, loginHref, newIdempotencyKey, request } from '../shared';
+import { useRouter } from 'next/navigation';
+import { Frame, authRedirect, loginHref, newIdempotencyKey, request } from '../shared';
 import { ProfileArt } from '../components';
+import { ProfileReady, REFUSED_MESSAGE, SignedInAs, attachOutcome, useProfileSession } from '../profile-attach';
 import { InterestFields, TrajectoryFields, PARTICIPANT_IDS, PARTICIPANT_MESSAGES, emptyParticipant, focusField, isTrajectoryField, participantDto, participantIssues, type ParticipantDraft, type ParticipantField } from '../diagnostic';
 
 type Field = ParticipantField | 'email' | 'consent';
@@ -11,8 +13,13 @@ const MESSAGES: Record<Field, string> = { ...PARTICIPANT_MESSAGES, email: 'Infor
 /** Mesma regra do contrato v1 (um @, domínio com ponto, ASCII visível). */
 const validEmail = (value: string) => { const v = value.trim(); return v.length >= 3 && v.length <= 254 && v.split('@').length === 2 && /^[\x21-\x7e]+@[^@\s]+\.[^@\s]+$/.test(v); };
 
-/** `simulated`: ambiente sem SES (decidido no servidor). O 202 é neutro: nunca prova conta nova, envio nem entrega. */
+const ROUTE = '/inscricao';
+/** `simulated`: ambiente sem SES (decidido no servidor). O 202 público é neutro: nunca prova conta nova, envio nem entrega.
+ * Com sessão full, o mesmo diagnóstico (sem e-mail) vira perfil de participante da própria conta. */
 export function ParticipantSignup({ simulated }: { simulated: boolean }) {
+  const router = useRouter(); const session = useProfileSession(ROUTE);
+  const user = session.state === 'authenticated' ? session.user : null;
+  const [exists, setExists] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1), [draft, setDraft] = useState<ParticipantDraft>(emptyParticipant);
   const [email, setEmail] = useState(''), [consent, setConsent] = useState(false);
   const [invalid, setInvalid] = useState<Field[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState(false);
@@ -32,14 +39,22 @@ export function ParticipantSignup({ simulated }: { simulated: boolean }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const fields: Field[] = participantIssues(draft).map(i => i.field);
-    if (!validEmail(email)) fields.push('email');
+    if (!user && !validEmail(email)) fields.push('email');
     if (!consent) fields.push('consent');
     if (fields.length) { if (fields.some(isTrajectoryFieldOf)) setStep(1); show(fields); return; }
-    const body = { email: email.trim(), ...participantDto(draft) };
     setBusy(true); show([]);
-    const result = await request<{ status: 'received' }>('/api/v1/registrations/participants', { method: 'POST', body, csrf: false, idempotencyKey: keyFor(body) });
+    const profile = participantDto(draft), body = { email: email.trim(), ...profile };
+    const result = user
+      ? await request<{ profile: 'participant' }>('/api/v1/me/profiles/participant', { method: 'POST', body: profile })
+      : await request<{ status: 'received' }>('/api/v1/registrations/participants', { method: 'POST', body, csrf: false, idempotencyKey: keyFor(body) });
     setBusy(false);
     if (result.ok) { setStep(3); return; }
+    if (user) {
+      const outcome = attachOutcome(result);
+      if (outcome === 'login' || outcome === 'password') { router.replace(authRedirect(result.code, ROUTE) ?? ROUTE); return; }
+      if (outcome === 'exists') { setExists(true); return; }
+      if (outcome === 'refused') { show([], REFUSED_MESSAGE); return; }
+    }
     const known = result.fields.filter((f): f is Field => f in IDS);
     if (result.code === 'INVALID_INPUT' && known.length) { if (known.some(isTrajectoryFieldOf)) setStep(1); show(known); return; }
     show([], result.message);
@@ -55,21 +70,24 @@ export function ParticipantSignup({ simulated }: { simulated: boolean }) {
         <p>Não existe resposta certa. Suas escolhas ajudam a pensar em encontros relevantes para o seu momento.</p>
         <div className="thread-illustration" aria-hidden="true"><ProfileArt/><small>TRAJETÓRIAS QUE SE ENCONTRAM</small></div>
         <p className="honesty">Encontro presencial · 14 de novembro de 2026<br/>Com a conta ativa, você escolhe mentora e turma.</p>
-        {step !== 3 && <p className="signup-login">Já tem conta? <Link href={loginHref('/inscricao')}>Já tenho conta — entrar</Link></p>}
+        {step !== 3 && session.state === 'anonymous' && <p className="signup-login">Já tem conta? <Link href={loginHref('/inscricao')}>Já tenho conta — entrar</Link></p>}
       </div>
-      <form className="form-panel" onSubmit={submit} noValidate aria-busy={busy}>
+      {user && (exists || user.roles.includes('participant')) && step !== 3 ? <div className="form-panel"><ProfileReady label="participante" created={false}/></div> :
+      <form className="form-panel" onSubmit={submit} noValidate aria-busy={busy || session.state === 'checking'}>
+        {user && step !== 3 && <SignedInAs email={user.email}/>}
         {step === 1 && <>
           <TrajectoryFields draft={draft} onChange={setDraft} invalid={invalid.filter(isTrajectoryFieldOf)}/>
           <button type="button" className="button-primary form-main-action" onClick={next}>Continuar <span aria-hidden="true">↗</span></button>
         </>}
         {step === 2 && <>
           <InterestFields draft={draft} onChange={setDraft} invalid={invalid.filter((f): f is ParticipantField => f in PARTICIPANT_IDS)}/>
-          <label className="field-label" htmlFor={IDS.email}>Seu e-mail</label>
-          <input id={IDS.email} type="email" autoComplete="email" inputMode="email" maxLength={254} value={email} onChange={e => setEmail(e.target.value)} placeholder="voce@exemplo.com" required aria-invalid={invalid.includes('email') || undefined}/>
-          <label className="consent"><input id={IDS.consent} type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} aria-invalid={invalid.includes('consent') || undefined}/><span>Concordo em usar minhas respostas e meu e-mail para processar esta inscrição e comunicar o resultado do evento.</span></label>
-          <div className="form-actions"><button type="button" className="button-quiet" onClick={() => { setStep(1); show([]); }}>← Voltar</button><button className="button-primary" type="submit" disabled={busy}>{busy ? 'Enviando inscrição…' : 'Enviar inscrição ↗'}</button></div>
+          {session.state === 'anonymous' && <><label className="field-label" htmlFor={IDS.email}>Seu e-mail</label>
+          <input id={IDS.email} type="email" autoComplete="email" inputMode="email" maxLength={254} value={email} onChange={e => setEmail(e.target.value)} placeholder="voce@exemplo.com" required aria-invalid={invalid.includes('email') || undefined}/></>}
+          <label className="consent"><input id={IDS.consent} type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} aria-invalid={invalid.includes('consent') || undefined}/><span>{user ? 'Concordo em usar minhas respostas para criar meu perfil de participante e comunicar o resultado do evento.' : 'Concordo em usar minhas respostas e meu e-mail para processar esta inscrição e comunicar o resultado do evento.'}</span></label>
+          <div className="form-actions"><button type="button" className="button-quiet" onClick={() => { setStep(1); show([]); }}>← Voltar</button><button className="button-primary" type="submit" disabled={busy || session.state === 'checking'}>{busy ? 'Enviando…' : user ? 'Adicionar perfil de participante ↗' : 'Enviar inscrição ↗'}</button></div>
         </>}
-        {step === 3 && <>
+        {step === 3 && user && <ProfileReady label="participante" created/>}
+        {step === 3 && !user && <>
           <div className="success-panel" role="status"><span className="success-mark">✓</span><p className="eyebrow">PEDIDO REGISTRADO</p><h3>Inscrição recebida.</h3>
             <p>Se este e-mail puder ser usado, as instruções de acesso com uma senha temporária foram preparadas. Esta confirmação não confirma envio nem entrega de mensagem.</p>
             {simulated && <p className="mock-banner">NÃO ENVIADA — ambiente local de simulação: nenhum e-mail sai daqui.</p>}
@@ -78,7 +96,7 @@ export function ParticipantSignup({ simulated }: { simulated: boolean }) {
           <Link className="button-primary" href={loginHref('/conta')}>Entrar na conta ↗</Link>
         </>}
         {error && <p className="form-error visible-error" role="alert">{error}</p>}
-      </form>
+      </form>}
     </div>
   </Frame>;
 }
