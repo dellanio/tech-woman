@@ -64,3 +64,16 @@ export async function confirmRegistration(participantId: string, email: string, 
     return emailLabel('ses-unconfirmed');
   }
 }
+/** Stubs RED (WP-002 Task 2 slice C): assinaturas neutras, substituídas no GREEN. */
+export type EmailKind = 'registration' | 'temporary_password' | 'password_reset';
+export type EmailMessage = { jobId: string; kind: EmailKind; to: string; subject: string; text: string; secret: string };
+export type TransportResult = { status: 'accepted' | 'simulated'; providerId?: string };
+export interface EmailTransport { readonly name: string; send(message: EmailMessage, signal: AbortSignal): Promise<TransportResult> }
+export type EmailWorkerResult = { claimed: number; accepted: number; simulated: number; unconfirmed: number; failed: number; cancelled: number; stale: number };
+export type TransportErrorCode = 'TRANSPORT_TIMEOUT' | 'TRANSPORT_ERROR' | 'TRANSPORT_REJECTED' | 'RECIPIENT_NOT_ALLOWED' | 'TRANSPORT_DISABLED';
+export class TransportError extends Error { constructor(public code: TransportErrorCode) { super(code); } }
+export const createMemoryTransport = (_onMessage?: (message: EmailMessage) => void | Promise<void>): EmailTransport => ({ name: 'memory', async send() { return { status: 'simulated' }; } });
+export const createDiscardTransport = (): EmailTransport => createMemoryTransport();
+export async function runEmailWorkerOnce(_transport: EmailTransport, _workerId?: string): Promise<EmailWorkerResult> { return { claimed: 0, accepted: 0, simulated: 0, unconfirmed: 0, failed: 0, cancelled: 0, stale: 0 }; }
+export async function closeEmailPool(): Promise<void> {}
+export const emailJobLabel = (_status: string): string => '';
