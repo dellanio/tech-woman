@@ -732,7 +732,11 @@ def cmd_release_check(paths, flags):
         raise StateError(75, 'release needs phase pg_write_open')
     if not match or match.group(1) not in (state.data.get('known_pg_images') or []):
         raise StateError(76, 'the running web is not a known PostgreSQL image; refusing to touch it')
-    print(state.data.get('last_good_pg_image') or 'none')
+    last_good = state.data.get('last_good_pg_image')
+    if last_good and match.group(1) != last_good:
+        # a rollback reuses the running container, so it must be EXACTLY the last good image
+        raise StateError(76, 'the running web is a known PostgreSQL image but not the last good one; refusing to touch it')
+    print(last_good or 'none')
 
 
 def cmd_rebind(paths, flags):

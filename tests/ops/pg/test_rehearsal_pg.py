@@ -135,6 +135,7 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual(first['kind'], 'enrollment.create')
 
         (fake / 'container-inspect').write_bytes(('%s|%s\n' % (IMAGE_REF, ORIGINAL_IP)).encode())
+        (fake / 'inspect.tech-woman-mailer').write_bytes(b'false')  # the drain proves the mailer stopped
         # real finding: Agenda tables use row-level security, so pg_dump by a role without BYPASSRLS refuses;
         # deploy.sh must stop with 79 BEFORE touching any container
         refused = self.deploy(NEW_DIGEST)

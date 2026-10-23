@@ -103,34 +103,75 @@ maintenance="require('http').createServer((q,r)=>{r.writeHead(503,{'Retry-After'
 smoke="fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 previous_name="tech-woman-previous-$ts"
 
-rollback() {
-  docker rm -f tech-woman >/dev/null 2>&1 || true
-  if [[ "$last_good" != none ]]; then
-    docker rename "$previous_name" tech-woman >/dev/null && docker start tech-woman >/dev/null
-    docker start tech-woman-mailer >/dev/null 2>&1 || true
-    echo 'release failed; the last good PostgreSQL web was restarted' >&2
-  else
-    docker run -d --name tech-woman --restart unless-stopped --network "$network" --ip "$ip" --network-alias app \
-      --memory 64m --cpus 0.1 --log-opt max-size=10m --log-opt max-file=3 --entrypoint node "$image" -e "$maintenance" >/dev/null || true
-    echo 'release failed and no last good image exists; maintenance page (503) kept' >&2
-  fi
-  exit 77
+healthy_web() {
+  local attempt
+  for attempt in $(seq 1 "$TW_SMOKE_ATTEMPTS"); do
+    if docker exec tech-woman node -e "$smoke" >/dev/null 2>&1; then return 0; fi
+    sleep "$TW_SMOKE_DELAY"
+  done
+  return 1
 }
 
-docker stop tech-woman-mailer >/dev/null 2>&1 || true
-docker stop tech-woman >/dev/null || { echo 'cannot stop the web' >&2; exit 77; }
-docker rename tech-woman "$previous_name" >/dev/null || { docker start tech-woman >/dev/null || true; exit 77; }
+maintenance_page() {
+  docker run -d --name tech-woman --restart unless-stopped --network "$network" --ip "$ip" --network-alias app \
+    --memory 64m --cpus 0.1 --log-opt max-size=10m --log-opt max-file=3 --entrypoint node "$image" -e "$maintenance" >/dev/null
+}
+
+# Nothing was swapped yet: bring the running web and the mailer back and prove it (77), or say it failed (84).
+resume_before_swap() {
+  if docker start tech-woman >/dev/null && healthy_web && docker start tech-woman-mailer >/dev/null; then
+    echo "$1; nothing was swapped, the previous web answers and the mailer was restarted" >&2
+    exit 77
+  fi
+  echo "$1; and the previous web or the mailer did NOT come back: operator action required" >&2
+  exit 84
+}
+
+# The new web failed. Only the last good PostgreSQL container (== the web that was running, checked by
+# release-check) may come back; it must answer its smoke before anything is reported. Never an empty address.
+rollback() {
+  docker rm -f tech-woman >/dev/null 2>&1 || true  # the failed new web, if it exists at all
+  if [[ "$last_good" == none ]]; then
+    if maintenance_page; then
+      echo 'release failed and no last good image exists; maintenance page (503) kept' >&2
+      exit 77
+    fi
+    echo 'release failed, no last good image, and the maintenance page could NOT start: the address is DOWN' >&2
+    exit 84
+  fi
+  if docker rename "$previous_name" tech-woman >/dev/null && docker start tech-woman >/dev/null && healthy_web; then
+    if docker start tech-woman-mailer >/dev/null; then
+      echo 'release failed; the last good PostgreSQL web was restarted and answers its smoke; mailer restarted' >&2
+      exit 77
+    fi
+    echo 'release failed; the last good web answers but the mailer was NOT restarted: operator action required' >&2
+    exit 84
+  fi
+  docker stop tech-woman >/dev/null 2>&1 || true
+  docker rename tech-woman "$previous_name" >/dev/null 2>&1 || true
+  if maintenance_page; then
+    echo "release NOT restored: the last good web ($previous_name) did not come back healthy; maintenance page (503) kept; operator action required" >&2
+  else
+    echo 'release NOT restored and the maintenance page could NOT start: the address may be DOWN; operator action required' >&2
+  fi
+  exit 84
+}
+
+# Drain: the mailer must be proven stopped before the web is touched (stop that fails or a mailer still running
+# stops the release; nothing is ignored).
+docker stop tech-woman-mailer >/dev/null || { echo 'the mailer could not be stopped; nothing was swapped' >&2; exit 77; }
+mailer_running=$(docker inspect tech-woman-mailer --format '{{.State.Running}}') \
+  || resume_before_swap 'the mailer state is unknown after stop'
+[[ "$mailer_running" == false ]] || resume_before_swap 'the mailer is still running after stop'
+docker stop tech-woman >/dev/null || resume_before_swap 'cannot stop the web'
+docker rename tech-woman "$previous_name" >/dev/null || resume_before_swap 'cannot set the running web aside'
 docker run -d --name tech-woman --restart unless-stopped --network "$network" --ip "$ip" --network-alias app \
   --env-file "$TW_ENV_DIR/web.env" --memory 384m --cpus 0.5 --log-opt max-size=10m --log-opt max-file=3 \
   "$image" >/dev/null || rollback
-healthy=false
-for attempt in $(seq 1 "$TW_SMOKE_ATTEMPTS"); do
-  if docker exec tech-woman node -e "$smoke" >/dev/null 2>&1; then healthy=true; break; fi
-  sleep "$TW_SMOKE_DELAY"
-done
-[[ "$healthy" == true ]] || rollback
+healthy_web || rollback
 
-docker rename tech-woman-mailer "tech-woman-mailer-previous-$ts" >/dev/null 2>&1 || true
+docker rename tech-woman-mailer "tech-woman-mailer-previous-$ts" >/dev/null \
+  || { echo 'web released but the previous mailer could not be set aside: the mailer is NOT running' >&2; exit 77; }
 docker run -d --name tech-woman-mailer --restart unless-stopped --network "$network" \
   --env-file "$TW_ENV_DIR/mailer.env" --workdir /tools --memory 256m --cpus 0.25 --log-opt max-size=10m \
   --log-opt max-file=3 --entrypoint node "$image" --import tsx scripts/email-worker.ts >/dev/null \
