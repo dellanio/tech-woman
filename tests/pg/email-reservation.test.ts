@@ -34,6 +34,6 @@ test('INT-003: cancelamento entre tentativas impede confirmação de reserva obs
 test('INT-003: job reserva forjado sem vínculo elegível é cancelado sem tocar credenciais',async()=>scenario(async(db,p,e)=>{
  await db.query("update email_job set status='cancelled' where enrollment_id=$1",[e]);
  const uid=(await db.query('select user_id from participant where id=$1',[p])).rows[0].user_id;
- await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1,$2,'reservation',0,'queued',$1::text)",[randomUUID(),uid]);
+ await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1::uuid,$2,'reservation',0,'queued',$1::uuid::text)",[randomUUID(),uid]);
  const before=await snapshot(db);let sent=0;const result=await runEmailWorkerOnce(createMemoryTransport(()=>{sent++;}));assert.equal(result.cancelled,1);assert.equal(sent,0);assert.equal(await snapshot(db),before);
 }));
