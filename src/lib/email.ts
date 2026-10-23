@@ -80,8 +80,8 @@ function mailerPool(): Pool {
 export async function closeEmailPool(): Promise<void> { const current = pool; pool = undefined; if (current) await current.end(); }
 
 const compose = (kind: EmailKind, secret: string): { subject: string; text: string } => kind === 'password_reset'
-  ? { subject: 'Redefinição de senha | Tech Woman', text: `Seu código de redefinição de senha (válido por 30 minutos, uso único): ${secret}` }
-  : { subject: 'Seu acesso | Tech Woman', text: `Sua senha temporária (válida por 24 horas) é: ${secret}\nEntre com ela e defina sua senha definitiva.` };
+  ? { subject: 'Redefinição de senha | Tech Woman', text: `Seu código de redefinição de senha (válido por 30 minutos, uso único): ${secret}\nSe recebeu mais de um e-mail de acesso, use apenas o acesso mais recente.` }
+  : { subject: 'Seu acesso | Tech Woman', text: `Sua senha temporária (válida por 24 horas) é: ${secret}\nEntre com ela e defina sua senha definitiva.\nSe recebeu mais de um e-mail de acesso, use apenas o acesso mais recente.` };
 
 async function sendBounded(transport: EmailTransport, message: EmailMessage): Promise<TransportResult> {
   const controller = new AbortController();
@@ -117,7 +117,7 @@ export async function runEmailWorkerOnce(transport: EmailTransport, workerId: st
       status = sent.status; providerId = sent.providerId ?? null;
     } catch (error) { ({ status, code } = classify(error)); }
     const done = (await db.query('select internal.email_emit_finish($1::uuid,$2::uuid,$3::uuid,$4,$5,$6) as r', [claim.job_id, workerId, begin.attempt_id, status, providerId, code])).rows[0];
-    if (done?.r === 'applied') result[status]++; else result.stale++;
+    if (done?.r === 'applied') result[status]++; else if (done?.r === 'failed') result.failed++; else result.stale++;
   }
   return result;
 }
