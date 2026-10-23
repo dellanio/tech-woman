@@ -248,3 +248,78 @@ test('participante escolhe mentora sem afinidade → tema e turma em Recife (12 
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+/** Leva a participante até o resumo de uma turma (pré-seleção completa antes do envio). */
+async function toSummary(page:Page,mentor:string,topic:string,index=0){
+ await openMentor(page,mentor);
+ await main(page).getByRole('group',{name:topic}).getByRole('radio').nth(index).check();
+ await main(page).getByRole('button',{name:'Conferir resumo'}).click();
+ await main(page).locator('.choice-summary').waitFor();
+}
+
+test('última vaga: dois navegadores com a turma pré-selecionada enviam juntos; um 201, outro 409 amigável que preserva o contexto e atualiza as vagas',{timeout:420_000},async()=>{
+ const mentorId=await addMentor('Duda Última Vaga',['dados']);const mt=await link(mentorId,await addTopic('Entrevistas técnicas'));
+ const last=await addCohort(mt,futureAt(40,12),{capacity:1});const spare=await addCohort(mt,futureAt(41,13),{capacity:2});
+ const a=await participantOnAccount('race-a');const b=await participantOnAccount('race-b');
+ try{
+  for(const p of [a,b])await toSummary(p.page,'Duda Última Vaga','Entrevistas técnicas',0);
+  const wait=(page:Page)=>page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/v1/me/enrollments');
+  const [ra,rb]=await Promise.all([wait(a.page),wait(b.page),a.page.getByRole('button',{name:'Reservar vaga'}).click(),b.page.getByRole('button',{name:'Reservar vaga'}).click()]);
+  assert.deepEqual([ra.status(),rb.status()].sort(),[201,409],'banco real decide: uma reserva e um conflito');
+  const [winner,loser]=ra.status()===201?[a,b]:[b,a];
+  assert.equal(((await (ra.status()===409?ra:rb).json()) as {error:{code:string}}).error.code,'COHORT_FULL');
+  await main(winner.page).getByRole('status').filter({hasText:'Reserva confirmada'}).waitFor();
+  // perdedora: mensagem amigável, nenhuma confirmação, mentora/turma preservadas e caminhos para atualizar ou trocar
+  const text=await alertText(loser.page,/ficou sem vagas/);
+  assert.match(text,/A reserva não foi feita/);assert.doesNotMatch(text,/409|COHORT_FULL|erro interno|stack/i);
+  assert.equal(await main(loser.page).getByText('Reserva confirmada').count(),0);
+  const kept=await main(loser.page).locator('.choice-summary').innerText();
+  assert.ok(kept.includes('Duda Última Vaga')&&kept.includes('Entrevistas técnicas'),'contexto preservado');
+  assert.equal(await main(loser.page).getByRole('button',{name:'Reservar vaga'}).count(),0,'não reenvia a mesma turma lotada');
+  await main(loser.page).getByRole('button',{name:'Escolher outra mentora'}).waitFor();
+  await capture(loser.page,'conta-ultima-vaga-409');
+  // atualizar horários: vagas reais do banco; a turma lotada fica indisponível, a outra continua escolhível
+  await main(loser.page).getByRole('button',{name:'Atualizar horários'}).click();
+  await main(loser.page).getByRole('status').filter({hasText:/está lotada agora/}).waitFor();
+  const options=main(loser.page).getByRole('group',{name:'Entrevistas técnicas'}).locator('label.cohort-option');
+  assert.match(await options.nth(0).innerText(),/Turma lotada · 1 de 1 vagas ocupadas/);
+  assert.equal(await options.nth(0).getByRole('radio').isDisabled(),true);
+  assert.equal(await options.nth(1).getByRole('radio').isDisabled(),false);
+  assert.equal(await main(loser.page).getByRole('button',{name:'Conferir resumo'}).isDisabled(),true,'seleção lotada descartada');
+  const seats=(await ui.db.query<{n:number}>("select count(*)::int n from enrollment where cohort_id=$1 and status='active'",[last])).rows[0].n;
+  assert.equal(seats,1,'capacidade respeitada');
+  // escolher a outra turma conclui com nova chave
+  await options.nth(1).getByRole('radio').check();await main(loser.page).getByRole('button',{name:'Conferir resumo'}).click();
+  const [ok]=await Promise.all([wait(loser.page),main(loser.page).getByRole('button',{name:'Reservar vaga'}).click()]);
+  assert.equal(ok.status(),201);assert.deepEqual(ok.request().postDataJSON(),{cohortId:spare});
+  ui.assertNoLeak();
+ }finally{await a.context.close();await b.context.close();}
+});
+
+test('estados: turma encerrada antes de abrir vira vazio com volta; falha de rede ao ler turmas oferece tentar de novo sem perder a mentora',{timeout:300_000},async()=>{
+ const empty=await mentorWithCohort('Eva Sem Turma',['dados'],{topic:'Carreira em dados'});
+ await mentorWithCohort('Gabi Rede Instável',['dados'],{topic:'Dados na prática'});
+ const {page,context}=await participantOnAccount('states');
+ try{
+  await main(page).locator('article.choice-mentor').first().waitFor();
+  // a turma fecha depois que a lista foi carregada: a mentora aparece, mas não há turma aberta
+  await ui.db.query("update cohort set status='closed' where id=$1",[empty.cohortId]);
+  await openMentor(page,'Eva Sem Turma');
+  const none=main(page).getByRole('status').filter({hasText:/não tem turma aberta no momento/});await none.waitFor();
+  assert.equal(await main(page).getByRole('radio').count(),0,'nenhum horário inventado');
+  assert.equal(await main(page).getByRole('button',{name:'Conferir resumo'}).isDisabled(),true);
+  await capture(page,'conta-mentora-sem-turma');
+  await main(page).getByRole('button',{name:'Escolher outra mentora'}).click();
+  await main(page).getByRole('heading',{name:/Escolha sua mentora/}).waitFor();
+  // rede cai ao ler turmas: erro acessível e tentar de novo
+  await page.route('**/api/v1/mentors/*/cohorts*',r=>r.abort('internetdisconnected'));
+  await openMentor(page,'Gabi Rede Instável');
+  const failure=await alertText(page,/Não foi possível carregar as turmas/);
+  assert.match(failure,/Sem conexão/);assert.doesNotMatch(failure,/TypeError|Failed to fetch|stack/i);
+  assert.match(await main(page).locator('.choice-context').innerText(),/Gabi Rede Instável/i,'mentora preservada');
+  await page.unroute('**/api/v1/mentors/*/cohorts*');
+  await main(page).getByRole('alert').getByRole('button',{name:'Tentar novamente'}).click();
+  await main(page).getByRole('group',{name:'Dados na prática'}).getByRole('radio').first().waitFor();
+  assert.equal(await main(page).getByRole('alert').count(),0);
+ }finally{await context.close();}
+});
