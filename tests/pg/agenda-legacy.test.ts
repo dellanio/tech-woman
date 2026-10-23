@@ -114,6 +114,11 @@ test('change: cancel preserva histórico legado (cancelled + auditoria); reassig
  assert.deepEqual((await db.query('select participant_id,mentor_id,score,reasons,origin,enrollment_id,status from match where id=$1',[legacy])).rows[0],{...original,status:'cancelled'});
  assert.equal((await db.query('select status from match where id=$1',[hiddenLegacy])).rows[0].status,'approved');
  r=await A({action:'cancel',participantId:f.participant});assert.deepEqual([r.status,code(r),r.json.error.fields],[422,'INVALID_INPUT',['participantId']],'nada mais para cancelar');
+ assert.match(r.json.error.message,/DELETE \/api\/v1\/admin\/enrollments/,'instrução só para cancel de par inexistente');
+ for(const body of [{action:'cancel'},{action:'cancel',participantId:null},{action:'remove-demo',participantId:f.participant}]){
+  r=await A(body);assert.deepEqual([JSON.stringify(body),r.status,code(r)],[JSON.stringify(body),422,'INVALID_INPUT']);
+  assert.doesNotMatch(r.json.error.message,/Não há par/,`campo ausente/inválido ou ação errada não recebe a instrução de cancel: ${JSON.stringify(body)}`);
+ }
  // ativar/desativar (soft) e reserva ativa → 409 sem mutação
  r=await A({action:'deactivate',mentorId:Number(f.mentor)});assert.deepEqual([r.status,r.json],[200,{status:'Mentora desativada'}]);
  r=await A({action:'activate',mentorId:f.mentor});assert.deepEqual([r.status,r.json],[200,{status:'Mentora ativada'}]);
