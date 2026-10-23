@@ -1,4 +1,4 @@
-import json, os, pathlib, tempfile, unittest
+import inspect, json, os, pathlib, stat, tempfile, types, unittest
 from unittest import mock
 
 from tests.ops import harness
@@ -186,6 +186,55 @@ class DurabilityTests(StateTestCase):
         self.assertEqual(caught.exception.code, 66)
         state.transition('frozen', NOW)
         self.assertEqual(cutover.State.load(self.dir).phase, 'frozen')
+
+
+class OwnershipPolicyTests(StateTestCase):
+    """Owner and mode are checked through an injected lstat (the API seam); the CLI always uses the real one."""
+
+    def policy(self, **overrides):
+        modes = {'': stat.S_IFDIR | 0o700, 'state.json': stat.S_IFREG | 0o600, 'journal.jsonl': stat.S_IFREG | 0o600,
+                 'state.lock': stat.S_IFREG | 0o600}
+        owners = {name: 0 for name in modes}
+        for name, (mode, uid) in overrides.items():
+            modes[name], owners[name] = mode, uid
+
+        def fake_lstat(path):
+            name = '' if pathlib.Path(path) == self.dir else pathlib.Path(path).name
+            return types.SimpleNamespace(st_mode=modes[name], st_uid=owners[name])
+
+        return cutover.Policy(owner_uid=0, check_mode=True, lstat=fake_lstat)
+
+    def test_root_owned_private_files_pass(self):
+        self.create()
+        self.assertEqual(cutover.State.load(self.dir, self.policy()).phase, 'prepared')
+
+    def test_wrong_owner_mode_or_symlink_fail_closed_with_70(self):
+        self.create()
+        regular = stat.S_IFREG
+        cases = {
+            'state owned by another user': {'state.json': (regular | 0o600, 1000)},
+            'journal owned by another user': {'journal.jsonl': (regular | 0o600, 1000)},
+            'directory owned by another user': {'': (stat.S_IFDIR | 0o700, 1000)},
+            'state world readable 0644': {'state.json': (regular | 0o644, 0)},
+            'state group readable 0640': {'state.json': (regular | 0o640, 0)},
+            'state group writable 0660': {'state.json': (regular | 0o660, 0)},
+            'state executable 0700': {'state.json': (regular | 0o700, 0)},
+            'journal world readable 0644': {'journal.jsonl': (regular | 0o644, 0)},
+            'directory 0755': {'': (stat.S_IFDIR | 0o755, 0)},
+            'directory 0750': {'': (stat.S_IFDIR | 0o750, 0)},
+            'state is a symlink': {'state.json': (stat.S_IFLNK | 0o777, 0)},
+            'directory is a symlink': {'': (stat.S_IFLNK | 0o777, 0)},
+        }
+        for name, override in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(cutover.StateError) as caught:
+                    cutover.State.load(self.dir, self.policy(**override))
+                self.assertEqual(caught.exception.code, 70, name)
+
+    def test_load_is_strict_by_default(self):
+        default = inspect.signature(cutover.State.load).parameters['policy'].default
+        self.assertIs(default, cutover.STRICT)
+        self.assertEqual((cutover.STRICT.owner_uid, cutover.STRICT.check_mode), (0, True))
 
 
 if __name__ == '__main__':
