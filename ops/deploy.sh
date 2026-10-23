@@ -42,5 +42,29 @@ verdict=$("$TW_PYTHON" -I "$(dirname -- "$self")/cutover.py" gate --digest "$dig
   --release-commit "$release_commit" --release-tree "$release_tree" \
   --migrations-aggregate "$migrations_aggregate" --migrations-count "$migrations_count") || rc=$?
 [[ $rc -eq 0 ]] || exit "$rc"
-printf '%s\n' "$verdict"
+if [[ "$verdict" != *'"op": "stage"'* ]]; then
+  printf '%s\n' "$verdict"
+  exit 0
+fi
+
+# Stage: pull and verify only. Nothing is stopped, renamed, started or run detached, and the marker is never
+# written from here: the operator registers the attestation printed below (cutover.py register-stage).
+candidate_sha=${verdict#*'"candidate_sha256": "'}
+candidate_sha=${candidate_sha%%\"*}
+cfg=$(mktemp -d)
+trap 'rm -rf "$cfg"' EXIT
+image="ghcr.io/dellanio/tech-woman@$digest"
+printf '%s' "$token" | docker --config "$cfg" login ghcr.io -u dellanio --password-stdin >/dev/null \
+  || { echo 'registry login failed' >&2; exit 74; }
+unset token
+docker --config "$cfg" pull "$image" >/dev/null || { echo 'image pull failed' >&2; exit 74; }
+rc=0
+bash "$(dirname -- "$self")/verify-image.sh" "$image" "$release_commit" "$migrations_aggregate" \
+  "$migrations_count" >/dev/null || rc=$?
+[[ $rc -eq 0 ]] || exit "$rc"
+printf '{"stage":"verified","attestation":{"digest":"%s","release_commit":"%s","release_tree":"%s",' \
+  "$digest" "$release_commit" "$release_tree"
+printf '"migrations_aggregate":"%s","migrations_count":%s,"candidate_sha256":"%s","script_sha256":"%s",' \
+  "$migrations_aggregate" "$migrations_count" "$candidate_sha" "$(sha256sum -- "$self" | cut -d' ' -f1)"
+printf '"phase":"prepared"}}\n'
 exit 0

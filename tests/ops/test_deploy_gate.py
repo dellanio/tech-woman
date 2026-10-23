@@ -15,6 +15,7 @@ class GateTestCase(unittest.TestCase):
         self.host.seal(facts)
         done = self.host.cutover('prepare')
         self.assertEqual(done.returncode, 0, done.stderr)
+        self.host.good_image()
 
     def assert_denied_before_any_effect(self, result, code):
         self.assertEqual(result.returncode, code, result.stderr)
@@ -28,11 +29,12 @@ class GateTestCase(unittest.TestCase):
 class GateBasicsTests(GateTestCase):
     def test_prepared_marker_and_exact_candidate_pass_the_gate_without_effect(self):
         self.prepare()
+        self.host.good_image()
         result = self.host.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
-        self.assertEqual((report['gate'], report['op'], report['phase']), ('ok', 'stage', 'prepared'))
-        self.assertEqual([c['cmd'] for c in result.calls()], ['flock'])
+        self.assertEqual((report['stage'], report['attestation']['phase']), ('verified', 'prepared'))
+        self.assertEqual(result.calls()[0]['cmd'], 'flock')
         self.assertNotIn('TEST-ONLY-SECRET', result.stdout + result.stderr)
 
     def test_missing_marker_is_70(self):
@@ -79,6 +81,7 @@ class GateDenialTests(GateTestCase):
 
     def test_squash_commit_with_the_tested_tree_passes_and_main_advance_does_not(self):
         self.prepare()
+        self.host.good_image(commit='9' * 40)  # the image is labelled with the squash commit it was built from
         self.assertEqual(self.host.deploy(commit='9' * 40).returncode, 0)
         self.assert_denied_before_any_effect(self.host.deploy(commit='9' * 40, tree='8' * 40), 71)
 
@@ -103,11 +106,14 @@ class PhaseMatrixTests(GateTestCase):
         for phase in PHASES:
             self.host = Host(self)
             self.prepare()
+            self.host.good_image()
             self.walk_to(phase)
             result = self.host.deploy()
             outcomes[phase] = result.returncode
             if result.returncode:
                 self.assert_denied_before_any_effect(result, result.returncode)
+            elif phase == 'prepared':
+                self.assertEqual(json.loads(result.stdout)['attestation']['phase'], phase)
             else:
                 self.assertEqual(json.loads(result.stdout)['phase'], phase)
         self.assertEqual(outcomes, {

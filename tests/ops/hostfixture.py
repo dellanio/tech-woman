@@ -72,10 +72,10 @@ IMAGE_FILES = ['/app/server.js', '/tools/scripts/email-worker.ts', '/tools/scrip
                '/tools/drizzle/20260101000000_a.sql', '/tools/node_modules/drizzle-orm/index.js']
 
 
-def _good_image(host):
+def _good_image(host, commit=COMMIT):
     from tests.ops.test_manifest import make_tar
     fake = host.ops.fake
-    (fake / 'inspect').write_bytes(('arm64|linux|%s\n' % COMMIT).encode())
+    (fake / 'inspect').write_bytes(('arm64|linux|%s\n' % commit).encode())
     (fake / 'fs.txt').write_bytes(('\n'.join(IMAGE_FILES) + '\n').encode())
     (fake / 'drizzle.tar').write_bytes(make_tar([('./', None, 'dir')] + [('./' + n, d, 'file') for n, d in MIGRATIONS.items()]))
     for stale in ('grep.rc', 'inspect.rc', 'login.rc', 'pull.rc'):

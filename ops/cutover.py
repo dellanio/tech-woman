@@ -229,7 +229,7 @@ class State:
 
 
 HERE = pathlib.Path(__file__).resolve().parent
-PATH_KEYS = {'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
+PATH_KEYS = {'TW_ENV_DIR', 'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
              'TW_STATE_MODE_CHECK'}
 
 
@@ -322,7 +322,7 @@ def cmd_gate(paths, flags):
     window = candidate['window']
     if operation == 'stage' and not window['authorized_at'] <= _now() < window['expires_at']:
         raise StateError(73, 'outside the authorised window')
-    print(json.dumps({'gate': 'ok', 'op': operation, 'phase': state.phase}))
+    print(json.dumps({'gate': 'ok', 'op': operation, 'phase': state.phase, 'candidate_sha256': sealed}))
 
 
 def cmd_phase(paths):
