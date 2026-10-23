@@ -54,7 +54,9 @@ async function visibleIds(table:'participant'|'mentor'){
  const result=await getDb().execute(table==='participant'?sql`select id::text as id from participant where not internal.domain_protected('participant',id)`:sql`select id::text as id from mentor where not internal.domain_protected('mentor',id)`);
  return new Set((result.rows as {id:string}[]).map(r=>r.id));
 }
+/** Trava o(s) dono(s) da linha (mesmo lock da elevação offline) e só então avalia a proteção; use dentro da transação da escrita. */
 async function isProtected(table:'participant'|'mentor',id:bigint,store:Store=getDb()){
+ await store.execute(sql`select internal.lock_domain_owner(${table},${id.toString()}::bigint)`);
  const result=await store.execute(sql`select internal.domain_protected(${table},${id.toString()}::bigint) as p`);
  return (result.rows[0] as {p?:boolean}|undefined)?.p===true;
 }
@@ -98,8 +100,10 @@ export async function adminChange(participantId:string|number,mentorId:string|nu
  let m:Mentor|undefined;if(action==='reassign'){if(!mid)throw new Invalid('Mentora inválida.');[m]=await tx.select().from(mentors).where(eq(mentors.id,mid));if(!m||!m.active||await approvedCount(m.id,tx)>=m.capacity)throw new Invalid('Mentora sem vaga disponível.',409);if(!ranking(p,m).score)throw new Invalid('Não há compatibilidade positiva.',409);}
  await tx.update(matches).set({status:'rejected'}).where(approvedCondition(pid));if(m){const {score,reasons}=ranking(p,m);await tx.insert(matches).values({participantId:pid,mentorId:m.id,score,reasons,status:'approved',origin:'legacy'});}return {status:action==='cancel'?'Reserva cancelada':'Mentora realocada'};});
 }
-export async function setMentorActive(id:string|number,active:boolean){if(await isProtected('mentor',legacyId(id)))throw new Invalid('Mentora inexistente.',404);const rows=await getDb().update(mentors).set({active}).where(eq(mentors.id,legacyId(id))).returning({id:mentors.id});if(!rows.length)throw new Invalid('Mentora inexistente.',404);return {status:active?'Mentora ativada':'Mentora desativada'};}
-export async function removeDemoMentors(){const rows=await getDb().update(mentors).set({active:false}).where(and(eq(mentors.demo,true),eq(mentors.active,true),sql`not internal.domain_protected('mentor',${mentors.id})`)).returning({id:mentors.id});return {status:`${rows.length} mentoras de demonstração desativadas.`};}
+export async function setMentorActive(id:string|number,active:boolean){const mid=legacyId(id);return getDb().transaction(async tx=>{if(await isProtected('mentor',mid,tx))throw new Invalid('Mentora inexistente.',404);const rows=await tx.update(mentors).set({active}).where(eq(mentors.id,mid)).returning({id:mentors.id});if(!rows.length)throw new Invalid('Mentora inexistente.',404);return {status:active?'Mentora ativada':'Mentora desativada'};});}
+export async function removeDemoMentors(){return getDb().transaction(async tx=>{const demo=await tx.select({id:mentors.id}).from(mentors).where(and(eq(mentors.demo,true),eq(mentors.active,true))).orderBy(mentors.id);let removed=0;
+ for(const {id} of demo){if(await isProtected('mentor',id,tx))continue;removed+=(await tx.update(mentors).set({active:false}).where(and(eq(mentors.id,id),eq(mentors.demo,true),eq(mentors.active,true))).returning({id:mentors.id})).length;}
+ return {status:`${removed} mentoras de demonstração desativadas.`};});}
 /** Compatibilidade: autentica pela identidade nova e não deixa sessão (a rota antiga já cria a própria). Sem sessão stateless. */
 export async function authenticate(email:string,password:string){
  const result=await login(email,password);if(!result)return null;
