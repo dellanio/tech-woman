@@ -257,3 +257,12 @@ test('turma elegível: criar ou abrir exige mentora e tema ativos; fechar e canc
  await pgFails(db.query("update cohort set status='open' where id=$1",[open]),'23514','agenda_inactive');
  await db.query("update cohort set status='cancelled' where id in ($1,$2)",[draft,open]);
 }));
+
+test('R3: RLS é avaliada antes das regras de elegibilidade — tentativa sobre linha oculta não revela estado (42501, nunca motivo de negócio)', ()=>withDb(async ({db,url})=>{
+ const admin=await addUser(db,{roles:['admin','mentor']});const adminMentor=await addMentor(db,{userId:admin.id});
+ const hiddenMt=await addMentorTopic(db,adminMentor,await addTopic(db));await db.query('update mentor set active=false where id=$1',[adminMentor]);
+ await withClients(url,[EDITOR],async b=>{
+  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(1),at(2)]),'42501');
+  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,now()-interval '1 hour',now(),2,'closed')",[hiddenMt]),'42501');
+ });
+}));
