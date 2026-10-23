@@ -22,13 +22,24 @@ class HarnessFakesTests(unittest.TestCase):
             return harness.run_script(script, stdin)
 
     def test_tripwire_binary_fails_the_run_and_is_reported(self):
-        for name in ('ssh', 'scp', 'gh', 'nginx', 'systemctl'):
+        for name in ('ssh', 'scp', 'gh', 'nginx'):
             with self.subTest(name=name):
                 result = self.run_snippet('%s --version\n' % name)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual([c['cmd'] for c in result.tripwires()], [name])
                 with self.assertRaises(AssertionError):
                     result.assert_no_tripwire()
+
+    def test_read_only_host_inspection_is_allowed_and_every_mutation_is_a_tripwire(self):
+        allowed = self.run_snippet('systemctl list-timers --all --no-pager\ncrontab -l\nfuser -v /x\n')
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        allowed.assert_no_tripwire()
+        for command in ('systemctl restart nginx', 'systemctl stop tech-woman', 'systemctl daemon-reload',
+                        'crontab -r', 'crontab /tmp/x', 'crontab -e'):
+            with self.subTest(command=command):
+                result = self.run_snippet(command + chr(10))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(result.tripwires()), 1)
 
     def test_logging_fakes_record_argv(self):
         result = self.run_snippet('docker stop tech-woman\nfuser -v /x\n')
