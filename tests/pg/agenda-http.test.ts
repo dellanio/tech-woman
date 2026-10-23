@@ -6,7 +6,9 @@ import * as topic from '../../src/app/api/v1/topics/[id]/route';
 import * as mentorTopics from '../../src/app/api/v1/mentors/[mentorId]/topics/route';
 import * as reorder from '../../src/app/api/v1/mentors/[mentorId]/topics/reorder/route';
 import * as mentorTopic from '../../src/app/api/v1/mentor-topics/[id]/route';
-import {withDb,addTopic,addMentor,addParticipant,addCohort,mentorWithCohort} from './agenda-harness';
+import * as cohorts from '../../src/app/api/v1/mentor-topics/[id]/cohorts/route';
+import * as cohort from '../../src/app/api/v1/cohorts/[id]/route';
+import {withDb,addTopic,addMentor,addMentorTopic,addParticipant,addCohort,mentorWithCohort,at} from './agenda-harness';
 import {actorOf,mentorActor,as,call,code,etagOf,snapshot,sameShape,type Reply} from './agenda-api-kit';
 
 const ids=(r:Reply)=>r.json.data.map((x:{id:string})=>x.id);
@@ -122,4 +124,53 @@ test('mentor topics: mentora própria e admin escrevem (Idempotency-Key), team s
  const audit=(await db.query("select actor_user_id,action from audit_event where entity_type='mentor_topic' order by id")).rows.map(a=>[a.actor_user_id,a.action]);
  assert.deepEqual(audit,[[own.id,'mentor_topic.create'],[admin.id,'mentor_topic.create'],[own.id,'mentor_topic.reorder'],[own.id,'mentor_topic.delete'],[own.id,'mentor_topic.update'],[boss.id,'mentor_topic.create']]);
  void addMentor;
+}));
+
+/** Mesmo instante escrito com offset de Recife (-03:00), como o contrato exige na entrada. */
+const recife=(iso:string)=>new Date(Date.parse(iso)-3*3600e3).toISOString().slice(0,19)+'-03:00';
+test('cohorts: offset obrigatório e saída UTC Z/America/Recife, ocupação/vagas, overlap da mentora entre temas 409 e contíguo ok, transições do DER, mudança de horário/capacidade com reservas 409, DELETE cancela sem reservas',()=>withDb(async({db})=>{
+ const own=await mentorActor(db),team=await actorOf(db,['team']),participant=await actorOf(db,['participant']),other=await mentorActor(db);
+ const t1=await addTopic(db),t2=await addTopic(db);const mt1=await addMentorTopic(db,own.mentorId,t1,1),mt2=await addMentorTopic(db,own.mentorId,t2,2);
+ const O=as(own);const path=`/api/v1/mentor-topics/${mt1}/cohorts`;const key=randomUUID();
+ const body={startsAt:recife(at(10)),endsAt:recife(at(11)),capacity:20,status:'open'};
+ let r=await O.send(cohorts.POST,path,{body,params:{id:mt1},key});
+ assert.equal(r.status,201);
+ assert.deepEqual(r.json.data,{id:r.json.data.id,mentorTopicId:mt1,topic:{id:t1,name:'Tema'},startsAt:at(10).replace('.000Z','Z'),endsAt:at(11).replace('.000Z','Z'),timeZone:'America/Recife',capacity:20,occupied:0,available:20,status:'open',version:r.json.data.version});
+ const c1=r.json.data.id;assert.equal(etagOf(r),r.json.data.version);
+ r=await O.send(cohorts.POST,path,{body,params:{id:mt1},key});assert.deepEqual([r.status,r.json.data.id],[201,c1],'replay');
+ for(const bad of [{...body,startsAt:at(10).slice(0,16)},{...body,startsAt:'2026-11-14T09:00:00'},{...body,capacity:21},{...body,capacity:0},{...body,endsAt:body.startsAt},{...body,status:'closed'},{...body,mentorTopicId:mt2},{...body,occupied:0}]){
+  r=await O.send(cohorts.POST,path,{body:bad,params:{id:mt1},key:randomUUID()});assert.deepEqual([JSON.stringify(bad),r.status,code(r)],[JSON.stringify(bad),422,'INVALID_INPUT']);
+ }
+ const past=new Date(Date.now()-3600e3).toISOString();r=await O.send(cohorts.POST,path,{body:{...body,startsAt:past,endsAt:at(1)},params:{id:mt1},key:randomUUID()});assert.deepEqual([r.status,code(r),r.json.error.fields],[422,'INVALID_INPUT',['startsAt']],'início no passado');
+ r=await O.send(cohorts.POST,`/api/v1/mentor-topics/${mt2}/cohorts`,{body:{...body,startsAt:at(10.5),endsAt:at(12)},params:{id:mt2},key:randomUUID()});assert.deepEqual([r.status,code(r)],[409,'SCHEDULE_CONFLICT'],'overlap entre temas da mesma mentora');
+ r=await O.send(cohorts.POST,`/api/v1/mentor-topics/${mt2}/cohorts`,{body:{startsAt:at(11),endsAt:at(12),capacity:1,status:'draft'},params:{id:mt2},key:randomUUID()});assert.equal(r.status,201,'contíguo é válido');const c2=r.json.data.id;
+ r=await as(other).send(cohorts.POST,path,{body,params:{id:mt1},key:randomUUID()});assert.deepEqual([r.status,code(r)],[404,'NOT_FOUND']);
+ r=await as(team).send(cohorts.POST,path,{body,params:{id:mt1},key:randomUUID()});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ // leitura
+ r=await as(team).get(cohorts.GET,`${path}?limit=1`,{id:mt1});assert.deepEqual([r.json.data.map((c:{id:string})=>c.id),r.json.page.nextCursor],[[c1],null]);
+ for(const probe of [await as(participant).get(cohort.GET,`/api/v1/cohorts/${c1}`,{id:c1}),await as(other).get(cohort.GET,`/api/v1/cohorts/${c1}`,{id:c1}),await as(participant).get(cohorts.GET,path,{id:mt1}),await O.get(cohort.GET,'/api/v1/cohorts/999999',{id:'999999'})])
+  assert.deepEqual([probe.status,code(probe)],[404,'NOT_FOUND']);
+ // reservas: ocupação, capacidade e horário travados, cancelamento exige zero ativas
+ const p1=await addParticipant(db),p2=await addParticipant(db);
+ for(const p of [p1,p2])await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[p,c1]);
+ r=await O.get(cohort.GET,`/api/v1/cohorts/${c1}`,{id:c1});assert.deepEqual([r.json.data.occupied,r.json.data.available],[2,18]);let v=etagOf(r);
+ const patch=(b:unknown,version=v)=>O.send(cohort.PATCH,`/api/v1/cohorts/${c1}`,{method:'PATCH',body:b,params:{id:c1},version});
+ r=await patch({capacity:1});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE'],'capacidade abaixo da ocupação');
+ r=await patch({startsAt:recife(at(20)),endsAt:recife(at(21))});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE'],'horário com inscritas');
+ r=await patch({status:'draft'});assert.deepEqual([r.status,code(r),r.json.error.fields],[422,'INVALID_INPUT',['status']]);
+ r=await patch({capacity:2});assert.equal(r.status,200);v=etagOf(r);assert.deepEqual([r.json.data.capacity,r.json.data.available],[2,0]);
+ r=await patch({status:'closed'});assert.deepEqual([r.status,r.json.data.status],[200,'closed']);v=etagOf(r);
+ r=await patch({status:'open'});assert.deepEqual([r.status,r.json.data.status],[200,'open'],'closed→open futura');v=etagOf(r);
+ r=await patch({capacity:3},'1');assert.deepEqual([r.status,code(r)],[412,'VERSION_MISMATCH']);
+ r=await O.send(cohort.PATCH,`/api/v1/cohorts/${c1}`,{method:'PATCH',body:{capacity:3},params:{id:c1}});assert.deepEqual([r.status,code(r)],[428,'PRECONDITION_REQUIRED']);
+ for(const bad of [{mentorTopicId:mt2},{occupied:1},{startsAt:'2026-11-14T09:00:00'},{}]){r=await patch(bad);assert.deepEqual([JSON.stringify(bad),r.status,code(r)],[JSON.stringify(bad),422,'INVALID_INPUT']);}
+ r=await O.send(cohort.DELETE,`/api/v1/cohorts/${c1}`,{method:'DELETE',params:{id:c1},version:v});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE'],'cancelar com inscritas ativas');
+ r=await as(team).send(cohort.DELETE,`/api/v1/cohorts/${c2}`,{method:'DELETE',params:{id:c2},version:'1'});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ r=await O.send(cohort.DELETE,`/api/v1/cohorts/${c2}`,{method:'DELETE',params:{id:c2},version:'1'});assert.deepEqual([r.status,r.json.data.status],[200,'cancelled']);
+ r=await O.send(cohort.PATCH,`/api/v1/cohorts/${c2}`,{method:'PATCH',body:{status:'open'},params:{id:c2},version:r.json.data.version});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT'],'cancelada não reabre');
+ r=await O.send(cohorts.POST,`/api/v1/mentor-topics/${mt2}/cohorts`,{body:{startsAt:at(11),endsAt:at(12),capacity:5,status:'open'},params:{id:mt2},key:randomUUID()});assert.equal(r.status,201,'cancelada libera o horário');
+ const audit=(await db.query("select actor_user_id,action,changed_fields from audit_event where entity_type='cohort' order by id")).rows;
+ assert.deepEqual(audit.map(a=>a.action),['cohort.create','cohort.create','cohort.update','cohort.update','cohort.update','cohort.cancel','cohort.create']);
+ assert.ok(audit.every(a=>a.actor_user_id===own.id));assert.deepEqual(audit[2].changed_fields,['capacity']);
+ void mentorWithCohort;void addMentor;
 }));
