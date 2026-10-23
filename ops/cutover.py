@@ -874,22 +874,108 @@ def _recover_restart(paths, state, candidate, now):
     return facts
 
 
+DUMP_NAME = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.dump\Z')
+
+
+def _isolated_name(paths, state, now):
+    """New database next to the live one, never the live one: <db>_restore_<UTC stamp>_<seq>."""
+    name = '%s_restore_%s_%d' % (paths['TW_PG_DB'], re.sub(r'[^0-9]', '', now), state.seq)
+    if not re.fullmatch(r'[a-z_][a-z0-9_]{0,62}', name):
+        raise StateError(70, 'TW_PG_DB does not allow a safe isolated database name')
+    return name
+
+
+def _restore_and_compare(paths, state, candidate, dump_path, now):
+    """Restore a dump into a NEW isolated database and confront it with the live database, row by row."""
+    recover = _sibling('recover')
+    pg = recover.Pg(paths)
+    restored = _isolated_name(paths, state, now)
+    try:
+        pg.create_database(restored)
+        pg.restore(dump_path, restored)
+        other = recover.fingerprint(pg, restored)
+    except (recover.hostops.HostError, ValueError) as error:
+        raise StateError(83, 'the isolated restore failed (live database untouched): %s' % error)
+    try:
+        live = recover.fingerprint(pg, paths['TW_PG_DB'])
+    except (recover.hostops.HostError, ValueError) as error:
+        raise _no_proof(paths, candidate, str(error))
+    report = recover.compare(live, other)
+    report['restored_db'] = restored
+    return report
+
+
+def _recover_compare(paths, state, candidate, flags, now):
+    """Inspection: what an existing dump (e.g. the daily one) lacks compared with the live database."""
+    name = flags.get('dump', '')
+    if not DUMP_NAME.match(name):
+        raise StateError(64, '--dump must be the plain name of a .dump file in the backup directory')
+    path = pathlib.Path(paths['TW_BACKUP_DIR']) / name
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise StateError(64, '--dump is not a plain file')
+    except OSError:
+        raise StateError(64, 'no such dump in the backup directory')
+    recover = _sibling('recover')
+    try:
+        recover.live_facts(recover.Pg(paths), {})
+    except recover.Unreadable as error:
+        raise _no_proof(paths, candidate, str(error))
+    return _restore_and_compare(paths, state, candidate, path, now)
+
+
+def _recover_reconcile(paths, state, candidate, now):
+    """R-B from an intact database: a complete dump taken NOW, restored in isolation and proven identical (every
+    row of every table, every sequence, the schema) before it is accepted as the recovery copy. No partial delta."""
+    recover = _sibling('recover')
+    backups = pathlib.Path(paths['TW_BACKUP_DIR'])
+    dump = backups / ('recovery-%d-%s.dump' % (state.seq, re.sub(r'[^0-9]', '', now)))
+    try:
+        recover.Pg(paths).dump(dump)
+        if dump.stat().st_size == 0:
+            raise recover.hostops.HostError(83, 'empty dump')
+    except (recover.hostops.HostError, OSError) as error:
+        raise _no_proof(paths, candidate, str(error))
+    report = _restore_and_compare(paths, state, candidate, dump, now)
+    report['dump'] = dump.name
+    report['dump_sha256'] = _sha256(dump.read_bytes())
+    return report
+
+
 def cmd_recover(paths, flags):
     """Post-write recovery. Never touches SQLite; deploys stay denied (phase recovering) until it succeeds."""
     mode = flags.get('mode')
-    if mode not in ('restart',):
-        raise StateError(64, '--mode must be restart')
+    if mode not in ('restart', 'compare', 'reconcile') or (mode != 'compare' and 'dump' in flags):
+        raise StateError(64, '--mode must be restart, reconcile or compare --dump <name>')
     manifest = _manifest()
     state = State.load(paths['TW_STATE_DIR'], _policy(paths))
     if state.phase not in RECOVERY_PHASES:
         raise StateError(75, 'recover needs phase pg_write_open or recovering')
     candidate = _sealed_candidate(paths, manifest)
     now = _now()
+    if mode == 'compare':
+        report = _recover_compare(paths, state, candidate, flags, now)
+        print(json.dumps(dict(report, mode=mode, phase=state.phase)))
+        if not report['equal']:
+            raise StateError(86, 'the dump differs from the live database (see the report)')
+        return
     if state.phase == 'pg_write_open':
         state.transition('recovering', now, recovery={'mode': mode, 'started_at': now, 'result': 'in-progress'})
-    facts = _recover_restart(paths, state, candidate, now)
-    state.transition('pg_write_open', _now(), recovery={'mode': mode, 'started_at': now, 'result': 'ok', 'live': facts})
-    print(json.dumps({'mode': mode, 'phase': 'pg_write_open', 'live': facts}))
+    if mode == 'restart':
+        facts = _recover_restart(paths, state, candidate, now)
+        state.transition('pg_write_open', _now(), recovery={'mode': mode, 'started_at': now, 'result': 'ok',
+                                                            'live': facts})
+        print(json.dumps({'mode': mode, 'phase': 'pg_write_open', 'live': facts}))
+        return
+    report = _recover_reconcile(paths, state, candidate, now)
+    if not report['equal']:
+        print(json.dumps(dict(report, mode=mode, phase='recovering')))
+        raise StateError(86, 'the restored copy is not identical to the live database: a writer is active or the '
+                             'restore is incomplete; nothing is accepted')
+    state.transition('pg_write_open', _now(), recovery={
+        'mode': mode, 'started_at': now, 'result': 'ok', 'restored_db': report['restored_db'], 'dump': report['dump'],
+        'dump_sha256': report['dump_sha256'], 'tables': report['tables'], 'rows': report['rows']})
+    print(json.dumps(dict(report, mode=mode, phase='pg_write_open')))
 
 
 COMMANDS = {

@@ -232,7 +232,7 @@ class RestoreRecoveryTests(RecoveryWorld):
         dump, first, second = self.writes_after_the_dump()
         live = self.table_digests(self.db)
         done = self.host.cutover('recover', '--mode', 'reconcile')
-        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
         report = json.loads(done.stdout)
         self.assertTrue(report['equal'])
         self.assertEqual(report['differences'], {})
@@ -241,7 +241,7 @@ class RestoreRecoveryTests(RecoveryWorld):
         restored = report['restored_db']
         # independent check: every row of every table, ids/status/timestamps included, sequences too
         self.assertEqual(self.table_digests(restored), live)
-        seq = "select string_agg(sequencename||'='||coalesce(last_value::text,''), ',' order by 1) from pg_sequences"
+        seq = "select string_agg(sequencename||'='||coalesce(last_value::text,''), ',' order by schemaname, sequencename) from pg_sequences"
         self.assertEqual(self.q(seq, restored), self.q(seq))
         self.assertEqual(self.q("select status, cancelled_at is not null from enrollment where id=%d" % first, restored).strip(), 'cancelled|t')
         self.assertEqual(self.q("select count(*) from match where enrollment_id=%d" % second, restored).strip(), '1')
@@ -261,8 +261,11 @@ class RestoreRecoveryTests(RecoveryWorld):
         self.q("update mentor set availability='noites' where email='m1@example.invalid'")  # no row above any id
         done = self.host.cutover('recover', '--mode', 'compare', '--dump', dump)
         self.assertEqual(done.returncode, 86, done.stderr)
-        self.assertEqual(json.loads(done.stdout)['differences'],
-                         {'public.mentor': {'only_live': 0, 'only_restored': 0, 'changed': 1}})
+        differences = json.loads(done.stdout)['differences']
+        self.assertEqual(differences['public.mentor'], {'only_live': 0, 'only_restored': 0, 'changed': 1})
+        # the product's agenda guard revision moves with it; nothing appears or disappears anywhere
+        self.assertEqual({k: v['only_live'] + v['only_restored'] for k, v in differences.items()},
+                         {k: 0 for k in differences})
 
     def test_without_a_readable_live_database_nothing_is_restored_and_the_rpo_is_stated(self):
         self.reserve('p1@example.invalid')

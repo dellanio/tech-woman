@@ -40,8 +40,11 @@ class Pg:
     def schema(self, db):
         text = self.runner.run(self.prefix + ['pg_dump', '--schema-only', '-U', self.user, '-d', db],
                                error='pg_dump --schema-only failed').stdout
-        # comments and the per-run \restrict key of pg_dump >= 16.10 are not part of the schema
-        kept = [line for line in text.splitlines()
+        # Comments and the per-run \restrict key of pg_dump >= 16.10 are not part of the schema. A dump/restore
+        # round trip re-parses CHECK expressions and flattens nested AND groups, so parentheses are not compared:
+        # this fingerprint proves that every object (table, column, constraint, index, function, trigger, policy,
+        # grant) came back, not that two expressions are written alike.
+        kept = [re.sub(r'\s+', ' ', line.replace('(', '').replace(')', '')).strip() for line in text.splitlines()
                 if line.strip() and not line.startswith('--') and not line.startswith(('\\restrict', '\\unrestrict'))]
         return hashlib.sha256('\n'.join(kept).encode('utf-8')).hexdigest()
 
