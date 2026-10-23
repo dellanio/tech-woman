@@ -267,6 +267,31 @@ class RestoreRecoveryTests(RecoveryWorld):
         self.assertEqual({k: v['only_live'] + v['only_restored'] for k, v in differences.items()},
                          {k: 0 for k in differences})
 
+    def test_a_constraint_that_only_regroups_and_or_is_a_schema_difference(self):
+        """Review: a AND (b OR c) is not (a AND b) OR c. Same data, different schema: never declared equal."""
+        self.q("alter table topic add constraint tw_probe_grouping check (length(slug) > 0 and (active or length(name) > 0))")
+        dump = self.daily_dump()
+        self.q("alter table topic drop constraint tw_probe_grouping; "
+               "alter table topic add constraint tw_probe_grouping check ((length(slug) > 0 and active) or length(name) > 0)")
+        done = self.host.cutover('recover', '--mode', 'compare', '--dump', dump)
+        self.assertEqual(done.returncode, 86, done.stderr)
+        report = json.loads(done.stdout)
+        self.assertFalse(report['schema_equal'])
+        self.assertFalse(report['equal'])
+        self.assertEqual(report['differences'], {}, 'the rows are identical: only the schema differs')
+
+    def test_an_unchanged_schema_survives_the_dump_restore_round_trip_as_equal(self):
+        """The real CHECKs pg_dump/restore re-parse (nested ANDs flattened) still compare equal, without hiding
+        grouping: both sides go through the same PostgreSQL round trip."""
+        self.q("alter table topic add constraint tw_probe_grouping check (length(slug) > 0 and (active or length(name) > 0))")
+        dump = self.daily_dump()
+        done = self.host.cutover('recover', '--mode', 'compare', '--dump', dump)
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        self.assertTrue(json.loads(done.stdout)['schema_equal'])
+        leftovers = self.q("select count(*) from pg_database where datname like '%s%%canon%%'" % self.db).strip()
+        self.assertEqual(leftovers, '0', 'the canonicalisation scratch database is removed')
+        self.assertEqual(sorted(p.name for p in (self.host.ops.host / 'backups').iterdir()), [dump])
+
     def test_without_a_readable_live_database_nothing_is_restored_and_the_rpo_is_stated(self):
         self.reserve('p1@example.invalid')
         # the PostgreSQL container is gone: every `docker exec` into it fails
