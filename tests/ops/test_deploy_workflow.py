@@ -5,9 +5,7 @@ DEPLOY_YML = ROOT / '.github/workflows/deploy.yml'
 
 
 def workflow():
-    return DEPLOY_YML.read_bytes().decode('utf-8').replace('
-', '
-')  # parsing only; LF is asserted elsewhere
+    return DEPLOY_YML.read_bytes().decode('utf-8').replace(chr(13) + chr(10), chr(10))  # parsing only
 
 
 def step_blocks(text):
