@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, tokenDigest } from './db';
 import { HttpError } from './auth';
 import { isSessionToken } from './identity';
-import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseMatchCreate, parseMatchPatch, parseMentorPatch, parseMentorRegistration, parseParticipantPatch, parseParticipantRegistration, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
+import { canonicalHash, encodeSqlCursor, parseCohort, parseEnrollment, parseMatchCreate, parseMatchPatch, parseMentorPatch, parseMentorRegistration, parseParticipantPatch, parseParticipantRegistration, parseReassign, parseCohortPatch, parseDomainListQuery, parseMentorTopic, parseMentorTopicPatch, parseReorder, parseSqlId, parseTopic, parseTopicPatch, type CohortDto, type EnrollmentDto, type ErrorCode, type LegacyMatchDto, type MentorTopicDto, type TopicDto } from './contracts';
 
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type ListQuery = { cursor?: unknown; limit?: unknown };
@@ -193,3 +193,17 @@ export function updateMatch(token: string, id: string, version: string, body: un
 }
 export const cancelMatch = (token: string, id: string, version: string) =>
   invoke<AdminMatchDto>(sql`select internal.api_match_update(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint, ${null}::jsonb, 'cancel') as r`);
+
+// ---- Inscrições administrativas ----
+export type AdminEnrollmentDto = EnrollmentDto & { participantId: string; cancelledAt: string | null; version: string };
+export const listAdminEnrollments = (token: string, query: ListQuery) =>
+  page<AdminEnrollmentDto>(query, (after, limit) => sql`select internal.api_admin_enrollment_list(${digestOf(token)}, ${after}::bigint, ${limit}) as r`);
+export const getAdminEnrollment = (token: string, id: string) => invoke<AdminEnrollmentDto>(sql`select internal.api_admin_enrollment_get(${digestOf(token)}, ${routeId(id)}::bigint) as r`);
+export const cancelAdminEnrollment = (token: string, id: string, version: string) =>
+  invoke<AdminEnrollmentDto>(sql`select internal.api_admin_enrollment_cancel(${digestOf(token)}, ${newRequestId()}::uuid, ${routeId(id)}::bigint, ${versionOf(version)}::bigint) as r`, 'enroll');
+/** Realocação atômica: cancela a origem e cria a nova reserva na mesma transação; falha no destino preserva a origem. */
+export function reassignEnrollment(token: string, id: string, idem: Idempotent, body: unknown) {
+  const enrollmentId = routeId(id);
+  const dto = parseReassign(body);
+  return invoke<AdminEnrollmentDto>(sql`select internal.api_admin_enrollment_reassign(${digestOf(token)}, ${newRequestId()}::uuid, ${keyOf(idem)}::uuid, ${canonicalHash(dto)}, ${enrollmentId}::bigint, ${JSON.stringify(dto)}::jsonb) as r`, 'enroll');
+}
