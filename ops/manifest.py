@@ -135,6 +135,32 @@ def load_candidate(path):
         candidate = json.loads(pathlib.Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         raise ManifestError(70, 'candidate.json missing or unreadable')
+    _closed(candidate, ['schema', 'tested_head', 'tested_tree', 'base_main', 'migrations', 'ops_package',
+                        'deploy_script_sha256', 'image', 'ci', 'gates', 'window', 'recovery_evidence_sha256',
+                        'rpo_declared'], 70, 'candidate')
+    if type(candidate['schema']) is not int or candidate['schema'] != 1 or candidate['image'] != IMAGE:
+        raise ManifestError(70, 'candidate schema or image not recognised')
+    try:
+        validate_facts({k: candidate[k] for k in ('tested_head', 'tested_tree', 'base_main', 'ci', 'gates',
+                                                  'window', 'recovery_evidence_sha256', 'rpo_declared')})
+    except ManifestError as error:
+        raise ManifestError(70, 'candidate facts invalid: %s' % error)
+    for key, extra in (('migrations', ['count']), ('ops_package', [])):
+        section = candidate[key]
+        _closed(section, ['files', 'aggregate_sha256'] + extra, 70, key)
+        files = section['files']
+        if not (type(files) is list and all(type(f) is dict and sorted(f) == ['name', 'sha256']
+                                            and _is_text(f['name'], 200) and _is_hex(f['sha256'], HEX64)
+                                            for f in files)):
+            raise ManifestError(70, '%s.files malformed' % key)
+        if section['aggregate_sha256'] != _aggregate(files):
+            raise ManifestError(70, '%s aggregate does not match its files' % key)
+    count = candidate['migrations']['count']
+    if type(count) is not int or count != len(candidate['migrations']['files']):
+        raise ManifestError(70, 'migrations.count mismatch')
+    deploy = [f['sha256'] for f in candidate['ops_package']['files'] if f['name'] == 'deploy.sh']
+    if deploy != [candidate['deploy_script_sha256']]:
+        raise ManifestError(70, 'deploy_script_sha256 not part of the ops package')
     return candidate
 
 
