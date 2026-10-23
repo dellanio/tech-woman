@@ -123,5 +123,25 @@ class PhaseMatrixTests(GateTestCase):
         self.assertEqual((report['op'], report['phase']), ('release', 'pg_write_open'))
 
 
+class ProbePhaseTests(GateTestCase):
+    def probe(self):
+        return self.host.ops.run('TWDEPLOY/2' + chr(10) + 'probe' + chr(10))
+
+    def test_probe_reports_the_phase_read_only_and_never_a_secret(self):
+        self.prepare()
+        report = json.loads(self.probe().stdout)
+        self.assertEqual((report['protocol'], report['phase']), (2, 'prepared'))
+        self.assertEqual(report['script_sha256'], hashlib.sha256(self.host.ops.script.read_bytes()).hexdigest())
+        state = cutover.State.load(self.host.state_dir, cutover.UNCHECKED)
+        state.transition('frozen', '2026-10-23T12:00:00Z')
+        self.assertEqual(json.loads(self.probe().stdout)['phase'], 'frozen')
+
+    def test_probe_without_a_readable_marker_says_so_and_has_no_effect(self):
+        result = self.probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['phase'], 'unreadable')
+        self.assertEqual(result.calls(), [])
+
+
 if __name__ == '__main__':
     unittest.main()
