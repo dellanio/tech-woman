@@ -5,7 +5,7 @@ The state file is root-owned and written only by this tool. The journal is a con
 (sequence + links between entries) that detects torn or mismatched writes; it is NOT a cryptographic
 protection against root and must not be described as one.
 """
-import hashlib, json, pathlib, re, sys
+import contextlib, hashlib, json, os, pathlib, re, sys
 
 
 class StateError(Exception):
@@ -20,6 +20,36 @@ def _sha256(data):
 
 def _dump(obj):
     return (json.dumps(obj, indent=2, sort_keys=True) + '\n').encode('utf-8')
+
+
+@contextlib.contextmanager
+def exclusive(directory):
+    """Non-blocking exclusive lock on <dir>/state.lock; a second writer gets exit 66 instead of waiting."""
+    handle = open(pathlib.Path(directory) / 'state.lock', 'a+b')
+    try:
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise StateError(66, 'another writer holds the state lock')
+        yield
+    finally:
+        handle.close()
+
+
+def _fsync_directory(directory):
+    if os.name == 'nt':
+        return
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 ZERO = '0' * 64
@@ -109,9 +139,24 @@ class State:
         state_bytes = _dump(data)
         entry = {'seq': data['seq'], 'phase': data['phase'], 'from': previous_phase, 'at': now,
                  'state_sha256': _sha256(state_bytes), 'prev_entry_sha256': data['prev_sha256']}
-        with open(self.dir / 'journal.jsonl', 'ab') as journal:
-            journal.write((json.dumps(entry, sort_keys=True) + '\n').encode('utf-8'))
-        (self.dir / 'state.json').write_bytes(state_bytes)
+        with exclusive(self.dir):
+            # Write-ahead: the journal entry is durable before the state is replaced. A crash or error in
+            # between leaves the two disagreeing, and load() then fails closed (exit 70).
+            with open(self.dir / 'journal.jsonl', 'ab') as journal:
+                journal.write((json.dumps(entry, sort_keys=True) + '\n').encode('utf-8'))
+                journal.flush()
+                os.fsync(journal.fileno())
+            temporary = self.dir / ('.state.%d.tmp' % os.getpid())
+            try:
+                with open(temporary, 'wb') as handle:
+                    handle.write(state_bytes)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.dir / 'state.json')
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+            _fsync_directory(self.dir)
         self.data = data
 
     @classmethod
