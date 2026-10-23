@@ -93,3 +93,6 @@
 .account-intro h1{font-size:clamp(48px,5vw,72px)}
 .account-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(24px,3vw,40px);align-items:start}
 @media(max-width:760px){.account-columns{grid-template-columns:1fr}}
+.account-roles{display:grid;gap:clamp(20px,2.4vw,32px)}
+.account-role h2{margin-bottom:6px}
+.account-role .text-link:focus-visible,.account-role .button-primary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
