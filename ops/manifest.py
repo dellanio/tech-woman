@@ -259,6 +259,19 @@ def _run(cmd, args):
     if cmd == 'migrations' and len(args) == 1:
         print(json.dumps(migrations(args[0])))
         return 0
+    if cmd == 'release-facts':
+        flags = _flags(args, ['repo', 'migrations-dir'], optional=['expect'])
+        if 'expect' in flags and not _is_hex(flags['expect'], HEX40):
+            raise ManifestError(64, 'expected sha must be a 40-hex object id')
+        head = _git(flags['repo'], 'rev-parse', '--verify', 'HEAD').stdout.strip()
+        if not _is_hex(head, HEX40):
+            raise ManifestError(71, 'cannot resolve HEAD')
+        if 'expect' in flags and head != flags['expect']:
+            raise ManifestError(71, 'main advanced: HEAD is not the expected commit')
+        found = migrations(flags['migrations-dir'])
+        print('sha=%s\ntree=%s\nmigrations_aggregate=%s\nmigrations_count=%d' % (
+            head, git_tree(flags['repo'], 'HEAD'), found['aggregate_sha256'], found['count']))
+        return 0
     if cmd == 'migrations-tar' and not args:
         print(json.dumps(migrations_from_tar(sys.stdin.buffer.read(MAX_TAR_BYTES + 1))))
         return 0
