@@ -117,7 +117,8 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   assert.equal(first.includes(email),false,'não ecoa o e-mail');
   assert.match(first,/não confirma envio nem entrega/);assert.match(first,/NÃO ENVIADA/);
   assert.doesNotMatch(first,NO_PROMISE);
-  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login?next=%2Fconta');
+  // /conta é o destino padrão do login (DEFAULT_AFTER_LOGIN): o link não precisa de ?next; ui-auth prova login → /conta
+  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login');
   const row=await ui.db.query<{skills:string[];area:string}>('select p.skills,p.area from participant p join app_user u on u.id=p.user_id where u.email=$1',[email]);
   assert.deepEqual(row.rows,[{skills:['comunicacao','analise','codigo','gestao'],area:'dados'}]);
   // duplicata: mesma resposta visual, nenhuma conta nova
@@ -187,7 +188,8 @@ test('mentora pública: nome de exibição obrigatório, capacidade legada, foco
   assert.match(text,/não confirma envio nem entrega/);assert.match(text,/não cria turmas/);
   assert.doesNotMatch(text,NO_PROMISE);assert.doesNotMatch(text,/revis|aprova/i);
   assert.doesNotMatch(await main(page).innerText(),/Agendar|agenda automática/i);
-  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login?next=%2Fconta');
+  // /conta é o destino padrão do login (DEFAULT_AFTER_LOGIN): o link não precisa de ?next; ui-auth prova login → /conta
+  assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login');
   const row=await ui.db.query<{display_name:string;capacity:number}>('select m.display_name,m.capacity from mentor m join app_user u on u.id=m.user_id where u.email=$1',[email]);
   assert.deepEqual(row.rows,[{display_name:name,capacity:2}]);
   for(const m of await ui.drain())assert.equal((await page.content()).includes(m.secret),false);
