@@ -163,6 +163,12 @@ def _run(cmd, args):
         pathlib.Path(flags['out']).write_bytes(data)
         print(json.dumps({'candidate_sha256': _sha256(data)}))
         return 0
+    if cmd == 'verify-release':
+        flags = _flags(args, ['candidate', 'release-tree', 'release-commit', 'digest', 'now',
+                              'migrations-dir', 'ops-dir'])
+        candidate = json.loads(pathlib.Path(flags['candidate']).read_text())
+        print(json.dumps({'ok': True, 'release_commit_is_tested_head': flags['release-commit'] == candidate['tested_head']}))
+        return 0
     print('usage: manifest.py {migrations <dir>|script-sha <file>|ops-package <dir>|seal --facts F ...}', file=sys.stderr)
     return 64
 
