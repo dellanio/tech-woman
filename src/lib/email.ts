@@ -150,3 +150,10 @@ export async function runEmailWorkerOnce(transport: EmailTransport, workerId: st
   }
   return result;
 }
+
+/** Stubs RED (slice D): substituídos no GREEN. */
+export const SES_ALLOWLIST_ENV = 'SES_RECIPIENT_ALLOWLIST';
+export const sesReady = (_env: NodeJS.ProcessEnv = process.env): boolean => false;
+export type SesLikeClient = { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<{ MessageId?: string }> };
+export const createSesClient = (): SesLikeClient => ({ async send() { return {}; } });
+export const createSesTransport = (_options: { client?: SesLikeClient; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): EmailTransport => ({ name: 'ses', async send() { return { status: 'simulated' }; } });
