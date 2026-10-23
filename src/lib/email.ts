@@ -16,57 +16,28 @@ const labels: Record<EmailStatus, string> = {
 export function emailLabel(status: string): string {
   return status in labels ? labels[status as EmailStatus] : labels['unavailable-not-sent'];
 }
-function readyForSes() {
-  return process.env.EMAIL_MODE === 'ses' && process.env.SES_SEND_ENABLED === '1' &&
-    process.env.SES_IDENTITY_VERIFIED === '1' && process.env.SES_IAM_AUTHORIZED === '1' &&
-    process.env.SES_ACCOUNT_PRODUCTION === '1' && process.env.SES_REGION === 'us-east-1' &&
-    process.env.SES_FROM === 'no-reply@dellanio.com' && process.env.LOCAL_SEED !== '1' &&
-    process.env.BUILDING !== '1';
+/** Flags estritas do SES (as mesmas de antes); só o transporte do worker pode usá-las para enviar. */
+export function sesReady(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.EMAIL_MODE === 'ses' && env.SES_SEND_ENABLED === '1' &&
+    env.SES_IDENTITY_VERIFIED === '1' && env.SES_IAM_AUTHORIZED === '1' &&
+    env.SES_ACCOUNT_PRODUCTION === '1' && env.SES_REGION === 'us-east-1' &&
+    env.SES_FROM === 'no-reply@dellanio.com' && env.LOCAL_SEED !== '1' &&
+    env.BUILDING !== '1';
 }
-export async function confirmChoice(participantId:string, mentorId:string, email:string, protocol:string, mentorEmail:string):Promise<string> {
-  const update = async (pid:string,mid:string,status:string,providerId:string|null,updatedAt:string) => { const entry={participantId:BigInt(pid),mentorId:BigInt(mid),status,providerId,updatedAt};await getDb().insert(choiceEmailAttempts).values(entry).onConflictDoUpdate({target:choiceEmailAttempts.participantId,set:entry}); };
-  const status:EmailStatus = !readyForSes() ? (process.env.EMAIL_MODE==='ses'?'unavailable-not-sent':'mock-not-sent') : 'pending';
-  await update(participantId,mentorId,status,null,new Date().toISOString());
-  if (!readyForSes()) return emailLabel(status);
-  try {
-    const result=await new SESClient({region:'us-east-1',maxAttempts:1}).send(new SendEmailCommand({
-      Source:`Tech Woman <${process.env.SES_FROM}>`, Destination:{ToAddresses:[email]},
-      Message:{Subject:{Data:'Sua mentoria escolhida | Tech Woman',Charset:'UTF-8'},Body:{Text:{Data:`Protocolo ${protocol}. Você escolheu a mentora ${mentorEmail} para uma mentoria, sem horário definido. Consulte seu link individual para conferir o estado atualizado.`,Charset:'UTF-8'}}}
-    }));
-    if (!result.MessageId) throw new Error('Aceite sem identificador');
-    await update(participantId,mentorId,'ses-accepted',result.MessageId,new Date().toISOString());
-    return emailLabel('ses-accepted');
-  } catch {
-    await update(participantId,mentorId,'ses-unconfirmed',null,new Date().toISOString());
-    return emailLabel('ses-unconfirmed');
-  }
+/** Exports históricos (cadastro/escolha legados): registram o estado e devolvem o rótulo, mas NUNCA enviam; o envio real só existe no worker. */
+const historicalStatus = (): EmailStatus => process.env.EMAIL_MODE === 'ses' ? 'unavailable-not-sent' : 'mock-not-sent';
+export async function confirmChoice(participantId:string, mentorId:string, _email:string, _protocol:string, _mentorEmail:string):Promise<string> {
+  const status = historicalStatus();
+  const entry={participantId:BigInt(participantId),mentorId:BigInt(mentorId),status,providerId:null,updatedAt:new Date().toISOString()};
+  await getDb().insert(choiceEmailAttempts).values(entry).onConflictDoUpdate({target:choiceEmailAttempts.participantId,set:entry});
+  return emailLabel(status);
 }
-export async function confirmRegistration(participantId: string, email: string, protocol: string): Promise<string> {
-  const update=async(status:string,providerId:string|null,updatedAt:string,pid:string)=>{await getDb().update(emailAttempts).set({status,providerId,updatedAt}).where(eq(emailAttempts.participantId,BigInt(pid)));};
-  if (!readyForSes()) {
-    const status: EmailStatus = process.env.EMAIL_MODE === 'ses' ? 'unavailable-not-sent' : 'mock-not-sent';
-    await update(status, null, new Date().toISOString(), participantId);
-    return emailLabel(status);
-  }
-  await update('pending', null, new Date().toISOString(), participantId);
-  try {
-    const client = new SESClient({ region: 'us-east-1', maxAttempts: 1 });
-    const result = await client.send(new SendEmailCommand({
-      Source: `Tech Woman <${process.env.SES_FROM}>`,
-      Destination: { ToAddresses: [email] },
-      Message: {
-        Subject: { Data: 'Inscrição recebida | Tech Woman', Charset: 'UTF-8' },
-        Body: { Text: { Data: `Recebemos sua inscrição no Tech Woman. Protocolo: ${protocol}. Consulte suas opções de mentoria pelo link individual exibido após o cadastro; a escolha não define horário.`, Charset: 'UTF-8' } },
-      },
-    }));
-    if (!result.MessageId) throw new Error('SES não retornou identificador de aceite');
-    await update('ses-accepted', result.MessageId, new Date().toISOString(), participantId);
-    return emailLabel('ses-accepted');
-  } catch {
-    await update('ses-unconfirmed', null, new Date().toISOString(), participantId);
-    return emailLabel('ses-unconfirmed');
-  }
+export async function confirmRegistration(participantId: string, _email: string, _protocol: string): Promise<string> {
+  const status = historicalStatus();
+  await getDb().update(emailAttempts).set({status,providerId:null,updatedAt:new Date().toISOString()}).where(eq(emailAttempts.participantId,BigInt(participantId)));
+  return emailLabel(status);
 }
+
 // ---- Worker de e-mail (WP-002 Task 2, R4) ----
 export type EmailKind = 'registration' | 'temporary_password' | 'password_reset';
 /** `secret` só existe aqui, em memória: nunca em banco, outbox, log ou auditoria. */
@@ -151,9 +122,42 @@ export async function runEmailWorkerOnce(transport: EmailTransport, workerId: st
   return result;
 }
 
-/** Stubs RED (slice D): substituídos no GREEN. */
+// ---- Transporte SES restrito (operador) ----
 export const SES_ALLOWLIST_ENV = 'SES_RECIPIENT_ALLOWLIST';
-export const sesReady = (_env: NodeJS.ProcessEnv = process.env): boolean => false;
-export type SesLikeClient = { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<{ MessageId?: string }> };
-export const createSesClient = (): SesLikeClient => ({ async send() { return {}; } });
-export const createSesTransport = (_options: { client?: SesLikeClient; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): EmailTransport => ({ name: 'ses', async send() { return { status: 'simulated' }; } });
+const LEASE_MS = 60_000;
+export type SesLikeClient = { send(command: SendEmailCommand, options?: { abortSignal?: AbortSignal }): Promise<{ MessageId?: string }> };
+/** Uma tentativa por chamada (maxAttempts 1): reenvio é decisão do worker, sob lock. */
+export const createSesClient = (): SesLikeClient => new SESClient({ region: 'us-east-1', maxAttempts: 1 }) as unknown as SesLikeClient;
+const allowedRecipients = (env: NodeJS.ProcessEnv) => new Set((env[SES_ALLOWLIST_ENV] ?? '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
+const REJECTED_NAMES = ['MessageRejected', 'MailFromDomainNotVerifiedException', 'ConfigurationSetDoesNotExistException', 'AccountSendingPausedException'];
+const toTransportError = (error: unknown): TransportError => {
+  if (error instanceof TransportError) return error;
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'AbortError' || name === 'TimeoutError') return new TransportError('TRANSPORT_TIMEOUT');
+  return new TransportError(REJECTED_NAMES.includes(name) ? 'TRANSPORT_REJECTED' : 'TRANSPORT_ERROR');
+};
+/**
+ * Só envia com as flags estritas E destinatário na allowlist aprovada pelo operador (SES_RECIPIENT_ALLOWLIST).
+ * Erros viram TransportError com código fixo: a mensagem do SDK nunca sai daqui. `accepted` não significa entregue.
+ */
+export function createSesTransport(options: { client?: SesLikeClient; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): EmailTransport {
+  const env = options.env ?? process.env, timeoutMs = options.timeoutMs ?? 20_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs >= LEASE_MS) throw new Error('O timeout do SES deve ser positivo e menor que o lease de 60s.');
+  let client = options.client;
+  return {
+    name: 'ses',
+    async send(message, signal) {
+      if (!sesReady(env)) throw new TransportError('TRANSPORT_DISABLED');
+      if (!allowedRecipients(env).has(message.to.trim().toLowerCase())) throw new TransportError('RECIPIENT_NOT_ALLOWED');
+      client ??= createSesClient();
+      try {
+        const result = await client.send(new SendEmailCommand({
+          Source: `Tech Woman <${env.SES_FROM}>`, Destination: { ToAddresses: [message.to] },
+          Message: { Subject: { Data: message.subject, Charset: 'UTF-8' }, Body: { Text: { Data: message.text, Charset: 'UTF-8' } } },
+        }), { abortSignal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
+        if (!result.MessageId) throw new TransportError('TRANSPORT_ERROR');
+        return { status: 'accepted', providerId: result.MessageId };
+      } catch (error) { throw toTransportError(error); }
+    },
+  };
+}
