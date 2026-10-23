@@ -120,5 +120,42 @@ class MergeIdentityTests(unittest.TestCase):
             self.assertIn('sha=' + second, output)
 
 
+class StageAndPolicyTests(unittest.TestCase):
+    def base_workflow(self):
+        return subprocess.run(['git', 'show', 'aadb3cb:.github/workflows/deploy.yml'], cwd=ROOT, capture_output=True,
+                              check=True).stdout.decode().replace(chr(13) + chr(10), chr(10))
+
+    def test_public_smoke_runs_only_after_a_release_never_after_a_stage(self):
+        text = workflow()
+        smoke = step(text, 'Public smoke after a release')
+        self.assertIn("if: steps.remote.outputs.kind == 'release'", smoke)
+        self.assertEqual(text.count('https://tech-woman.dellanio.com/'), 1)
+        self.assertEqual(step_index(text, 'name: Public smoke after a release'), len(step_blocks(text)) - 1)
+
+    def test_no_new_secret_no_wider_permission_and_action_pins_unchanged(self):
+        text, base = workflow(), self.base_workflow()
+        secrets = lambda t: sorted(set(re.findall(r'secrets\.([A-Z0-9_]+)', t)))
+        self.assertEqual(secrets(text), secrets(base))
+        self.assertEqual(sorted(set(re.findall(r'uses: (\S+@[0-9a-f]{40})', text))),
+                         sorted(set(re.findall(r'uses: (\S+@[0-9a-f]{40})', base))))
+        deploy_permissions = text.split('  deploy:\n', 1)[1].split('    steps:\n', 1)[0]
+        permissions = re.findall(r'^      (\w[\w-]*): (\w+)$', deploy_permissions.split('permissions:\n', 1)[1], re.M)
+        self.assertEqual(sorted(permissions), [('contents', 'read'), ('packages', 'write'), ('pull-requests', 'read')])
+
+    def test_authorship_and_merge_policy_strings_are_preserved_and_unsafe_ones_absent(self):
+        text = workflow()
+        for kept in ('ref: main', 'group: production-tech-woman', "needs.gate.outputs.deploy == 'true'",
+                     '.name == "merge" and .conclusion == "success"', 'workflows: [Beatriz auto-merge]',
+                     'environment: production', 'persist-credentials: false'):
+            self.assertIn(kept, text)
+        for forbidden in ('workflow_run.head_sha', 'pull_request_target', '--auto', 'eval ', 'bash -c', 'set -x',
+                          'github.event.pull_request', 'github.head_ref', '${{ github.event.workflow_run.head_branch }}'):
+            self.assertNotIn(forbidden, text)
+        # every ${{ }} placed inside a run block must come through env, never be spliced into shell source
+        for name in ('Resolve immutable release', 'Verify the merged pull request result', 'Stage or release',
+                     'Probe installed deploy package', 'Install deploy key', 'Confirm main has not advanced'):
+            self.assertNotIn('${{', run_block(text, name), name)
+
+
 if __name__ == '__main__':
     unittest.main()
