@@ -319,6 +319,8 @@ def cmd_gate(paths, flags):
     if flags['migrations-aggregate'] != migrations['aggregate_sha256'] \
             or flags['migrations-count'] != str(migrations['count']):
         raise StateError(72, 'migrations differ from the sealed candidate')
+    if operation == 'release' and flags['migrations-aggregate'] != (state.data.get('schema_migrations') or {}).get('aggregate_sha256'):
+        raise StateError(72, 'the schema changed since cutover: a schema change needs its own sealed candidate and operator step')
     window = candidate['window']
     if operation == 'stage' and not window['authorized_at'] <= _now() < window['expires_at']:
         raise StateError(73, 'outside the authorised window')
@@ -692,6 +694,18 @@ def cmd_open_writes(paths, flags):
     print(json.dumps({'phase': 'pg_write_open'}))
 
 
+def cmd_release_check(paths, flags):
+    """Only a previously attested PostgreSQL image may be restarted by a release rollback (exit 76 otherwise)."""
+    previous = flags.get('previous-image', '')
+    match = re.fullmatch(r'ghcr\.io/dellanio/tech-woman@(sha256:[0-9a-f]{64})', previous)
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != 'pg_write_open':
+        raise StateError(75, 'release needs phase pg_write_open')
+    if not match or match.group(1) not in (state.data.get('known_pg_images') or []):
+        raise StateError(76, 'the running web is not a known PostgreSQL image; refusing to touch it')
+    print(state.data.get('last_good_pg_image') or 'none')
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -704,8 +718,9 @@ COMMANDS = {
     'activate': cmd_activate,
     'smoke': cmd_smoke,
     'open-writes': cmd_open_writes,
+    'release-check': cmd_release_check,
 }
-FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason']}
+FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason'], 'release-check': ['previous-image']}
 
 
 def main(argv):
