@@ -36,6 +36,7 @@ jobs:
       - run: corepack enable && corepack prepare pnpm@10.34.6 --activate
       - run: pnpm install --frozen-lockfile
       - run: python3 -m unittest discover -s tests -v
+      - run: pnpm exec tsx --test tests/unit/password.test.ts
       - run: pnpm exec tsc --noEmit
       # The build must not need a database: DATABASE_URL points at a closed port.
       - run: pnpm build
