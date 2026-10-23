@@ -255,6 +255,41 @@ class VerifyReleaseTests(unittest.TestCase):
                 self.assertEqual(done.returncode, code, done.stderr)
                 self.assertEqual(done.stdout, '')
 
+    def test_candidate_schema_is_closed_and_strictly_typed(self):
+        def top(key, value):
+            return lambda c: c.__setitem__(key, value)
+
+        def nested(section, key, value):
+            return lambda c: c[section].__setitem__(key, value)
+
+        cases = {
+            'unknown top-level field': top('allowed_trees', ['b' * 40]),
+            'schema is bool': top('schema', True),
+            'schema is 2': top('schema', 2),
+            'image platform changed': nested('image', 'platform', 'linux/amd64'),
+            'migrations count is bool': nested('migrations', 'count', True),
+            'migrations aggregate tampered': nested('migrations', 'aggregate_sha256', '0' * 64),
+            'ops aggregate tampered': nested('ops_package', 'aggregate_sha256', '0' * 64),
+            'deploy sha not in package': top('deploy_script_sha256', '0' * 64),
+            'window measured is bool': nested('window', 'measured_seconds', True),
+            'window measured is zero': nested('window', 'measured_seconds', 0),
+            'ci unknown field': nested('ci', 'extra', 'x'),
+            'gate not green': nested('gates', 'GATE-001', 'red'),
+            'tested head not a sha': top('tested_head', 'main'),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                data = json.loads(self.candidate.read_text())
+                mutate(data)
+                bad = write(self.tmp / 'bad.json', json.dumps(data).encode())
+                done = self.verify(candidate=bad)
+                self.assertEqual(done.returncode, 70, done.stderr)
+        for name, content in {'invalid json': b'{', 'not an object': b'[]', 'empty': b''}.items():
+            with self.subTest(name=name):
+                bad = write(self.tmp / 'bad.json', content)
+                self.assertEqual(self.verify(candidate=bad).returncode, 70)
+        self.assertEqual(self.verify(candidate=self.tmp / 'absent.json').returncode, 70)
+
 
 if __name__ == '__main__':
     unittest.main()
