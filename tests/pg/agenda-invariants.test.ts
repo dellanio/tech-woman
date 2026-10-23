@@ -43,3 +43,19 @@ test('overlap: mesma mentora em temas diferentes não pode ter turmas não cance
  await pgFails(addCohort(db,mt2,{from:5.5,hours:1,status:'draft'}),'23514','agenda_mentor_overlap');
  assert.equal((await db.query("select count(*)::int n from cohort")).rows[0].n,6);
 }));
+
+test('temas: no máximo dois vínculos por mentora, mesmo com UNIQUE de posição adiado; par único; troca atômica de posições', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db),[t1,t2,t3]=[await addTopic(db),await addTopic(db),await addTopic(db)];
+ const a=await addMentorTopic(db,mentor,t1,1),b=await addMentorTopic(db,mentor,t2,2);
+ await pgFails(addMentorTopic(db,mentor,t3,3),'23514','mentor_topic_position_check');
+ await pgFails(addMentorTopic(db,mentor,t3,1),'23505','mentor_topic_position_unique');
+ await pgFails(db.query('update mentor_topic set topic_id=$2 where id=$1',[b,t1]),'23505','mentor_topic_pair_unique');
+ await withClients(url,[undefined],async c=>{
+  await c.query('begin');await c.query('set constraints mentor_topic_position_unique deferred');
+  await pgFails(c.query('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1)',[mentor,t3]),'23514','agenda_topic_limit');
+  await c.query('rollback');
+  await c.query('begin');await c.query('set constraints mentor_topic_position_unique deferred');
+  await c.query('update mentor_topic set position=3-position where mentor_id=$1',[mentor]);await c.query('commit');
+ });
+ assert.deepEqual((await db.query('select id::text,position from mentor_topic where mentor_id=$1 order by id',[mentor])).rows,[{id:a,position:2},{id:b,position:1}]);
+}));
