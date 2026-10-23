@@ -69,21 +69,27 @@ LANGUAGE sql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
   WHERE mt.id = p_mentor_topic AND NOT (m.active AND t.active));
 $$;
 --> statement-breakpoint
--- BEFORE ROW (depois do guard do statement): imutabilidade de id/FK/slug e transições exatas de cohort.
+-- Regras por linha, depois do guard do statement. BEFORE UPDATE: imutabilidade pura da própria linha (já visível a quem altera).
+-- AFTER INSERT/UPDATE: regras que leem outras linhas ou validam inserção, depois do WITH CHECK da RLS (não revelam estado de linha oculta).
 -- Exigência de início futuro só na criação, reabertura e mudança de horário; cancelar após o início é permitido.
 CREATE OR REPLACE FUNCTION internal.agenda_row_check() RETURNS trigger
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
- IF TG_OP = 'UPDATE' AND NEW.id IS DISTINCT FROM OLD.id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
- IF TG_TABLE_NAME = 'topic' THEN
-  IF TG_OP = 'UPDATE' AND NEW.slug IS DISTINCT FROM OLD.slug THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
- ELSIF TG_TABLE_NAME = 'mentor_topic' AND TG_OP = 'UPDATE' THEN
-  IF NEW.mentor_id IS DISTINCT FROM OLD.mentor_id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+ IF TG_WHEN = 'BEFORE' THEN
+  IF NEW.id IS DISTINCT FROM OLD.id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+  IF TG_TABLE_NAME = 'topic' THEN
+   IF NEW.slug IS DISTINCT FROM OLD.slug THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+  ELSIF TG_TABLE_NAME = 'mentor_topic' THEN
+   IF NEW.mentor_id IS DISTINCT FROM OLD.mentor_id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+  ELSIF TG_TABLE_NAME = 'enrollment' THEN
+   IF (NEW.participant_id, NEW.cohort_id) IS DISTINCT FROM (OLD.participant_id, OLD.cohort_id) THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+  END IF;
+  RETURN NEW;
+ END IF;
+ IF TG_TABLE_NAME = 'mentor_topic' AND TG_OP = 'UPDATE' THEN
   IF NEW.topic_id IS DISTINCT FROM OLD.topic_id AND EXISTS (SELECT 1 FROM public.cohort c WHERE c.mentor_topic_id = OLD.id) THEN
    PERFORM internal.agenda_reject('agenda_cohort_in_use');
   END IF;
- ELSIF TG_TABLE_NAME = 'enrollment' AND TG_OP = 'UPDATE' THEN
-  IF NEW.participant_id IS DISTINCT FROM OLD.participant_id OR NEW.cohort_id IS DISTINCT FROM OLD.cohort_id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
  ELSIF TG_TABLE_NAME = 'cohort' THEN
   IF TG_OP = 'INSERT' THEN
    IF NEW.status NOT IN ('draft','open') THEN PERFORM internal.agenda_reject('agenda_invalid_transition'); END IF;
@@ -106,14 +112,15 @@ BEGIN
    END IF;
   END IF;
  END IF;
- RETURN NEW;
+ RETURN NULL;
 END $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION internal.agenda_reject(text), internal.agenda_mentor_topic_active(bigint), internal.agenda_row_check() FROM PUBLIC;
 --> statement-breakpoint
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['topic','mentor_topic','cohort','enrollment','mentor','participant'] LOOP
-  EXECUTE format('CREATE TRIGGER agenda_row BEFORE INSERT OR UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION internal.agenda_row_check()', t);
+  EXECUTE format('CREATE TRIGGER agenda_row_immutable BEFORE UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION internal.agenda_row_check()', t);
+  EXECUTE format('CREATE TRIGGER agenda_row AFTER INSERT OR UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION internal.agenda_row_check()', t);
  END LOOP;
 END $$;
 --> statement-breakpoint
