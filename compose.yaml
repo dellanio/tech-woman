@@ -51,7 +51,21 @@ services:
     ports: ["127.0.0.1:3000:3000"]
     depends_on:
       seed: {condition: service_completed_successfully}
-# Mailer separado: WP-002 adicionará serviço/entrypoint real com techwoman_mailer.
+  mailer:
+    image: techwoman-wp001-local
+    working_dir: /tools
+    command: ["node", "--import", "tsx", "scripts/email-worker.ts"]
+    environment:
+      MAILER_DATABASE_URL: postgresql://techwoman_mailer:${MAILER_PASSWORD:?configure .env local}@postgres:5432/techwoman
+      EMAIL_MODE: fake
+      SES_SEND_ENABLED: "0"
+    mem_limit: 512m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
 # Não montar .env inteiro no web; MIGRATION_DATABASE_URL existe só em migrate.
 volumes:
   pgdata:
