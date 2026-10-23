@@ -179,5 +179,31 @@ class SealTests(unittest.TestCase):
                 self.assertFalse(out.exists())
 
 
+DIGEST = 'sha256:' + '1' * 64
+NOW = '2026-10-23T12:30:00Z'
+
+
+class VerifyReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+        done, self.candidate, self.mig, self.ops = SealTests().seal(self.tmp, good_facts())
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def verify(self, tree=TREE, commit=HEAD, digest=DIGEST, now=NOW, candidate=None, mig=None, ops=None):
+        return manifest('verify-release', '--candidate', candidate or self.candidate, '--release-tree', tree,
+                        '--release-commit', commit, '--digest', digest, '--now', now,
+                        '--migrations-dir', mig or self.mig, '--ops-dir', ops or self.ops)
+
+    def test_accepts_the_tested_tree_and_a_squash_commit_with_the_same_tree(self):
+        same = self.verify()
+        self.assertEqual(same.returncode, 0, same.stderr)
+        self.assertEqual(json.loads(same.stdout), {'ok': True, 'release_commit_is_tested_head': True})
+        squash = self.verify(commit='f' * 40)
+        self.assertEqual(squash.returncode, 0, squash.stderr)
+        self.assertEqual(json.loads(squash.stdout), {'ok': True, 'release_commit_is_tested_head': False})
+
+
 if __name__ == '__main__':
     unittest.main()
