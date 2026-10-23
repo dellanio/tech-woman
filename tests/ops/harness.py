@@ -85,3 +85,17 @@ class StagedOps:
 
     def cleanup(self):
         self._tmp.cleanup()
+
+
+def load_ops_module(name):
+    """Import ops/<name>.py by path (ops/ is not a package); isolated per call so tests stay independent."""
+    import importlib.util, sys
+    path = OPS_SOURCE / (name + '.py')
+    sys.path.insert(0, str(OPS_SOURCE))
+    try:
+        spec = importlib.util.spec_from_file_location('ops_' + name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(OPS_SOURCE))
+    return module
