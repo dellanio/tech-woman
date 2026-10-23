@@ -17,11 +17,19 @@ case "$sub" in
     [[ "${1:-}" == inspect ]] || exit 0
     [[ -f "$d/inspect.rc" ]] && exit "$(cat "$d/inspect.rc")"
     cat "$d/inspect" ;;
-  inspect) [[ -f "$d/container-inspect" ]] && cat "$d/container-inspect"; exit "$(rc_of inspect-container.rc 0)" ;;
+  inspect)
+    # per-container answers win (inspect.<name>, inspect.<name>.rc); otherwise the shared container-inspect file
+    if [[ -f "$d/inspect.${1:-}" || -f "$d/inspect.${1:-}.rc" ]]; then
+      [[ -f "$d/inspect.$1" ]] && cat "$d/inspect.$1"
+      exit "$(rc_of "inspect.$1.rc" 0)"
+    fi
+    [[ -f "$d/container-inspect" ]] && cat "$d/container-inspect"; exit "$(rc_of inspect-container.rc 0)" ;;
   ps) [[ -f "$d/ps" ]] && cat "$d/ps"; exit 0 ;;
   stop|rename|rm|start)
     n=$(cat "$d/$sub.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/$sub.count"
     if [[ -f "$d/$sub.rc.$n" ]]; then exit "$(cat "$d/$sub.rc.$n")"; fi
+    target=${1:-}; [[ "$target" == -f ]] && target=${2:-}
+    if [[ -f "$d/$sub.$target.rc" ]]; then exit "$(cat "$d/$sub.$target.rc")"; fi
     exit "$(rc_of "$sub.rc" 0)" ;;
   run)
     ep='' detached=false mount='' workdir=''
@@ -82,6 +90,10 @@ case "$sub" in
     done
     [[ -f "$d/exec.out" ]] && cat "$d/exec.out"
     [[ -f "$d/exec.err" ]] && cat "$d/exec.err" >&2
+    # per-container sequence (exec-<name>.rc.N): e.g. a new web failing its smoke, then the restored one passing
+    target=${1:-}; [[ "$target" == -i ]] && target=${2:-}
+    m=$(cat "$d/exec-$target.count" 2>/dev/null || echo 0); m=$((m + 1)); echo "$m" > "$d/exec-$target.count"
+    if [[ -f "$d/exec-$target.rc.$m" ]]; then exit "$(cat "$d/exec-$target.rc.$m")"; fi
     exit "$(rc_of exec.rc 0)" ;;
   login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
   pull) exit "$(rc_of pull.rc 0)" ;;

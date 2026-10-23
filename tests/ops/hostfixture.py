@@ -219,6 +219,7 @@ def _pg_open(host, last_good=OLD_PG_DIGEST, known=(OLD_PG_DIGEST,), schema_aggre
                      first_pg_write={'at': None, 'kind': None, 'baseline': {}})
     (host.ops.fake / 'container-inspect').write_bytes(('%s|%s\n' % (OLD_PG_IMAGE, ORIGINAL_IP)).encode())
     (host.ops.fake / 'dump.bytes').write_bytes(b'PGDMP-synthetic-test-dump')
+    (host.ops.fake / 'inspect.tech-woman-mailer').write_bytes(b'false' + bytes([10]))  # mailer not running after stop
     return candidate, state
 
 

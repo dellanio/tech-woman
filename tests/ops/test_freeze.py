@@ -15,6 +15,21 @@ def mutations(calls):
     return [a for a in docker(calls) if a[0] in MUTATING]
 
 
+# Restoration order: the maintenance page is only parked (never removed) until the original answers its smoke.
+RESTORE_OK = [['stop', 'tech-woman'], ['rename', 'tech-woman', 'tech-woman-maintenance'],
+              ['rename', 'tech-woman-sqlite-original', 'tech-woman'], ['start', 'tech-woman'], ['exec', 'tech-woman'],
+              ['rm', '-f', 'tech-woman-maintenance']]
+MAINTENANCE_BACK = [['stop', 'tech-woman'], ['rename', 'tech-woman', 'tech-woman-sqlite-original'],
+                    ['rename', 'tech-woman-maintenance', 'tech-woman'], ['start', 'tech-woman']]
+
+
+def restore_tail(calls):
+    """Docker calls from the parking of the maintenance container on, with exec reduced to its target."""
+    args = [c['args'] for c in calls if c['cmd'] == 'docker' and c['args'][0] in MUTATING + ('exec',)]
+    start = max(i for i, a in enumerate(args) if a == ['stop', 'tech-woman'])
+    return [a[:2] if a[0] == 'exec' else a for a in args[start:]]
+
+
 def base_name(path):
     return path.replace('\\', '/').rsplit('/', 1)[-1]
 
@@ -38,10 +53,14 @@ class FreezeTestCase(unittest.TestCase):
         self.assertEqual(self.state().phase, 'prepared')
         self.assertEqual(self.state().seq, 2)
         calls = mutations(self.host.cutover_calls())
-        if calls:  # maintenance was raised, so the original must be back and running
-            self.assertEqual(calls[-3:], [['rm', '-f', 'tech-woman'],
-                                          ['rename', 'tech-woman-sqlite-original', 'tech-woman'],
-                                          ['start', 'tech-woman']])
+        if calls:  # the original comes back and is proven healthy BEFORE the maintenance container goes
+            tail = [a[:2] if a[0] == 'exec' else a for c in self.host.cutover_calls() if c['cmd'] == 'docker'
+                    for a in [c['args']] if a[0] in MUTATING + ('exec',)]
+            if (self.host.ops.fake / 'run-d.rc').exists():  # maintenance never came up: nothing to park
+                self.assertEqual(tail[-3:], [['rename', 'tech-woman-sqlite-original', 'tech-woman'],
+                                             ['start', 'tech-woman'], ['exec', 'tech-woman']])
+            else:
+                self.assertEqual(restore_tail(self.host.cutover_calls()), RESTORE_OK)
 
 
 class FreezeHappyPathTests(FreezeTestCase):
@@ -231,6 +250,42 @@ class FreezeInventoryTests(FreezeTestCase):
         active = [c['args'] for c in self.host.cutover_calls() if c['cmd'] == 'systemctl' and c['args'][0] == 'is-active']
         self.assertEqual(active, [['is-active', 'tech-woman-backup.service']])
         self.assertNotIn('pgadmin-operator-session', done.stdout + done.stderr)
+
+
+class FreezeRestoreSafetyTests(FreezeTestCase):
+    """Review: a failed restoration must keep the maintenance page (503), never leave the address silently empty."""
+
+    def refuse_and_restore(self, **fake):
+        (self.host.ops.fake / 'fuser.rc').write_bytes(b'0')  # a writer is found: the freeze backs out
+        for name, content in fake.items():
+            (self.host.ops.fake / name).write_bytes(content)
+        return self.freeze()
+
+    def test_the_original_must_answer_its_smoke_before_the_maintenance_container_is_removed(self):
+        done = self.refuse_and_restore()
+        self.assertEqual(done.returncode, 80, done.stderr)
+        self.assertEqual(restore_tail(self.host.cutover_calls()), RESTORE_OK)
+        self.assertNotIn(['rm', '-f', 'tech-woman'], docker(self.host.cutover_calls()))
+
+    def test_an_original_that_does_not_come_back_healthy_puts_the_maintenance_page_back_with_84(self):
+        cases = {
+            'original fails its smoke': {'exec-tech-woman.rc.1': b'1', 'exec-tech-woman.rc.2': b'1'},
+            'original does not start': {'start.tech-woman.rc': b'1'},
+            'original cannot take the name': {'rename.tech-woman-sqlite-original.rc': b'1'},
+        }
+        for name, fake in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                done = self.refuse_and_restore(**{k: v for k, v in fake.items()})
+                self.assertEqual(done.returncode, 84, done.stderr)
+                self.assertIn('NOT restored', done.stderr)
+                self.assertIn('maintenance page kept', done.stderr)
+                calls = docker(self.host.cutover_calls())
+                self.assertNotIn(['rm', '-f', 'tech-woman-maintenance'], calls)
+                self.assertNotIn(['rm', '-f', 'tech-woman'], calls)
+                tail = [a for a in calls if a[0] in MUTATING][-2:]
+                self.assertEqual(tail, [['rename', 'tech-woman-maintenance', 'tech-woman'], ['start', 'tech-woman']])
+                self.assertEqual((self.state().phase, self.state().seq), ('prepared', 2))
 
 
 class FreezeRestoreFailureTests(FreezeTestCase):

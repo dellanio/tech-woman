@@ -8,7 +8,14 @@ RUN_ID = '3f2b8c1e-5a6d-4e7f-9a10-b2c3d4e5f607'
 GOOD_FIRST = {'dryRun': False, 'idempotent': False, 'runId': RUN_ID, 'status': 'imported', 'issues': 0,
               'counts': {'participants': 2}}
 GOOD_SECOND = dict(GOOD_FIRST, idempotent=True)
-RESTORE = [['rm', '-f', 'tech-woman'], ['rename', 'tech-woman-sqlite-original', 'tech-woman'], ['start', 'tech-woman']]
+# the original is proven healthy (smoke) before the parked maintenance container is removed
+RESTORE = [['stop', 'tech-woman'], ['rename', 'tech-woman', 'tech-woman-maintenance'],
+           ['rename', 'tech-woman-sqlite-original', 'tech-woman'], ['start', 'tech-woman'], ['exec', 'tech-woman'],
+           ['rm', '-f', 'tech-woman-maintenance']]
+
+
+def restored(calls):
+    return [a[:2] if a[0] == 'exec' else a for a in docker(calls)][-len(RESTORE):]
 
 
 def docker(calls):
@@ -40,7 +47,7 @@ class ImportTestCase(unittest.TestCase):
         state = self.state()
         self.assertEqual(state.phase, 'aborted_pre_write')
         self.assertTrue(state.data['abort']['reason'])
-        self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
+        self.assertEqual(restored(self.host.cutover_calls()), RESTORE)
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.source_hash)
         self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertTrue((self.host.state_dir / 'private' / '4-B.db').exists())
@@ -104,11 +111,25 @@ class AbortTests(ImportTestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         state = self.state()
         self.assertEqual((state.phase, state.data['abort']['reason']), ('aborted_pre_write', 'operator-decision'))
-        self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
+        self.assertEqual(restored(self.host.cutover_calls()), RESTORE)
         self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.source_hash)
         self.assertTrue((self.host.state_dir / 'private' / '4-A.db').exists())
         self.assertIn('chattr', [c['cmd'] for c in self.host.cutover_calls()])
+
+    def test_an_abort_whose_original_does_not_come_back_keeps_maintenance_and_the_phase(self):
+        fake = self.host.ops.fake
+        for n in (1, 2):
+            (fake / ('exec-tech-woman.rc.%d' % n)).write_bytes(b'1')
+        done = self.host.cutover('abort', '--reason', 'operator-decision')
+        self.assertEqual(done.returncode, 84, done.stderr)
+        self.assertIn('NOT restored', done.stderr)
+        self.assertIn('maintenance page kept', done.stderr)
+        self.assertEqual(self.state().phase, 'snapshotted')  # nothing claims the pre-write abort happened
+        calls = docker(self.host.cutover_calls())
+        self.assertEqual(calls[-2:], [['rename', 'tech-woman-maintenance', 'tech-woman'], ['start', 'tech-woman']])
+        self.assertNotIn(['rm', '-f', 'tech-woman-maintenance'], calls)
+        self.assertFalse(os.stat(self.db).st_mode & 0o200)  # source stays protected while nothing is restored
 
     def test_abort_is_refused_once_the_stack_is_activated_and_for_unsafe_reasons(self):
         self.assertEqual(self.host.cutover('abort', '--reason', 'rm -rf /').returncode, 64)
