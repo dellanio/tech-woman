@@ -59,7 +59,7 @@ test('role-limits.sql stores finite timeouts per role IN DATABASE, idempotently,
     assert.deepEqual(byRole.techwoman_runtime, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
     assert.deepEqual(byRole.techwoman_mailer, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
     assert.deepEqual(byRole.techwoman_beatriz, ['idle_in_transaction_session_timeout=30s', 'lock_timeout=10s', 'statement_timeout=60s']);
-    for (const bad of [{runtime_lock: '0'}, {beatriz_idle: '-1s'}, {mailer_statement: 'forever'}, {runtime_lock: "5s'; drop role techwoman_mailer; --"}]) {
+    for (const bad of <Record<string, string>[]>[{runtime_lock: '0'}, {beatriz_idle: '-1s'}, {mailer_statement: 'forever'}, {runtime_lock: "5s'; drop role techwoman_mailer; --"}]) {
       const r = applyLimits(url, bad);
       assert.notEqual(r.status, 0, JSON.stringify(bad));
       assert.deepEqual((await settings(db)).filter(r => r.db === dbName(url)), rows, 'a refused run changes nothing: ' + JSON.stringify(bad));
