@@ -153,8 +153,9 @@ test('participante: mais de três sugestões com razões legíveis, outras sem a
   await capture(page,'conta-sugestoes');
   // cursor obsoleto: a última mentora entregue deixa de ser elegível → 422 → recarregar do início
   await page.reload();await othersGroup.locator('article').nth(2).waitFor();
-  const lastShown=await othersGroup.locator('article h3').nth(2).innerText();
-  await ui.db.query('update mentor set active=false where display_name=$1',[lastShown]);
+  // textContent: o título é exibido em caixa alta por CSS, o nome real é o do banco
+  const lastShown=String(await othersGroup.locator('article h3').nth(2).textContent());
+  assert.equal((await ui.db.query('update mentor set active=false where display_name=$1',[lastShown])).rowCount,1);
   const [stale]=await Promise.all([page.waitForResponse(r=>r.url().includes('cursor=')),main(page).getByRole('button',{name:/Carregar mais mentoras/}).click()]);
   assert.equal(stale.status(),422);
   await alertText(page,/lista de mentoras mudou/);
