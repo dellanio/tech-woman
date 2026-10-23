@@ -129,6 +129,33 @@ def seal(facts, migrations_dir, ops_dir):
     }
 
 
+def load_candidate(path):
+    """Parse a sealed candidate.json strictly; anything unexpected is exit 70."""
+    try:
+        candidate = json.loads(pathlib.Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        raise ManifestError(70, 'candidate.json missing or unreadable')
+    return candidate
+
+
+def verify_release(flags):
+    """Deny (before any effect) anything that is not exactly the sealed candidate."""
+    if not (_is_hex(flags['release-tree'], HEX40) and _is_hex(flags['release-commit'], HEX40)
+            and _is_hex(flags['digest'], re.compile(r'\Asha256:[0-9a-f]{64}\Z')) and _is_hex(flags['now'], RFC3339Z)):
+        raise ManifestError(64, 'invalid release identity')
+    candidate = load_candidate(flags['candidate'])
+    if ops_package(flags['ops-dir'])['files'] != candidate['ops_package']['files']:
+        raise ManifestError(65, 'installed ops package differs from the sealed candidate')
+    if flags['release-tree'] != candidate['tested_tree']:
+        raise ManifestError(71, 'release tree is not the tested tree')
+    if migrations(flags['migrations-dir'])['files'] != candidate['migrations']['files']:
+        raise ManifestError(72, 'migrations differ from the sealed candidate')
+    window = candidate['window']
+    if not _moment(window['authorized_at']) <= _moment(flags['now']) < _moment(window['expires_at']):
+        raise ManifestError(73, 'outside the authorised window')
+    return {'ok': True, 'release_commit_is_tested_head': flags['release-commit'] == candidate['tested_head']}
+
+
 def _flags(args, names):
     values = {}
     for i in range(0, len(args), 2):
@@ -166,8 +193,7 @@ def _run(cmd, args):
     if cmd == 'verify-release':
         flags = _flags(args, ['candidate', 'release-tree', 'release-commit', 'digest', 'now',
                               'migrations-dir', 'ops-dir'])
-        candidate = json.loads(pathlib.Path(flags['candidate']).read_text())
-        print(json.dumps({'ok': True, 'release_commit_is_tested_head': flags['release-commit'] == candidate['tested_head']}))
+        print(json.dumps(verify_release(flags)))
         return 0
     print('usage: manifest.py {migrations <dir>|script-sha <file>|ops-package <dir>|seal --facts F ...}', file=sys.stderr)
     return 64
