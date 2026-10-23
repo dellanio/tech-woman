@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/_common.sh"
+tw_log fuser false "$@"
+exit 0

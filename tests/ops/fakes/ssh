@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/_common.sh"
+tw_log ssh true "$@"
+echo "tripwire: ssh must never run in tests" >&2
+exit 99
