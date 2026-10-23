@@ -45,15 +45,57 @@ jobs:
     permissions:
       contents: read
       packages: write
+      pull-requests: read
     steps:
       # Only trusted main, never the upstream PR head or downloaded artifacts.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
           persist-credentials: false
+      # Commit, tree and migrations of the exact checkout. On push the checkout must still be the pushed commit
+      # (a newer main aborts); the whole step is data in, key=value lines out, never evaluated.
       - name: Resolve immutable release
         id: release
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSHED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          args=(release-facts --repo . --migrations-dir drizzle)
+          if [ "$EVENT" = push ]; then args+=(--expect "$PUSHED_SHA"); fi
+          python3 ops/manifest.py "${args[@]}" >> "$GITHUB_OUTPUT"
+      # For the auto-merge signal the checked-out main must be the merge commit of a merged PR by the
+      # authorised author; anything else (a newer main, another author) aborts before any build or push.
+      - name: Verify the merged pull request result
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/pulls" --jq '[.[] | select(.merged_at != null and .merge_commit_sha == env.RELEASE_SHA and .user.login == "beatrizbenz" and .base.ref == "main")] | length')
+          [ "$count" = 1 ] || { echo 'main is not the merge commit of one merged PR by the authorised author' >&2; exit 1; }
+      - name: Install deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.OCI_TECH_WOMAN_KEY }}
+          KNOWN_HOSTS: ${{ secrets.OCI_TECH_WOMAN_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tech-woman
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host tech-woman-deploy\n  HostName 193.122.206.82\n  User tech-woman-deploy\n  IdentityFile ~/.ssh/tech-woman\n  BatchMode yes\n  StrictHostKeyChecking yes\n' > ~/.ssh/config
+      # Protocol v2 first: an old installed command rejects the request (exit 64) before any effect, and a
+      # command whose checksum is not this checkout's ops/deploy.sh stops the run before build and push.
+      - name: Probe installed deploy package
+        run: |
+          set -euo pipefail
+          expected=$(sha256sum ops/deploy.sh | cut -d' ' -f1)
+          report=$(printf 'TWDEPLOY/2\nprobe\n' | ssh -T tech-woman-deploy)
+          installed=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["script_sha256"])')
+          [ "$installed" = "$expected" ] || { echo 'installed deploy command differs from this checkout' >&2; exit 1; }
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -68,17 +110,34 @@ jobs:
           push: true
           tags: ghcr.io/dellanio/tech-woman:${{ steps.release.outputs.sha }}
           labels: org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
-      - name: Deploy immutable digest through restricted SSH command
+      - name: Confirm main has not advanced
         env:
-          DEPLOY_KEY: ${{ secrets.OCI_TECH_WOMAN_KEY }}
-          KNOWN_HOSTS: ${{ secrets.OCI_TECH_WOMAN_KNOWN_HOSTS }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          [ "$current" = "$RELEASE_SHA" ] || { echo 'main advanced after the build; nothing was sent to the host' >&2; exit 1; }
+      - name: Stage or release
+        id: remote
+        env:
           DIGEST: ${{ steps.image.outputs.digest }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TREE: ${{ steps.release.outputs.tree }}
+          MIGRATIONS_AGGREGATE: ${{ steps.release.outputs.migrations_aggregate }}
+          MIGRATIONS_COUNT: ${{ steps.release.outputs.migrations_count }}
           REGISTRY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           umask 077
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tech-woman
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n%s\n' "$DIGEST" "$REGISTRY_TOKEN" | ssh -T -i ~/.ssh/tech-woman -o BatchMode=yes -o StrictHostKeyChecking=yes tech-woman-deploy@193.122.206.82
-      - run: curl --fail --silent --show-error https://tech-woman.dellanio.com/ > /dev/null
+          # printf is a shell builtin: the token travels on stdin only, never in a process argument list.
+          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' TWDEPLOY/2 deploy "$DIGEST" "$RELEASE_SHA" "$RELEASE_TREE" "$MIGRATIONS_AGGREGATE" "$MIGRATIONS_COUNT" "$REGISTRY_TOKEN" | ssh -T tech-woman-deploy > "$RUNNER_TEMP/remote.json"
+          kind=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("stage" if d.get("stage") == "verified" else "release" if d.get("op") == "release" else "other")' "$RUNNER_TEMP/remote.json")
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/remote.json" >> "$GITHUB_STEP_SUMMARY"
+      # A stage only downloads and verifies the image while the site is still in maintenance (503): it must
+      # not be followed by a public 200 check. Only a release reports the public route.
+      - name: Public smoke after a release
+        if: steps.remote.outputs.kind == 'release'
+        run: curl --fail --silent --show-error https://tech-woman.dellanio.com/ > /dev/null
