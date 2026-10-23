@@ -241,3 +241,16 @@ test('limites finitos: guard com lock_timeout próprio; script do operador fixa 
   await holder.query('rollback');
  });
 }));
+
+test('turma elegível: criar ou abrir exige mentora e tema ativos; fechar e cancelar continuam permitidos', ()=>withDb(async ({db})=>{
+ const mentor=await addMentor(db),topic=await addTopic(db),mt=await addMentorTopic(db,mentor,topic);
+ const draft=await addCohort(db,mt,{from:0,status:'draft'}),open=await addCohort(db,mt,{from:2});
+ await db.query('update topic set active=false where id=$1',[topic]);
+ await pgFails(addCohort(db,mt,{from:4}),'23514','agenda_inactive');
+ await pgFails(db.query("update cohort set status='open' where id=$1",[draft]),'23514','agenda_inactive');
+ await db.query("update cohort set status='closed' where id=$1",[open]);
+ await db.query('update topic set active=true where id=$1',[topic]);await db.query('update mentor set active=false where id=$1',[mentor]);
+ await pgFails(addCohort(db,mt,{from:4,status:'draft'}),'23514','agenda_inactive');
+ await pgFails(db.query("update cohort set status='open' where id=$1",[open]),'23514','agenda_inactive');
+ await db.query("update cohort set status='cancelled' where id in ($1,$2)",[draft,open]);
+}));
