@@ -45,5 +45,57 @@ class LogicalChecksumTests(unittest.TestCase):
         self.assertNotIn('Ana Example', ours.stdout)
 
 
+def sha(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() if pathlib.Path(path).exists() else None
+
+
+class BackupTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+
+    def test_backup_captures_uncheckpointed_wal_writes_and_never_touches_the_source(self):
+        source = self.tmp / 'source.db'
+        db = synthetic_db(source, wal=True)
+        db.execute('PRAGMA wal_autocheckpoint=0')
+        db.execute('INSERT INTO booking VALUES (2, 1, ?)', ('2026-01-02T10:00:00Z',))
+        db.commit()
+        before = (sha(source), sha(str(source) + '-wal'))
+        self.assertIsNotNone(before[1], 'the committed write must still live only in the WAL')
+        done = run(OPS_SNAPSHOT, 'backup', source, self.tmp / 'copy.db')
+        db.close()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        report = json.loads(done.stdout)
+        copy = sqlite3.connect(self.tmp / 'copy.db')
+        self.assertEqual(copy.execute('SELECT count(*) FROM booking').fetchone()[0], 2)
+        copy.close()
+        self.assertEqual(report['counts']['booking'], 2)
+        self.assertEqual(sorted(report), ['bytes', 'checksum', 'counts', 'file_sha256'])
+        self.assertEqual(report['file_sha256'], sha(self.tmp / 'copy.db'))
+        self.assertEqual((sha(source), sha(str(source) + '-wal')), before)
+        if os.name == 'posix':
+            self.assertEqual(os.stat(self.tmp / 'copy.db').st_mode & 0o777, 0o600)
+
+    def test_backup_refuses_to_overwrite_and_never_leaves_a_broken_copy(self):
+        source = self.tmp / 'source.db'
+        synthetic_db(source).close()
+        (self.tmp / 'taken.db').write_bytes(b'keep me')
+        self.assertEqual(run(OPS_SNAPSHOT, 'backup', source, self.tmp / 'taken.db').returncode, 81)
+        self.assertEqual((self.tmp / 'taken.db').read_bytes(), b'keep me')
+        self.assertEqual(run(OPS_SNAPSHOT, 'backup', source, source).returncode, 81)
+        broken = self.tmp / 'broken.db'
+        db = sqlite3.connect(broken)
+        db.executescript('CREATE TABLE a(id INTEGER PRIMARY KEY); CREATE TABLE b(id INTEGER, a_id INTEGER REFERENCES a(id));'
+                         'INSERT INTO b VALUES (1, 99);')
+        db.commit()
+        db.close()
+        done = run(OPS_SNAPSHOT, 'backup', broken, self.tmp / 'broken-copy.db')
+        self.assertEqual(done.returncode, 81, done.stderr)
+        self.assertEqual(done.stdout, '')
+        self.assertFalse((self.tmp / 'broken-copy.db').exists())
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith('.')), [])
+
+
 if __name__ == '__main__':
     unittest.main()
