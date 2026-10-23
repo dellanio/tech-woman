@@ -448,12 +448,58 @@ def cmd_freeze(paths, flags):
     print(json.dumps({'phase': 'frozen', 'cutoff_at': now, 'writers_checked': record['writers_checked']}))
 
 
+def _db_files(paths):
+    db = pathlib.Path(paths['TW_DB_FILE'])
+    return [p for p in (db, pathlib.Path(str(db) + '-wal'), pathlib.Path(str(db) + '-shm')) if p.exists()]
+
+
+def cmd_snapshot(paths, flags):
+    """Final snapshot after the freeze: Backup API twice (A, then B after the quiet window), A must equal B."""
+    import sqlite3, time
+    manifest = _manifest()
+    state, _ = _sealed_state(paths, manifest, 'frozen')
+    snapshot, hostops = _sibling('snapshot'), _sibling('hostops')
+    private = pathlib.Path(paths['TW_STATE_DIR']) / 'private'
+    private.mkdir(exist_ok=True)
+    os.chmod(private, 0o700)
+    tag = str(state.seq)
+    try:
+        first = snapshot.backup(paths['TW_DB_FILE'], private / (tag + '-A.db'))
+        time.sleep(state.data['freeze']['quiet_seconds'])
+        second = snapshot.backup(paths['TW_DB_FILE'], private / (tag + '-B.db'))
+    except snapshot.SnapshotError as error:
+        raise StateError(error.code, str(error))
+    except sqlite3.Error:
+        raise StateError(81, 'SQLite refused the snapshot')
+    if first['checksum'] != second['checksum'] or first['counts'] != second['counts']:
+        raise StateError(81, 'the database changed between snapshot A and B: a writer is still active')
+    runner, immutable = hostops.Runner(paths), True
+    for path in _db_files(paths):
+        os.chmod(path, os.stat(path).st_mode & ~0o222)
+        try:
+            runner.run(['chattr', '+i', str(path)])
+        except hostops.HostError:
+            immutable = False
+    now = _now()
+    record = {'sha256': first['checksum'], 'a_digest': first['file_sha256'], 'b_digest': second['file_sha256'],
+              'counts_public': first['counts'], 'file_a': tag + '-A.db', 'file_b': tag + '-B.db',
+              'immutable': immutable, 'at': now}
+    private_manifest = private / 'manifest.json'
+    private_manifest.write_bytes(_dump({'taken_at': now, 'checksum': first['checksum'], 'files': [
+        {'name': record['file_a'], 'bytes': first['bytes'], 'file_sha256': first['file_sha256']},
+        {'name': record['file_b'], 'bytes': second['bytes'], 'file_sha256': second['file_sha256']}]}))
+    os.chmod(private_manifest, 0o600)
+    state.transition('snapshotted', now, snapshot=record)
+    print(json.dumps({'phase': 'snapshotted', 'counts': first['counts']}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
     'phase': lambda paths, flags: cmd_phase(paths),
     'register-stage': lambda paths, flags: cmd_register_stage(paths),
     'freeze': cmd_freeze,
+    'snapshot': lambda paths, flags: cmd_snapshot(paths, flags),
 }
 FLAG_NAMES = {'freeze': ['quiet-seconds']}
 
