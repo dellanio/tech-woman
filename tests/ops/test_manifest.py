@@ -49,6 +49,61 @@ class MigrationHashTests(unittest.TestCase):
         self.assertEqual(out['aggregate_sha256'], hashlib.sha256(lines.encode()).hexdigest())
 
 
+def make_tar(entries):
+    """entries: list of (name, bytes|None, kind) -> tar stream bytes (kind: 'file', 'dir', 'symlink')."""
+    import io, tarfile
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w') as archive:
+        for name, data, kind in entries:
+            info = tarfile.TarInfo(name)
+            if kind == 'dir':
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            elif kind == 'symlink':
+                info.type = tarfile.SYMTYPE
+                info.linkname = '/etc/passwd'
+                archive.addfile(info)
+            else:
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def manifest_bytes(*args, stdin=b''):
+    return subprocess.run([sys.executable, '-I', str(MANIFEST), *map(str, args)], input=stdin, capture_output=True)
+
+
+class MigrationsFromTarTests(unittest.TestCase):
+    def test_tar_stream_hashes_exactly_like_the_directory(self):
+        archive = make_tar([('./', None, 'dir'), ('./20260101000000_a.sql', b'select 1;\r\nselect 2;\r\n', 'file'),
+                            ('./20260102000000_b.sql', b'select 3;\n', 'file'), ('./meta/_journal.json', b'{}', 'file')])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            write(tmp / '20260101000000_a.sql', b'select 1;\r\nselect 2;\r\n')
+            write(tmp / '20260102000000_b.sql', b'select 3;\n')
+            expected = json.loads(manifest('migrations', tmp).stdout)
+        done = manifest_bytes('migrations-tar', stdin=archive)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), expected)
+
+    def test_hostile_tar_entries_are_refused_with_74(self):
+        sql = b'select 1;\n'
+        cases = {
+            'symlink named like a migration': [('20260101000000_a.sql', None, 'symlink')],
+            'path traversal': [('../20260101000000_a.sql', sql, 'file')],
+            'absolute path': [('/20260101000000_a.sql', sql, 'file')],
+            'nested migration': [('sub/20260101000000_a.sql', sql, 'file')],
+            'oversized migration': [('20260101000000_a.sql', b'x' * (1024 * 1024 + 1), 'file')],
+            'not a tar': None,
+        }
+        for name, entries in cases.items():
+            with self.subTest(name=name):
+                archive = b'this is not a tar archive' * 40 if entries is None else make_tar(entries)
+                done = manifest_bytes('migrations-tar', stdin=archive)
+                self.assertEqual(done.returncode, 74, done.stderr)
+                self.assertEqual(done.stdout, b'')
+
+
 class OpsPackageTests(unittest.TestCase):
     def make_ops(self, tmp):
         ops = tmp / 'ops'
