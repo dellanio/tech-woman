@@ -139,3 +139,22 @@ REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
 --> statement-breakpoint
 CREATE TRIGGER agenda_enrollment_stamp BEFORE INSERT OR UPDATE ON public.enrollment FOR EACH ROW EXECUTE FUNCTION internal.enrollment_stamp();
 CREATE TRIGGER agenda_enrollment_effects AFTER INSERT OR UPDATE ON public.enrollment FOR EACH ROW EXECUTE FUNCTION internal.enrollment_effects();
+--> statement-breakpoint
+-- Match de reserva (enrollment_id) só muda pelos efeitos da inscrição (trigger aninhado); DML direto recusado para não dessincronizar.
+-- Em qualquer match, id/FKs/score/reasons/origem são imutáveis; legado/sugestão sem reserva continua com status editável.
+CREATE OR REPLACE FUNCTION internal.match_guard() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+ IF pg_catalog.pg_trigger_depth() > 1 THEN RETURN NEW; END IF;
+ IF NEW.enrollment_id IS NOT NULL OR (TG_OP = 'UPDATE' AND OLD.enrollment_id IS NOT NULL) THEN PERFORM internal.agenda_reject('agenda_match_managed'); END IF;
+ IF TG_OP = 'UPDATE' AND (NEW.id, NEW.participant_id, NEW.mentor_id, NEW.score, NEW.reasons, NEW.origin) IS DISTINCT FROM (OLD.id, OLD.participant_id, OLD.mentor_id, OLD.score, OLD.reasons, OLD.origin) THEN
+  PERFORM internal.agenda_reject('agenda_immutable');
+ END IF;
+ RETURN NEW;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION internal.match_guard() FROM PUBLIC;
+GRANT CREATE ON SCHEMA internal TO techwoman_owner;
+ALTER FUNCTION internal.match_guard() OWNER TO techwoman_owner;
+REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
+CREATE TRIGGER agenda_match_guard BEFORE INSERT OR UPDATE ON public.match FOR EACH ROW EXECUTE FUNCTION internal.match_guard();
