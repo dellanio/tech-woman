@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,pgFails,EDITOR} from './agenda-harness';
+import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,shiftToStarted,pgFails,EDITOR} from './agenda-harness';
 
 test('reserva SQL da editora: match current selected com score/reasons do ranking legado (score0 aceito), job reservation e auditoria sem dados pessoais', ()=>withDb(async ({db,url})=>{
  const user=await addUser(db,{roles:['participant']}),other=await addUser(db,{roles:['participant']});
@@ -50,4 +50,39 @@ test('elegibilidade da reserva SQL: só active, turma open e futura, domínio at
  await db.query('update topic set active=true where id=$1',[thirdTopic]);await db.query('update mentor set active=false where id=$1',[third]);
  await pgFails(db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[await addParticipant(db),free]),'23514','agenda_inactive');
  assert.deepEqual((await db.query("select (select count(*)::int from enrollment) e,(select count(*)::int from match) m,(select count(*)::int from email_job) j,(select count(*)::int from audit_event) a")).rows[0],{e:2,m:2,j:2,a:2},'recusas não deixam efeitos');
+}));
+
+test('cancelar (inclusive após o início) e reativar (só futura) mantêm cancelled_at, match, job e auditoria coerentes', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db),mt=await addMentorTopic(db,mentor,await addTopic(db));
+ const c=await addCohort(db,mt,{from:0,capacity:1}),later=await addCohort(db,mt,{from:3}),other=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0});
+ const [p,q]=[await addParticipant(db),await addParticipant(db)];
+ const state=async(id:string)=>(await db.query(`select e.status,e.cancelled_at is not null cancelled,m.status match,
+   (select array_agg(j.status order by j.created_at,j.dedupe_key) from email_job j where j.enrollment_id=e.id) jobs,
+   (select array_agg(a.action order by a.id) from audit_event a where a.entity_type='enrollment' and a.entity_id=e.id::text) audit
+  from enrollment e join match m on m.enrollment_id=e.id where e.id=$1`,[id])).rows[0];
+ await withClients(url,[EDITOR],async b=>{
+  const enroll=async(who:string,cohort:string)=>(await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[who,cohort])).rows[0].id as string;
+  const set=(id:string,status:string)=>b.query('update enrollment set status=$2 where id=$1',[id,status]);
+  const e=await enroll(p,c);
+  await set(e,'cancelled');
+  assert.deepEqual(await state(e),{status:'cancelled',cancelled:true,match:'cancelled',jobs:['cancelled'],audit:['enrollment.create','enrollment.cancel']});
+  const taken=await enroll(q,c);
+  await pgFails(set(e,'active'),'23514','agenda_capacity_exceeded');
+  await set(taken,'cancelled');
+  const busy=await enroll(p,other);
+  await pgFails(set(e,'active'),'23514','agenda_participant_overlap');
+  await set(busy,'cancelled');
+  await set(e,'active');
+  assert.deepEqual(await state(e),{status:'active',cancelled:false,match:'selected',jobs:['cancelled','queued'],audit:['enrollment.create','enrollment.cancel','enrollment.reactivate']});
+  await b.query("update enrollment set status='active' where id=$1",[e]);
+  assert.equal((await state(e)).audit.length,3,'update sem transição não gera efeitos');
+  const s=await enroll(q,later);await shiftToStarted(url,later);
+  await set(s,'cancelled');
+  assert.deepEqual(await state(s),{status:'cancelled',cancelled:true,match:'cancelled',jobs:['cancelled'],audit:['enrollment.create','enrollment.cancel']},'cancelar após o início é permitido');
+  await pgFails(set(s,'active'),'23514','agenda_not_future');
+ });
+ await db.query("update enrollment set cancelled_at='2000-01-01T00:00:00Z' where status='active'");
+ assert.equal((await db.query("select count(*)::int n from enrollment where status='active' and cancelled_at is not null")).rows[0].n,0,'cancelled_at só acompanha a transição');
+ const stamp=(await db.query("update enrollment set status='cancelled',cancelled_at='2000-01-01T00:00:00Z' where participant_id=$1 and status='active' returning cancelled_at",[p])).rows[0].cancelled_at as Date;
+ assert.ok(Date.now()-stamp.getTime()<60e3,'cancelled_at é o instante do cancelamento, não valor do cliente');
 }));

@@ -66,3 +66,8 @@ export async function startedCohort(url:string,mentorTopicId:string,o:{hoursAgo?
 }
 /** Mesmo grants-local.sql que LOCAL_ROLE_SETUP aplica depois das migrations (grants do runtime local). */
 export const applyLocalGrants=(db:Q)=>db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));
+/** Simula o tempo passando para uma turma existente: só o horário muda, gravado sem triggers numa transação própria do dono. */
+export async function shiftToStarted(url:string,cohortId:string){
+ await withClients(url,[undefined],async c=>{await c.query('begin');await c.query('set local session_replication_role=replica');
+  await c.query("update cohort set starts_at=now()-interval '1 hour',ends_at=now()+interval '1 hour' where id=$1",[cohortId]);await c.query('commit');});
+}
