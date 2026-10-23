@@ -27,3 +27,19 @@ test('guard: snapshot REPEATABLE READ obsoleto falha com 40001 em vez de validar
   assert.equal((await b.query("select count(*)::int n from topic where slug like 'rr-%'")).rows[0].n,1);
  });
 }));
+
+test('overlap: mesma mentora em temas diferentes não pode ter turmas não canceladas sobrepostas; contíguo e cancelada valem', ()=>withDb(async ({db})=>{
+ const mentor=await addMentor(db),other=await addMentor(db);
+ const mt1=await addMentorTopic(db,mentor,await addTopic(db),1),mt2=await addMentorTopic(db,mentor,await addTopic(db),2);
+ const otherMt=await addMentorTopic(db,other,await addTopic(db),1);
+ await addCohort(db,mt1,{from:0,hours:1,status:'open'});
+ for(const status of ['open','draft']) await pgFails(addCohort(db,mt2,{from:0.5,hours:1,status}),'23514','agenda_mentor_overlap');
+ const contiguous=await addCohort(db,mt2,{from:1,hours:1});
+ await addCohort(db,otherMt,{from:0,hours:1});
+ await pgFails(db.query("update cohort set starts_at=$2 where id=$1",[contiguous,new Date(Date.parse((await db.query('select starts_at from cohort where id=$1',[contiguous])).rows[0].starts_at)-30*60e3).toISOString()]),'23514','agenda_mentor_overlap');
+ const cancelled=await addCohort(db,mt2,{from:3,hours:1,status:'draft'});await db.query("update cohort set status='cancelled' where id=$1",[cancelled]);
+ await addCohort(db,mt1,{from:3,hours:1});
+ const closed=await addCohort(db,mt1,{from:5,hours:1});await db.query("update cohort set status='closed' where id=$1",[closed]);
+ await pgFails(addCohort(db,mt2,{from:5.5,hours:1,status:'draft'}),'23514','agenda_mentor_overlap');
+ assert.equal((await db.query("select count(*)::int n from cohort")).rows[0].n,6);
+}));
