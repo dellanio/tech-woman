@@ -104,3 +104,19 @@ test('match de reserva só muda pelos efeitos da inscrição: DML direto (runtim
  assert.equal((await db.query('select m::text from match m where enrollment_id=$1',[e])).rows[0].m,before);
  assert.equal((await db.query('select status from match where id=$1',[legacy])).rows[0].status,'rejected');
 }));
+
+test('segurança SQL das funções de reserva: owner NOLOGIN, search_path fixo, VOLATILE nos triggers, sem EXECUTE para PUBLIC/runtime/editora/mailer', ()=>withDb(async ({db})=>{
+ const names=['agenda_ranking','enrollment_stamp','enrollment_check_eligible','enrollment_effects','match_guard','validate_agenda_state'];
+ const rows=(await db.query(`select proname,pg_get_userbyid(proowner)::text owner,provolatile,proconfig,
+   exists(select 1 from aclexplode(coalesce(proacl,acldefault('f',proowner))) a where a.privilege_type='EXECUTE' and a.grantee<>proowner) granted,
+   has_function_privilege('techwoman_runtime',oid,'EXECUTE') or has_function_privilege('techwoman_beatriz',oid,'EXECUTE') or has_function_privilege('techwoman_mailer',oid,'EXECUTE') reachable
+  from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) order by proname`,[names])).rows;
+ assert.equal(rows.length,names.length);
+ for(const r of rows){
+  assert.equal(r.owner,'techwoman_owner',r.proname);assert.equal(r.proconfig[0],'search_path=pg_catalog, pg_temp',r.proname);
+  assert.equal(r.granted,false,`${r.proname} sem EXECUTE concedido`);assert.equal(r.reachable,false,r.proname);
+  if(r.proname!=='agenda_ranking')assert.equal(r.provolatile,'v',`${r.proname} VOLATILE`);
+ }
+ const triggers=(await db.query("select tgname from pg_trigger where tgrelid='public.enrollment'::regclass and not tgisinternal order by tgname")).rows.map(r=>r.tgname);
+ assert.deepEqual(triggers,['agenda_enrollment_effects','agenda_enrollment_stamp','agenda_guard','agenda_row','agenda_row_immutable','agenda_validate','touch_version']);
+}));
