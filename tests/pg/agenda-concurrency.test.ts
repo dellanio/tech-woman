@@ -105,3 +105,22 @@ test('linhas ocultas sob concorrência: reserva de participante protegida (invis
  });
  assert.deepEqual(await counts(db,c),{active:1,matches:1,jobs:1});
 }));
+
+test('ordem de locks API (app_user → guard) × SQL editora (guard → FK do job no app_user): FOR UPDATE gera deadlock finito (40P01, um lado refaz); FOR NO KEY UPDATE não conflita', ()=>withDb(async ({db,url})=>{
+ const user=await addUser(db,{roles:['participant']});const p=await addParticipant(db,{userId:user.id,email:user.email});
+ const mt=await addMentorTopic(db,await addMentor(db),await addTopic(db));const c1=await addCohort(db,mt,{from:0}),c2=await addCohort(db,mt,{from:2});
+ for(const [mode,cohort] of [['for update',c1],['for no key update',c2]] as const){
+  await withClients(url,[undefined,EDITOR],async (api,b)=>{
+   await api.query('begin');await api.query(`select 1 from app_user where id=$1 ${mode}`,[user.id]);
+   await b.query('begin');const bp=await pidOf(b);
+   const editor=b.query(enrollSql,[p,cohort]).then(()=>b.query('commit')).catch(async e=>{await b.query('rollback');throw e;});editor.catch(()=>undefined);
+   if(mode==='for update')await waitLocked(db,bp);
+   else await editor;
+   const apiGuard=api.query("insert into topic(slug,name) values($1,'API')",['api-'+cohort]).then(()=>api.query('commit')).catch(async e=>{await api.query('rollback');throw e;});
+   const results=await Promise.allSettled([apiGuard,editor]);
+   const codes=results.map(r=>r.status==='rejected'?(r.reason as {code?:string}).code:'ok');
+   if(mode==='for update')assert.deepEqual(codes.filter(x=>x!=='ok'),['40P01'],`deadlock detectado e finito: ${codes}`);
+   else assert.deepEqual(codes,['ok','ok']);
+  });
+ }
+}));
