@@ -56,5 +56,38 @@ class StageHappyPathTests(StageTestCase):
         self.assertLess(calls.index(order[1]), next(i for i, a in enumerate(calls) if a[:2] == ['image', 'inspect']))
 
 
+class StageDenialTests(StageTestCase):
+    def denied(self, code):
+        result = self.host.deploy()
+        self.assertEqual(result.returncode, code, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assert_marker_untouched()
+        self.assert_no_activation(result)
+        self.assertNotIn(SECRET, result.stderr + json.dumps(result.calls()))
+
+    def test_every_image_failure_stops_the_stage_with_its_code_and_no_attestation(self):
+        fake = self.host.ops.fake
+        (fake / 'inspect').write_bytes(('amd64|linux|' + COMMIT + chr(10)).encode())
+        self.denied(74)
+        self.host.good_image()
+        (fake / 'grep.rc').write_bytes(b'0')
+        self.denied(76)
+        self.host.good_image()
+        (self.host.ops.env_dir / 'web.env').write_bytes(b'MIGRATION_DATABASE_URL=TEST-ONLY' + bytes([10]))
+        self.denied(74)
+
+    def test_registry_failures_are_74_and_never_reach_verification(self):
+        for name in ('login.rc', 'pull.rc'):
+            with self.subTest(name=name):
+                self.host.good_image()
+                (self.host.ops.fake / name).write_bytes(b'1')
+                result = self.host.deploy()
+                self.assertEqual(result.returncode, 74, result.stderr)
+                self.assertFalse([a for a in sub_commands(result) if a[:2] == ['image', 'inspect']])
+                self.assertEqual(result.stdout, '')
+                self.assertNotIn(SECRET, result.stderr)
+                self.assert_marker_untouched()
+
+
 if __name__ == '__main__':
     unittest.main()
