@@ -1,5 +1,5 @@
 """Hermetic runner for ops scripts: fake PATH, call log, no real host binaries."""
-import json, os, pathlib, shutil, subprocess, tempfile
+import json, os, pathlib, shutil, subprocess, sys, tempfile
 
 BASH = 'C:/Program Files/Git/bin/bash.exe' if os.name == 'nt' else 'bash'
 FAKES = pathlib.Path(__file__).resolve().parent / 'fakes'
@@ -78,7 +78,12 @@ class StagedOps:
             "PATH='%s'" % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
             "TW_LOCK_FILE='%s'" % _posix(self.host / 'lock/deploy.lock'),
             "TW_STATE_DIR='%s'" % _posix(self.host / 'state'),
-            "TW_APP_DIR='%s'" % _posix(self.host / 'app'), '']).encode('utf-8')))
+            "TW_APP_DIR='%s'" % _posix(self.host / 'app'),
+            "TW_PYTHON='%s'" % _posix(sys.executable),
+            # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
+            'TW_STATE_OWNER_UID=%d' % (os.getuid() if os.name == 'posix' else 0),
+            'TW_STATE_MODE_CHECK=%d' % (1 if os.name == 'posix' else 0), '']).encode('utf-8')))
+        os.chmod(self.host / 'state', 0o700)
 
     def run(self, stdin, extra_env=None):
         return run_script(self.script, stdin, extra_env)
