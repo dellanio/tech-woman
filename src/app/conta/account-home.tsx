@@ -4,15 +4,16 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AccountPanel, setFlash, takeFlash } from '../account-ui';
-import { ChoiceJourney } from '../inscricao/choices';
+import { ChoiceJourney, MyEnrollments } from '../inscricao/choices';
 import { DEFAULT_AFTER_LOGIN, Frame, loadSession, loginHref, passwordChangeHref, type SessionUser } from '../shared';
 
 type View = { state: 'checking' } | { state: 'failed'; message: string } | { state: 'ready'; user: SessionUser; expiresAt: string };
 const FLASH_NOTICE: Record<string, string> = { 'password-set': 'Senha definida. Sua conta está ativa.' };
 
-export function AccountHome() {
+export function AccountHome({ simulated }: { simulated: boolean }) {
   const router = useRouter();
   const [view, setView] = useState<View>({ state: 'checking' }), [notice, setNotice] = useState('');
+  const [enrollmentsVersion, setEnrollmentsVersion] = useState(0);
   const check = useCallback(async () => {
     setView({ state: 'checking' });
     const result = await loadSession();
@@ -37,7 +38,10 @@ export function AccountHome() {
             {!participant && !mentor && !staff && <section className="form-panel account-role" aria-labelledby="none-title"><p className="eyebrow">PERFIS</p><h2 id="none-title">Nenhum perfil ainda</h2><div className="auth-links"><Link href="/inscricao">Quero participar ↗</Link><Link href="/mentora">Quero ser mentora ↗</Link></div></section>}
           </div>
         </div>}
-      {view.state === 'ready' && participant && <ChoiceJourney/>}
+      {view.state === 'ready' && participant && <>
+        <MyEnrollments version={enrollmentsVersion}/>
+        <ChoiceJourney simulated={simulated} onReserved={() => setEnrollmentsVersion(v => v + 1)}/>
+      </>}
     </div>
   </Frame>;
 }

@@ -107,3 +107,30 @@
 .choice-mentor h3,.choice-mentor p{overflow-wrap:anywhere}
 .choice-more{margin-top:20px}
 @media(max-width:760px){.choices-section .suggestion{grid-template-columns:1fr}.choices-section .suggestion .score{text-align:left}}
+.choice-steps{display:flex;flex-wrap:wrap;gap:8px 22px;list-style:none;padding:0;margin:0 0 6px;color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+.choice-steps [aria-current="step"]{color:var(--accent)}
+.choice-context{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin:18px 0 0}
+.choice-context .eyebrow{margin:0}
+.choice-context-name{font:500 24px var(--font-display);text-transform:uppercase;margin:6px 0;overflow-wrap:anywhere}
+.choice-actions{margin-top:22px}
+.cohort-group{border:0;padding:0;margin:22px 0 0;min-width:0}
+.cohort-group legend{color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;margin-bottom:8px}
+.cohort-option{display:grid;grid-template-columns:24px minmax(0,1fr);gap:12px;align-items:start;border:var(--border);border-radius:var(--radius-control);background:var(--surface);padding:16px;margin-top:10px;cursor:pointer;transition:border-color .18s var(--ease-out)}
+.cohort-option:hover,.cohort-option:has(input:checked){border-color:var(--accent)}
+.cohort-option input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--accent)}
+.cohort-option.cohort-full{cursor:not-allowed;opacity:.72}
+.cohort-text{display:grid;gap:4px;min-width:0;overflow-wrap:anywhere}
+.cohort-date{font-weight:700;text-transform:capitalize}
+.cohort-time small,.cohort-seats{color:var(--muted);font-size:14px}
+.choice-summary{max-width:640px}
+.choice-conflict p{margin:6px 0}
+#topic-filter{max-width:100%}
+.account-enrollments h2{margin:0 0 12px}
+.enrollment-list{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+.enrollment-item{display:grid;gap:4px;border:var(--border);border-radius:var(--radius-control);background:var(--surface);padding:16px;overflow-wrap:anywhere}
+.enrollment-item>span{color:var(--muted);font-size:14px}
+.enrollment-item .cohort-date{color:var(--ink);font-size:15px}
+.enrollment-status{font-weight:700}
+.enrollment-active .enrollment-status{color:var(--success)}
+.enrollment-legacy{border-style:dashed}
+@media(prefers-reduced-motion:reduce){.cohort-option{transition:none}}
