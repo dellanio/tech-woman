@@ -129,12 +129,12 @@ test('retry legítimo: backoff 1min/5min, máximo 3 tentativas, segredo novo a c
  row=await j();assert.deepEqual([row.status,row.attempts],['unconfirmed',2]);assert.equal(row.wait>270&&row.wait<=300,true,'segundo retry em 5min');
  await db.query("update email_job set next_attempt_at=now()-interval '1 second'");
  const last=capture();const done=await email.runEmailWorkerOnce(email.createMemoryTransport(async m=>{last.messages.push(m);throw new email.TransportError('TRANSPORT_TIMEOUT');}));
- assert.deepEqual(done,{...zero,claimed:1,unconfirmed:1});row=await j();assert.deepEqual([row.status,row.attempts,row.wait],['unconfirmed',3,null]);
+ assert.deepEqual(done,{...zero,claimed:1,failed:1});row=await j();assert.deepEqual([row.status,row.attempts,row.wait],['failed',3,null],'terceira tentativa sem confirmação vira failed (retry 1min e 5min, depois failed)');
  await db.query("update email_job set lease_until=now()-interval '1 second'");assert.deepEqual(await email.runEmailWorkerOnce(capture().transport),zero,'esgotado');
  assert.equal(first.messages[0].secret===last.messages[0].secret,false);
  assert.equal(await identity.login('retry@example.invalid',first.messages[0].secret),null,'segredo antigo foi substituído');assert.ok(await identity.login('retry@example.invalid',last.messages[0].secret));
  const codes=(await db.query('select error_code,status from email_delivery_attempt order by created_at')).rows;
- assert.deepEqual(codes.map(c=>[c.status,c.error_code]),[['unconfirmed','TRANSPORT_ERROR'],['unconfirmed','TRANSPORT_TIMEOUT'],['unconfirmed','TRANSPORT_TIMEOUT']]);
+ assert.deepEqual(codes.map(c=>[c.status,c.error_code]),[['unconfirmed','TRANSPORT_ERROR'],['unconfirmed','TRANSPORT_TIMEOUT'],['failed','TRANSPORT_TIMEOUT']]);
  assert.equal(await leaked(db,[poison,first.messages[0].secret,last.messages[0].secret]),false);
 }));
 
@@ -293,4 +293,53 @@ test('sem deadlock: cadastros, logins, trocas, resets, reenvios e dois workers e
  const settled=await Promise.allSettled(ops);assert.equal(settled.filter(r=>r.status==='rejected').length,0);
  for(let i=0;i<3;i++)await Promise.all([email.runEmailWorkerOnce(capture().transport),email.runEmailWorkerOnce(capture().transport)]);
  assert.equal((await db.query("select count(*)::int n from email_job where status in ('queued','sending')")).rows[0].n,0);
+}));
+
+test('I1: forgot em pending_activation não destrói ativação em andamento (temporário consumido com sessão limitada viva)',async()=>withDb(async({db})=>{
+ await register('ativ@example.invalid');const first=capture();await email.runEmailWorkerOnce(first.transport);
+ const m=first.messages[0];const uid=await idByEmail(db,m.to);
+ const limited=await identity.login(m.to,m.secret);assert.ok(limited);const before=await userRow(db,uid);
+ assert.deepEqual(await identity.requestPasswordForgot(m.to),{status:'received'});
+ assert.equal((await db.query('select count(*)::int n from email_job where user_id=$1',[uid])).rows[0].n,1,'nenhuma nova intenção enfileirada');
+ const again=capture();assert.deepEqual(await email.runEmailWorkerOnce(again.transport),zero);assert.equal(again.messages.length,0);
+ assert.deepEqual(await userRow(db,uid),before,'credencial e geração intactas');
+ const full=await identity.changePassword(limited.token,m.secret,synthetic());assert.ok(await identity.identitySession(full.token),'troca concluída com o temporário já em uso');
+}));
+
+test('I1: job de cadastro que chega depois do consumo do temporário é cancelado já na primeira tentativa',async()=>withDb(async({db})=>{
+ await register('tarde@example.invalid');const first=capture();await email.runEmailWorkerOnce(first.transport);
+ const m=first.messages[0];const uid=await idByEmail(db,m.to);
+ const limited=await identity.login(m.to,m.secret);assert.ok(limited);const before=await userRow(db,uid);
+ const job=await addJob(db,uid,'registration','queued');
+ const late=capture();assert.deepEqual(await email.runEmailWorkerOnce(late.transport),{...zero,claimed:1,cancelled:1});assert.equal(late.messages.length,0);
+ assert.equal(await jobStatus(db,job),'cancelled');assert.deepEqual(await userRow(db,uid),before);
+ assert.ok(await identity.identitySession(limited.token),'sessão limitada segue viva');
+ const full=await identity.changePassword(limited.token,m.secret,synthetic());assert.ok(await identity.identitySession(full.token));
+}));
+
+test('I1: temporário ainda não usado e emitido há menos de 15 minutos não é reemitido por forgot; depois disso sim',async()=>withDb(async({db})=>{
+ await register('recente@example.invalid');const first=capture();await email.runEmailWorkerOnce(first.transport);
+ const m=first.messages[0];const uid=await idByEmail(db,m.to);
+ await identity.requestPasswordForgot(m.to);
+ assert.equal((await db.query('select count(*)::int n from email_job where user_id=$1',[uid])).rows[0].n,1,'reemissão limitada por taxa');
+ assert.ok(await identity.login(m.to,m.secret),'o temporário original segue válido');
+ const stale=await register('antigo@example.invalid').then(()=>idByEmail(db,'antigo@example.invalid'));const old=capture();await email.runEmailWorkerOnce(old.transport);
+ await db.query("update app_user set temporary_expires_at=now()+interval '23 hours' where id=$1",[stale]);
+ await identity.requestPasswordForgot('antigo@example.invalid');
+ const next=capture();await email.runEmailWorkerOnce(next.transport);assert.equal(next.messages.length,1,'após 15 minutos o forgot volta a reemitir');
+}));
+
+test('R-spec: sending com lease vencido e 3 tentativas vira failed no claim, sem reemitir',async()=>withDb(async({db})=>{
+ await register('lease@example.invalid');const uid=await idByEmail(db,'lease@example.invalid');
+ await db.query("update email_job set status='sending',attempts=3,lease_owner=gen_random_uuid(),lease_until=now()-interval '1 second' where user_id=$1",[uid]);
+ const t=capture();assert.deepEqual(await email.runEmailWorkerOnce(t.transport),zero);assert.equal(t.messages.length,0);
+ assert.deepEqual((await db.query('select status,attempts from email_job where user_id=$1',[uid])).rows,[{status:'failed',attempts:3}]);
+}));
+
+test('R-spec: o texto orienta usar apenas o acesso mais recente (temporário e reset), com o segredo no corpo',async()=>withDb(async({db})=>{
+ const phrase='use apenas o acesso mais recente';
+ await register('texto@example.invalid');const temp=capture();await email.runEmailWorkerOnce(temp.transport);
+ const user=await addUser(db,{password:synthetic()});await identity.requestPasswordForgot(user.email);const reset=capture();await email.runEmailWorkerOnce(reset.transport);
+ assert.deepEqual([temp.messages.length,reset.messages.length],[1,1]);
+ for(const msg of [temp.messages[0],reset.messages[0]])assert.deepEqual([msg.kind,msg.text.toLowerCase().includes(phrase),msg.text.includes(msg.secret)],[msg.kind,true,true]);
 }));
