@@ -79,6 +79,13 @@ Qualquer outra transição sai 75. **Nenhuma** transição volta de uma fase pó
 | 12 | `cutover.py record-first-write` | — | tipo+hora do 1º write auditado acima do baseline (sem PII) |
 | 13 | release de código: novo `seal` (mesmo schema) → `cutover.py rebind` → (GitHub) `deploy.sh` **release** → `cutover.py register-release < atestado.json` | schema igual, imagem atestada | backup `pg_dump` antes de qualquer efeito; troca no lugar; rollback só para `last_good_pg_image` |
 
+Release (passo 13), ordem garantida pelo `deploy.sh`: gate → login/pull/verify → `release-check` (a web em execução tem de
+ser **exatamente** a `last_good_pg_image`, senão 76) → `pg_dump` (79) → `docker stop tech-woman-mailer` **e** prova
+`State.Running=false` (senão 77 e nada é trocado; web/mailer anteriores voltam e são verificados) → web anterior
+renomeada → web nova + smoke → mailer anterior posto de lado (falha = 77 dito) → mailer novo. Rollback: remove a web
+nova, renomeia de volta o container anterior (== `last_good`), `start`, **smoke**, `start` do mailer; qualquer falha ⇒
+página 503 e 84 com diagnóstico, nunca “reiniciado” sem prova. O mailer precisa existir (criado no `open-writes`).
+
 Inventário de escritores (passo 5), formato fechado (campo a mais/menos = 64):
 ```json
 {"schema":1,"candidate_sha256":"<sha256 do candidate.json>","complete":true,"decision_ref":"dec-...",
@@ -90,6 +97,12 @@ Inventário de escritores (passo 5), formato fechado (campo a mais/menos = 64):
 `external` só podem ser **atestados** pelo operador e ficam registrados em `freeze.attested_only`. Root sempre pode
 escrever no arquivo: `chmod a-w`/`chattr +i` barram escritores acidentais e a revalidação antes do snapshot detecta
 qualquer escrita depois do freeze (80) — não é garantia contra root.
+
+Restauração (freeze recusado, `abort`, falha antes da escrita no PG): a página 503 é só **estacionada** (`stop` +
+`rename tech-woman → tech-woman-maintenance`); o original assume o nome, é iniciado e precisa responder ao smoke interno
+(`TW_SMOKE_ATTEMPTS`/`TW_SMOKE_DELAY`); só então a manutenção estacionada é removida. Se o original não voltar saudável, ele
+volta a `tech-woman-sqlite-original`, a manutenção volta a `tech-woman` e o comando sai **84** (“NOT restored …
+maintenance page kept”); no `abort` a fase não muda e o SQLite continua protegido contra escrita.
 
 ## 5. Códigos de saída
 
@@ -104,15 +117,15 @@ qualquer escrita depois do freeze (80) — não é garantia contra root.
 | 73 | fora da janela autorizada | nenhum |
 | 74 | imagem inválida (arch, label, entrypoints, env files) ou registry | nenhum |
 | 75 | fase não permite o comando | nenhum |
-| 76 | web em execução não é imagem PG conhecida (ex.: SQLite) | nunca é reiniciada nem renomeada |
-| 77 | migração/smoke falhou; recuperação PG-compatível aplicada (`last_good`) ou manutenção mantida | nunca SQLite |
+| 76 | web em execução não é imagem PG conhecida (ex.: SQLite) **ou** não é exatamente o `last_good_pg_image` | nunca é reiniciada nem renomeada |
+| 77 | release parado e **verificado**: mailer não provado parado (nada trocado, web e mailer anteriores de volta e respondendo), ou web nova falhou e o `last_good` voltou e respondeu ao smoke, ou sem `last_good` a página 503 subiu | nunca SQLite |
 | 78 | evidência de recuperação ausente no `seal` | nenhum |
 | 79 | backup `pg_dump` pré-release falhou | nada parado/renomeado |
 | 80 | escritor presente / inventário incompleto / SQLite mudou desde o freeze | serviço original restaurado |
 | 81 | snapshot A≠B ou integridade/FK | fase continua `frozen` |
 | 82 | import-verify falhou | abort pré-write, SQLite restaurado |
-| 83 | comando do host falhou | serviço original restaurado (ou 84) |
-| 84 | **restauração falhou**: original guardado como `tech-woman-sqlite-original`; ação manual | nunca alegado como disponível |
+| 83 | comando do host falhou | serviço original restaurado e respondendo (ou 84) |
+| 84 | **NÃO restaurado**: freeze/abort — original não voltou saudável, guardado como `tech-woman-sqlite-original`, página 503 devolvida (`maintenance page kept`) ou, se nem ela voltou, dito explicitamente; release — `last_good` não respondeu ou o mailer não reiniciou, página 503 tentada e o resultado relatado | nunca alegado como disponível; ação manual |
 | 85 | PostgreSQL vivo ilegível: nada restaurado, RPO declarado, decisão do operador exigida | fase `recovering` (deploys negados) |
 | 86 | cópia restaurada ≠ base viva (ou dados comprometidos ausentes) | nada aceito |
 | 87/88 | preflight: alguma falha / algo pendente | — |
@@ -128,15 +141,18 @@ qualquer escrita depois do freeze (80) — não é garantia contra root.
   `cutover.py recover --mode reconcile` faz **agora** um `pg_dump -Fc` completo da base íntegra
   (`TW_BACKUP_DIR/recovery-<seq>-<ts>.dump`, 0600), restaura numa base **nova** `<db>_restore_<ts>_<seq>` e confronta
   linha a linha (todas as tabelas de todos os schemas, chave primária + hash da linha inteira, sequences e o schema
-  sem comentários). Só com igualdade total a fase volta a `pg_write_open` com `recovery{dump_sha256, restored_db, ...}`.
+  — este comparado depois do **mesmo** round trip do PostgreSQL, ver abaixo). Só com igualdade total a fase volta a `pg_write_open` com `recovery{dump_sha256, restored_db, ...}`.
   Qualquer escrita entre o dump e o confronto dá 86 (rodar em manutenção).
 - **Dump antigo (diário) ≠ perda zero:** `cutover.py recover --mode compare --dump <nome.dump>` restaura o dump dado
   em base isolada e relata por tabela `only_live / only_restored / changed` (só nomes e contagens). Provado: a reserva
   feita depois do dump não existe na cópia e o cancelamento posterior (UPDATE sem id novo) aparece como `changed`.
 - **Sem base viva legível:** 85 com o RPO declarado no candidato e o dump mais novo; nada é restaurado e nenhum sucesso
   é alegado — restaurar um dump antigo é decisão explícita do operador (`decision_ref`).
-- Limite: o confronto de schema ignora parênteses porque dump/restore achata `AND` aninhados em CHECKs; prova que todo
-  objeto voltou, não que expressões estão escritas igual. Bases isoladas ficam para inspeção; o operador as remove.
+- Schema: dump/restore re-analisa CHECKs (achata `AND` aninhados), então a base viva é comparada depois de UM round trip
+  `pg_dump --schema-only` → base scratch `<db>_canon_<ts>` → impressão (scratch e dump temporário removidos pela própria
+  ferramenta). Nada é apagado do texto além de comentários e da linha `estrict`: `a AND (b OR c)` ≠ `(a AND b) OR c`
+  (provado em PG16: CHECK reagrupado com os mesmos dados ⇒ `schema_equal:false`, 86). Bases `<db>_restore_*` ficam para
+  inspeção; o operador as remove.
 
 ## 7. Preflight (C8, S12)
 
