@@ -73,7 +73,7 @@ class StagedOps:
         self.ops = root / 'lib'
         self.host = root / 'host'
         shutil.copytree(OPS_SOURCE, self.ops, ignore=shutil.ignore_patterns('__pycache__'))
-        for name in ('lock', 'state', 'app', 'app/dados', 'fake', 'env'):
+        for name in ('lock', 'state', 'app', 'app/dados', 'fake', 'env', 'backups'):
             (self.host / name).mkdir(parents=True)
         self.fake = self.host / 'fake'
         self.env_dir = self.host / 'env'
@@ -90,6 +90,9 @@ class StagedOps:
             "TW_BASH='%s'" % BASH,
             "TW_DB_FILE='%s'" % (self.host / 'app/dados/tech-woman.db').as_posix(),
             "TW_NETWORK='testnet'",
+            "TW_BACKUP_DIR='%s'" % (self.host / 'backups').as_posix(),
+            "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='techwoman'", "TW_PG_DUMP_USER='techwoman_backup'",
+            'TW_SMOKE_ATTEMPTS=2', 'TW_SMOKE_DELAY=0',
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
             'TW_STATE_OWNER_UID=%d' % (os.getuid() if os.name == 'posix' else 0),
             'TW_STATE_MODE_CHECK=%d' % (1 if os.name == 'posix' else 0), '']).encode('utf-8')))

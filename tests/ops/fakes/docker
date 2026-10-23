@@ -47,7 +47,14 @@ case "$sub" in
         [[ -f "$d/node.out.$n" ]] && cat "$d/node.out.$n"
         exit "$(rc_of "node.rc.$n" 0)" ;;
     esac ;;
-  exec) exit "$(rc_of exec.rc 0)" ;;
+  exec)
+    for arg in "$@"; do
+      if [[ "$arg" == pg_dump ]]; then
+        [[ -f "$d/dump.bytes" ]] && cat "$d/dump.bytes"
+        exit "$(rc_of pgdump.rc 0)"
+      fi
+    done
+    exit "$(rc_of exec.rc 0)" ;;
   login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
   pull) exit "$(rc_of pull.rc 0)" ;;
 esac

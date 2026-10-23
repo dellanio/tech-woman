@@ -170,6 +170,26 @@ def _imported(host):
     return candidate, state
 
 
+OLD_PG_DIGEST = 'sha256:' + 'a' * 64
+OLD_PG_IMAGE = 'ghcr.io/dellanio/tech-woman@' + OLD_PG_DIGEST
+NEW_DIGEST = 'sha256:' + '2' * 64
+
+
+def _pg_open(host, last_good=OLD_PG_DIGEST, known=(OLD_PG_DIGEST,), schema_aggregate=None):
+    """Host already on PostgreSQL (pg_write_open) running OLD_PG_IMAGE; the next release is NEW_DIGEST."""
+    candidate, state = _imported(host)
+    state.transition('activated', NOW_FIXED, activation={'digest': OLD_PG_DIGEST, 'container': 'tech-woman-web-pg', 'at': NOW_FIXED})
+    state.transition('smoke_ok', NOW_FIXED)
+    aggregate = schema_aggregate or candidate['migrations']['aggregate_sha256']
+    state.transition('pg_write_open', NOW_FIXED, known_pg_images=list(known), last_good_pg_image=last_good,
+                     schema_migrations={'aggregate_sha256': aggregate},
+                     first_pg_write={'at': None, 'kind': None, 'baseline': {}})
+    (host.ops.fake / 'container-inspect').write_bytes(('%s|%s\n' % (OLD_PG_IMAGE, ORIGINAL_IP)).encode())
+    (host.ops.fake / 'dump.bytes').write_bytes(b'PGDMP-synthetic-test-dump')
+    return candidate, state
+
+
+Host.pg_open = _pg_open
 Host.imported = _imported
 Host.snapshotted = _snapshotted
 Host.frozen = _frozen
