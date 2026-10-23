@@ -39,7 +39,7 @@ export async function confirmRegistration(participantId: string, _email: string,
 }
 
 // ---- Worker de e-mail (WP-002 Task 2, R4) ----
-export type EmailKind = 'registration' | 'temporary_password' | 'password_reset';
+export type EmailKind = 'registration' | 'temporary_password' | 'password_reset' | 'reservation';
 /** `secret` só existe aqui, em memória: nunca em banco, outbox, log ou auditoria. */
 export type EmailMessage = { jobId: string; kind: EmailKind; to: string; subject: string; text: string; secret: string };
 export type TransportResult = { status: 'accepted' | 'simulated'; providerId?: string };
@@ -79,7 +79,9 @@ function mailerPool(): Pool {
 }
 export async function closeEmailPool(): Promise<void> { const current = pool; pool = undefined; if (current) await current.end(); }
 
-const compose = (kind: EmailKind, secret: string): { subject: string; text: string } => kind === 'password_reset'
+const compose = (kind: EmailKind, secret: string): { subject: string; text: string } => kind === 'reservation'
+  ? { subject: 'Confirmação de reserva | Tech Woman', text: 'Sua reserva foi registrada no Tech Woman. Consulte sua conta para conferir a mentora, a turma e os horários em America/Recife. O estado atual na sua conta prevalece se houver alteração ou cancelamento posterior.' }
+  : kind === 'password_reset'
   ? { subject: 'Redefinição de senha | Tech Woman', text: `Seu código de redefinição de senha (válido por 30 minutos, uso único): ${secret}\nSe recebeu mais de um e-mail de acesso, use apenas o acesso mais recente.` }
   : { subject: 'Seu acesso | Tech Woman', text: `Sua senha temporária (válida por 24 horas) é: ${secret}\nEntre com ela e defina sua senha definitiva.\nSe recebeu mais de um e-mail de acesso, use apenas o acesso mais recente.` };
 
@@ -106,8 +108,8 @@ export async function runEmailWorkerOnce(transport: EmailTransport, workerId: st
     if (!claim) break;
     result.claimed++;
     const kind = claim.kind as EmailKind;
-    const secret = kind === 'password_reset' ? generateResetToken() : generateTemporaryPassword();
-    const hash = kind === 'password_reset' ? tokenDigest(secret) : await hashPassword(secret);
+    const secret = kind === 'reservation' ? '' : kind === 'password_reset' ? generateResetToken() : generateTemporaryPassword();
+    const hash = kind === 'reservation' ? null : kind === 'password_reset' ? tokenDigest(secret) : await hashPassword(secret);
     const begin = (await db.query('select * from internal.email_emit_begin($1::uuid,$2::uuid,$3)', [claim.job_id, workerId, hash])).rows[0];
     if (begin?.outcome === 'cancelled') { result.cancelled++; continue; }
     if (begin?.outcome !== 'issued') { result.stale++; continue; }
