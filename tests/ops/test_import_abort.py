@@ -29,7 +29,8 @@ class ImportTestCase(unittest.TestCase):
     def importer_says(self, first, second=None, rc1=0, rc2=0):
         fake = self.host.ops.fake
         (fake / 'node.count').unlink(missing_ok=True)
-        for n, (out, rc) in enumerate(((first, rc1), (second, rc2)), start=1):
+        (fake / 'node.out.1').write_bytes(b'Migrations aplicadas.' + bytes([10]))
+        for n, (out, rc) in enumerate(((first, rc1), (second, rc2)), start=2):
             if out is not None:
                 (fake / ('node.out.%d' % n)).write_bytes((out if isinstance(out, str) else json.dumps(out)).encode() + b'\n')
             (fake / ('node.rc.%d' % n)).write_bytes(str(rc).encode())
@@ -56,8 +57,12 @@ class ImportVerifyTests(ImportTestCase):
         self.assertEqual((record['report_pass'], record['run_id'], record['source_checksum']),
                          (True, RUN_ID, state.data['snapshot']['sha256']))
         runs = [a for a in docker(self.host.cutover_calls()) if a[0] == 'run']
-        self.assertEqual(len(runs), 2)
-        for args in runs:
+        self.assertEqual(len(runs), 3)  # migrate (idempotent), import, import again
+        migrate_args = runs[0]
+        self.assertEqual(migrate_args[migrate_args.index('--entrypoint') + 1], 'node')
+        self.assertEqual(migrate_args[migrate_args.index('ghcr.io/dellanio/tech-woman@' + DIGEST) + 1:],
+                         ['--import', 'tsx', 'scripts/migration/migrate.ts'])
+        for args in runs[1:]:
             self.assertEqual(args[args.index('--network') + 1], 'testnet')
             self.assertTrue(args[args.index('--env-file') + 1].endswith('migrator.env'))
             self.assertEqual(args[args.index('--entrypoint') + 1], 'node')

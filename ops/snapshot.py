@@ -5,7 +5,7 @@ The logical checksum is byte-for-byte the one scripts/migration/snapshot.py --re
 stores as migration_run.source_checksum; a test compares both on the same file so they cannot drift apart.
 Reports are public by construction: counts and checksums, never a cell value.
 """
-import base64, hashlib, json, os, pathlib, sqlite3, sys
+import base64, contextlib, hashlib, json, os, pathlib, sqlite3, sys
 
 
 class SnapshotError(Exception):
@@ -40,7 +40,7 @@ def _checks(connection):
 def logical(path):
     """Checksum of the whole database plus public per-table counts (read-only connection)."""
     tables, counts = [], {}
-    with _connect(path) as db:
+    with contextlib.closing(_connect(path)) as db:
         db.execute('BEGIN')
         _checks(db)
         for name, ddl in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").fetchall():

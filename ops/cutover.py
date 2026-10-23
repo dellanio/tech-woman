@@ -493,6 +493,85 @@ def cmd_snapshot(paths, flags):
     print(json.dumps({'phase': 'snapshotted', 'counts': first['counts']}))
 
 
+def _abort(paths, state, reason, now):
+    """Pre-write abort: SQLite service back exactly as it was, files writable again, evidence kept."""
+    if (state.phase, 'aborted_pre_write') not in TRANSITIONS:
+        raise StateError(75, 'phase %s cannot be aborted' % state.phase)
+    hostops, freeze = _sibling('hostops'), _sibling('freeze')
+    runner = hostops.Runner(paths)
+    original = state.data.get('freeze', {}).get('original_container', freeze.ORIGINAL)
+    if original != freeze.ORIGINAL:
+        raise StateError(70, 'unexpected original container name in the state')
+    for path in _db_files(paths):
+        try:
+            runner.run(['chattr', '-i', str(path)])
+        except hostops.HostError:
+            pass
+        os.chmod(path, os.stat(path).st_mode | 0o200)
+    try:
+        runner.run(['docker', 'rm', '-f', freeze.CONTAINER])
+        runner.run(['docker', 'rename', original, freeze.CONTAINER])
+        runner.run(['docker', 'start', freeze.CONTAINER])
+    except hostops.HostError as error:
+        raise StateError(83, 'could not restore the original service: %s' % error)
+    state.transition('aborted_pre_write', now, abort={'reason': reason, 'at': now})
+
+
+def cmd_abort(paths, flags):
+    reason = flags.get('reason', '')
+    if not re.fullmatch(r'[a-z0-9-]{1,40}', reason):
+        raise StateError(64, '--reason must be 1..40 characters of [a-z0-9-]')
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    _abort(paths, state, reason, _now())
+    print(json.dumps({'phase': 'aborted_pre_write', 'reason': reason}))
+
+
+IMPORT_KEYS = ['counts', 'dryRun', 'idempotent', 'issues', 'runId', 'status']
+
+
+def _import_report(text):
+    lines = [line for line in text.splitlines() if line.strip()]
+    try:
+        report = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        raise ValueError('importer printed no JSON report')
+    if type(report) is not dict or sorted(report) != IMPORT_KEYS or report['dryRun'] is not False             or type(report['idempotent']) is not bool or report['status'] != 'imported'             or not _is_int(report['issues']) or report['issues'] != 0 or type(report['counts']) is not dict             or not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', str(report['runId'])):
+        raise ValueError('importer report is not a clean, complete import')
+    return report
+
+
+def cmd_import_verify(paths, flags):
+    """Migrate the target, import the final snapshot, then import it again: the second run must be idempotent
+    for the same run id, which proves migration_run.source_checksum equals this snapshot's logical checksum."""
+    manifest = _manifest()
+    state, _ = _sealed_state(paths, manifest, 'snapshotted')
+    hostops = _sibling('hostops')
+    runner = hostops.Runner(paths)
+    image = 'ghcr.io/dellanio/tech-woman@' + state.data['staged']['digest']
+    private = pathlib.Path(paths['TW_STATE_DIR']) / 'private'
+    base = ['docker', 'run', '--rm', '--network', paths['TW_NETWORK'], '--env-file',
+            str(pathlib.Path(paths['TW_ENV_DIR']) / 'migrator.env'), '--mount',
+            'type=bind,src=%s,dst=/snapshot,readonly' % private.as_posix(), '--workdir', '/tools',
+            '--memory', '512m', '--cpus', '1', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
+            '--entrypoint', 'node', image, '--import', 'tsx']
+    target = '/snapshot/' + state.data['snapshot']['file_b']
+    now = _now()
+    try:
+        runner.run(base + ['scripts/migration/migrate.ts'], error='migrations could not be applied')
+        first = _import_report(runner.run(base + ['scripts/migration/import.ts', target],
+                                          error='importer refused the snapshot').stdout)
+        second = _import_report(runner.run(base + ['scripts/migration/import.ts', target],
+                                           error='importer refused the repeated snapshot').stdout)
+        if first['idempotent'] or not second['idempotent'] or second['runId'] != first['runId']:
+            raise ValueError('the repeated import did not recognise the snapshot checksum')
+    except (hostops.HostError, ValueError) as error:
+        _abort(paths, state, 'import-verification-failed', now)
+        raise StateError(82, 'import verification failed: %s' % error)
+    state.transition('imported', now, **{'import': {'source_checksum': state.data['snapshot']['sha256'],
+                                                    'report_pass': True, 'run_id': first['runId'], 'at': now}})
+    print(json.dumps({'phase': 'imported', 'run_id': first['runId']}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -500,8 +579,10 @@ COMMANDS = {
     'register-stage': lambda paths, flags: cmd_register_stage(paths),
     'freeze': cmd_freeze,
     'snapshot': lambda paths, flags: cmd_snapshot(paths, flags),
+    'import-verify': cmd_import_verify,
+    'abort': cmd_abort,
 }
-FLAG_NAMES = {'freeze': ['quiet-seconds']}
+FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason']}
 
 
 def main(argv):
