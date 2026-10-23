@@ -130,3 +130,34 @@ ALTER FUNCTION internal.validate_agenda_state() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.agenda_row_check() OWNER TO techwoman_owner;
 ALTER FUNCTION internal.agenda_reject(text) OWNER TO techwoman_owner;
 REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
+--> statement-breakpoint
+-- Editora (Beatriz/pgAdmin): role de domínio, nunca dona de objeto. Criada NOLOGIN se ausente e permitido; LOGIN/senha só pelo operador.
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_beatriz') THEN
+  IF NOT (SELECT rolsuper OR rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN
+   RAISE EXCEPTION 'techwoman_beatriz ausente: aplicar scripts/migration/agenda-privileges.sql como operador antes desta migration';
+  END IF;
+  CREATE ROLE techwoman_beatriz NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_beatriz' AND (rolbypassrls OR rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+  RAISE EXCEPTION 'techwoman_beatriz não pode ter BYPASSRLS/privilégios de cluster';
+ END IF;
+END $$;
+--> statement-breakpoint
+-- Views seguras: só campos de perfil permitidos, avaliadas com privilégios/RLS de quem consulta.
+CREATE VIEW public.participant_editor WITH (security_invoker = true, security_barrier = true) AS
+ SELECT id, goal, moment, interests, skills, area, active, version, created_at, updated_at FROM public.participant;
+CREATE VIEW public.mentor_editor WITH (security_invoker = true, security_barrier = true) AS
+ SELECT id, display_name, trajectory, specialties, availability, capacity, active, demo, version, created_at, updated_at FROM public.mentor;
+--> statement-breakpoint
+-- Grants por coluna da editora: sem DELETE destrutivo (só mentor_topic vazio), sem TRUNCATE/REFERENCES/TRIGGER, sem id/FK de identidade.
+GRANT USAGE ON SCHEMA public TO techwoman_beatriz;
+GRANT SELECT, INSERT (slug, name, description, active), UPDATE (name, description, active) ON public.topic TO techwoman_beatriz;
+GRANT SELECT, INSERT (mentor_id, topic_id, position), UPDATE (position), DELETE ON public.mentor_topic TO techwoman_beatriz;
+GRANT SELECT, INSERT (mentor_topic_id, starts_at, ends_at, capacity, status), UPDATE (starts_at, ends_at, capacity, status) ON public.cohort TO techwoman_beatriz;
+GRANT SELECT, INSERT (participant_id, cohort_id, status), UPDATE (status) ON public.enrollment TO techwoman_beatriz;
+GRANT SELECT (id, goal, moment, interests, skills, area, active, version, created_at, updated_at), UPDATE (goal, moment, interests, skills, area, active) ON public.participant TO techwoman_beatriz;
+GRANT SELECT (id, display_name, trajectory, specialties, availability, capacity, active, demo, version, created_at, updated_at), UPDATE (display_name, trajectory, specialties, availability, capacity, active) ON public.mentor TO techwoman_beatriz;
+GRANT SELECT, UPDATE (goal, moment, interests, skills, area, active) ON public.participant_editor TO techwoman_beatriz;
+GRANT SELECT, UPDATE (display_name, trajectory, specialties, availability, capacity, active) ON public.mentor_editor TO techwoman_beatriz;
+GRANT USAGE ON SEQUENCE public.topic_id_seq, public.mentor_topic_id_seq, public.cohort_id_seq, public.enrollment_id_seq TO techwoman_beatriz;

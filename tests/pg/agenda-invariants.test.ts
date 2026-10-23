@@ -162,8 +162,10 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
   for(const t of ['participant','mentor','enrollment','cohort','topic','match'])await denied(`delete from ${t} where id=0`);
   await denied("update enrollment set cohort_id=cohort_id where id=$1",[e]);await denied("insert into topic(id,slug,name) values(999,'forcado','F')");
   for(const sql of ['truncate topic','alter table topic disable trigger all','alter table cohort disable trigger agenda_validate','create table public.editora_x(id int)','drop trigger agenda_guard on topic',
-   'set role techwoman_owner',"select setval('topic_id_seq',100)",'select internal.domain_protected(\'participant\',1)'])await denied(sql);
+   "select setval('topic_id_seq',100)",'select internal.domain_protected(\'participant\',1)'])await denied(sql);
  });
+ // SET ROLE é checado contra session_user (superusuário no teste); a propriedade real é não pertencer a roles privilegiadas.
+ for(const target of [OWNER,'techwoman_runtime','techwoman_mailer'])assert.equal((await db.query("select pg_has_role($1,$2,'MEMBER') m",[EDITOR,target])).rows[0].m,false,`editora não é membro de ${target}`);
  const viewCols=(await db.query("select table_name,string_agg(column_name,',' order by column_name) cols from information_schema.columns where table_name in ('participant_editor','mentor_editor') group by table_name order by table_name")).rows;
  for(const v of viewCols)assert.doesNotMatch(v.cols,/email|token|user_id|consent|hash/,`${v.table_name} sem colunas sensíveis`);
  assert.equal(viewCols.length,2);
