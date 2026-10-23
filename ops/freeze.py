@@ -116,25 +116,64 @@ def _scan_cron(paths):
             raise Refusal(83, 'cannot read the cron location %s, so it cannot be proven free of writers' % root.name)
 
 
-def _restore(runner, raised):
-    """Put the original service back. Returns the commands that FAILED (empty list = restored)."""
-    steps = [['docker', 'rm', '-f', CONTAINER], ['docker', 'rename', ORIGINAL, CONTAINER],
-             ['docker', 'start', CONTAINER]] if raised else [['docker', 'start', CONTAINER]]
-    failed = []
-    for argv in steps:
-        try:
-            runner.run(argv)
-        except hostops.HostError:
-            failed.append(' '.join(argv[1:]))
-    return failed
+PARKED = 'tech-woman-maintenance'
+SMOKE_SCRIPT = "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 
-def _back_out(runner, raised, reason, code):
-    failed = _restore(runner, raised)
-    if failed:
-        raise Refusal(84, 'NOT restored (%s): the original container is kept as %s and the public page may be '
-                          'down or in maintenance; operator action required. Original reason: %s'
-                      % (', '.join(failed), ORIGINAL, reason))
+def _ok(runner, argv):
+    try:
+        runner.run(argv)
+        return True
+    except hostops.HostError:
+        return False
+
+
+def healthy(runner, paths):
+    """The container named tech-woman answers GET / from inside (attempts/delay from paths.env)."""
+    attempts, delay = int(paths.get('TW_SMOKE_ATTEMPTS', '45')), float(paths.get('TW_SMOKE_DELAY', '2'))
+    for attempt in range(attempts):
+        if _ok(runner, ['docker', 'exec', CONTAINER, 'node', '-e', SMOKE_SCRIPT]):
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    return False
+
+
+def restore_original(runner, paths, maintenance_up):
+    """Bring the original SQLite service back WITHOUT ever leaving the address empty.
+
+    The maintenance container is only parked (stopped + renamed); it is removed after the original took the name,
+    started and answered its smoke. Any failure puts the original back under its kept name and the maintenance page
+    back under `tech-woman`. Returns None when restored, otherwise an honest description of what is serving now.
+    """
+    if maintenance_up and not (_ok(runner, ['docker', 'stop', CONTAINER])
+                               and _ok(runner, ['docker', 'rename', CONTAINER, PARKED])):
+        _ok(runner, ['docker', 'start', CONTAINER])
+        return 'the maintenance container could not be parked; maintenance page kept'
+    renamed = _ok(runner, ['docker', 'rename', ORIGINAL, CONTAINER])
+    if renamed and _ok(runner, ['docker', 'start', CONTAINER]) and healthy(runner, paths):
+        if maintenance_up:
+            _ok(runner, ['docker', 'rm', '-f', PARKED])  # a stopped leftover is harmless; the service is back
+        return None
+    if renamed:
+        _ok(runner, ['docker', 'stop', CONTAINER])
+        _ok(runner, ['docker', 'rename', CONTAINER, ORIGINAL])
+    if not maintenance_up:
+        return 'the original did not come back healthy and no maintenance page exists: the service is DOWN'
+    if _ok(runner, ['docker', 'rename', PARKED, CONTAINER]) and _ok(runner, ['docker', 'start', CONTAINER]):
+        return 'the original did not come back healthy; maintenance page kept (503)'
+    return 'the original did not come back healthy AND the maintenance page could not be put back: the address may be DOWN'
+
+
+def _back_out(runner, paths, raised, maintenance_up, reason, code):
+    if raised:
+        problem = restore_original(runner, paths, maintenance_up)
+    else:  # the original never left its name: make sure it runs and answers
+        problem = None if (_ok(runner, ['docker', 'start', CONTAINER]) and healthy(runner, paths)) else \
+            'the original service does not answer after the refused freeze: the service is DOWN'
+    if problem:
+        raise Refusal(84, 'NOT restored: %s. The original container is kept as %s; operator action required. '
+                          'Original reason: %s' % (problem, ORIGINAL, reason))
     raise Refusal(code, reason)
 
 
@@ -151,7 +190,7 @@ def freeze(paths, quiet_seconds, writers):
     image, _, ip = info.partition('|')
     if not (re.fullmatch(r'[A-Za-z0-9./:_@-]+', image) and re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', ip)):
         raise Refusal(83, 'unexpected container description')
-    raised = False
+    raised = maintenance_up = False
     try:
         runner.run(['docker', 'stop', CONTAINER], error='cannot stop the running service')
         runner.run(['docker', 'rename', CONTAINER, ORIGINAL], error='cannot keep the original container')
@@ -160,6 +199,7 @@ def freeze(paths, quiet_seconds, writers):
                     '--ip', ip, '--network-alias', 'app', '--memory', '64m', '--cpus', '0.1',
                     '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--entrypoint', 'node', image,
                     '-e', MAINTENANCE_SCRIPT], error='cannot start the maintenance container')
+        maintenance_up = True
         names = runner.run(['docker', 'ps', '--format', '{{.Names}}']).stdout.split()
         if any(name.startswith('tech-woman-') and name != ORIGINAL for name in names):
             raise Refusal(80, 'another tech-woman container is running (mailer or job)')
@@ -196,9 +236,9 @@ def freeze(paths, quiet_seconds, writers):
         digest = source_digest(db)
         immutable = write_protect(runner, db)
     except hostops.HostError as error:
-        _back_out(runner, raised, str(error), error.code)
+        _back_out(runner, paths, raised, maintenance_up, str(error), error.code)
     except Refusal as refusal:
-        _back_out(runner, raised, str(refusal), refusal.code)
+        _back_out(runner, paths, raised, maintenance_up, str(refusal), refusal.code)
     return {'original_container': ORIGINAL, 'original_image': image, 'ip': ip, 'quiet_seconds': quiet_seconds,
             'writers_checked': list(WRITERS), 'db_sha256': digest, 'write_protected': True, 'immutable': immutable,
             'attested_only': [w['id'] for w in writers if w['kind'] in ATTESTED_ONLY_KINDS]}

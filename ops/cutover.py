@@ -534,18 +534,17 @@ def _abort(paths, state, reason, now):
     original = state.data.get('freeze', {}).get('original_container', freeze.ORIGINAL)
     if original != freeze.ORIGINAL:
         raise StateError(70, 'unexpected original container name in the state')
-    for path in _db_files(paths):
+    for path in _db_files(paths):  # the original application needs its files writable to come back
         try:
             runner.run(['chattr', '-i', str(path)])
         except hostops.HostError:
             pass
         os.chmod(path, os.stat(path).st_mode | 0o200)
-    try:
-        runner.run(['docker', 'rm', '-f', freeze.CONTAINER])
-        runner.run(['docker', 'rename', original, freeze.CONTAINER])
-        runner.run(['docker', 'start', freeze.CONTAINER])
-    except hostops.HostError as error:
-        raise StateError(83, 'could not restore the original service: %s' % error)
+    problem = freeze.restore_original(runner, paths, maintenance_up=True)
+    if problem:
+        freeze.write_protect(runner, paths['TW_DB_FILE'])  # nothing restored: the frozen source stays protected
+        raise StateError(84, 'NOT restored: %s. The original container is kept as %s; the pre-write abort is NOT '
+                             'recorded; operator action required.' % (problem, freeze.ORIGINAL))
     state.transition('aborted_pre_write', now, abort={'reason': reason, 'at': now})
 
 

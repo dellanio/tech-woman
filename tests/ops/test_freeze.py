@@ -270,7 +270,7 @@ class FreezeRestoreSafetyTests(FreezeTestCase):
     def test_an_original_that_does_not_come_back_healthy_puts_the_maintenance_page_back_with_84(self):
         cases = {
             'original fails its smoke': {'exec-tech-woman.rc.1': b'1', 'exec-tech-woman.rc.2': b'1'},
-            'original does not start': {'start.tech-woman.rc': b'1'},
+            'original does not start': {'start.rc.1': b'1'},  # only the first start (the original's) fails
             'original cannot take the name': {'rename.tech-woman-sqlite-original.rc': b'1'},
         }
         for name, fake in cases.items():
@@ -299,9 +299,10 @@ class FreezeRestoreFailureTests(FreezeTestCase):
         self.assertIn('tech-woman-sqlite-original', done.stderr)
         self.assertEqual(self.state().phase, 'prepared')
         self.assertEqual(self.state().seq, 2)
-        # a later successful restore path is unaffected: the original is still where freeze put it
-        self.assertTrue(any(a[:2] == ['rename', 'tech-woman-sqlite-original']
-                            for a in docker(self.host.cutover_calls())))
+        # parking the maintenance page failed, so the original was never moved: it is still where freeze put it
+        self.assertFalse(any(a[:2] == ['rename', 'tech-woman-sqlite-original']
+                             for a in docker(self.host.cutover_calls())))
+        self.assertIn('maintenance page kept', done.stderr)
 
 
 if __name__ == '__main__':
