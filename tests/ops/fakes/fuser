@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Exit status comes from $TW_FAKE_DIR/fuser.rc (default 1 = no process holds the file).
 source "$(dirname "$0")/_common.sh"
 tw_log fuser false "$@"
-exit 0
+d=${TW_FAKE_DIR:-/nonexistent}
+if [[ -f "$d/fuser.rc" ]]; then
+  [[ "$(cat "$d/fuser.rc")" == 0 ]] && echo "/var/www/tech-woman/dados/tech-woman.db: 4242" >&2
+  exit "$(cat "$d/fuser.rc")"
+fi
+exit 1

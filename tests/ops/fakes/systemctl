@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
+# Read-only inspection only; anything else is a tripwire. Output comes from $TW_FAKE_DIR/timers.
 source "$(dirname "$0")/_common.sh"
+case "${1:-}" in
+  list-timers|list-unit-files|list-units|is-active)
+    tw_log systemctl false "$@"
+    [[ -f "${TW_FAKE_DIR:-/nonexistent}/timers" ]] && cat "$TW_FAKE_DIR/timers"
+    exit 0 ;;
+esac
 tw_log systemctl true "$@"
-echo "tripwire: systemctl must never run in tests" >&2
+echo "tripwire: systemctl ${1:-} must never run in tests" >&2
 exit 99
