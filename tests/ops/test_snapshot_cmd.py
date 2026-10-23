@@ -49,7 +49,7 @@ class SnapshotHappyPathTests(SnapshotCommandTestCase):
                 self.assertEqual(os.stat(copy).st_mode & 0o777, 0o600)
         self.assertTrue((self.private() / 'manifest.json').exists())
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), source_hash)
-        self.assertFalse(os.access(self.db, os.W_OK))
+        self.assertFalse((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertIn('chattr', [c['cmd'] for c in self.host.cutover_calls()])
         public = done.stdout + done.stderr
         self.assertNotIn('Ana Example', public)
@@ -74,7 +74,7 @@ class SnapshotRefusalTests(SnapshotCommandTestCase):
         thread.join()
         self.assertEqual(done.returncode, 81, done.stderr)
         self.assertEqual(self.state().phase, 'frozen')
-        self.assertTrue(os.access(self.db, os.W_OK))
+        self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertNotIn('chattr', [c['cmd'] for c in self.host.cutover_calls()])
 
     def test_corrupt_source_and_wrong_phase_are_refused_without_state_change(self):
@@ -87,7 +87,7 @@ class SnapshotRefusalTests(SnapshotCommandTestCase):
         done = self.host.cutover('snapshot')
         self.assertEqual(done.returncode, 81, done.stderr)
         self.assertEqual(self.state().phase, 'frozen')
-        self.assertTrue(os.access(self.db, os.W_OK))
+        self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
 
 
 if __name__ == '__main__':

@@ -42,7 +42,7 @@ class ImportTestCase(unittest.TestCase):
         self.assertTrue(state.data['abort']['reason'])
         self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.source_hash)
-        self.assertTrue(os.access(self.db, os.W_OK))
+        self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertTrue((self.host.state_dir / 'private' / '4-B.db').exists())
 
 
@@ -105,7 +105,7 @@ class AbortTests(ImportTestCase):
         state = self.state()
         self.assertEqual((state.phase, state.data['abort']['reason']), ('aborted_pre_write', 'operator-decision'))
         self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
-        self.assertTrue(os.access(self.db, os.W_OK))
+        self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.source_hash)
         self.assertTrue((self.host.state_dir / 'private' / '4-A.db').exists())
         self.assertIn('chattr', [c['cmd'] for c in self.host.cutover_calls()])

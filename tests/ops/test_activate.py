@@ -70,7 +70,7 @@ class ActivateTests(ActivateTestCase):
                 self.assertEqual(done.returncode, 77, done.stderr)
                 self.assertEqual(self.state().phase, 'aborted_pre_write')
                 self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
-                self.assertTrue(os.access(self.db, os.W_OK))
+                self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
 
     def test_activate_needs_the_imported_phase_and_a_valid_window(self):
         self.state().transition('activated', '2026-10-23T12:00:00Z')
