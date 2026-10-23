@@ -12,7 +12,8 @@ def migrations(directory):
     files = []
     for path in sorted(pathlib.Path(directory).glob('*.sql'), key=lambda p: p.name):
         files.append({'name': path.name, 'sha256': _sha256(path.read_bytes().replace(b'\r\n', b'\n'))})
-    return {'count': len(files), 'files': files}
+    aggregate = ''.join('%s:%s\n' % (f['name'], f['sha256']) for f in files)
+    return {'count': len(files), 'aggregate_sha256': _sha256(aggregate.encode()), 'files': files}
 
 
 def main(argv):
