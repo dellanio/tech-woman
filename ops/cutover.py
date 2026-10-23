@@ -535,7 +535,12 @@ def _import_report(text):
         report = json.loads(lines[-1])
     except (IndexError, ValueError):
         raise ValueError('importer printed no JSON report')
-    if type(report) is not dict or sorted(report) != IMPORT_KEYS or report['dryRun'] is not False             or type(report['idempotent']) is not bool or report['status'] != 'imported'             or not _is_int(report['issues']) or report['issues'] != 0 or type(report['counts']) is not dict             or not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', str(report['runId'])):
+    uuid = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    clean = (type(report) is dict and sorted(report) == IMPORT_KEYS and report['dryRun'] is False
+             and type(report['idempotent']) is bool and report['status'] == 'imported'
+             and _is_int(report['issues']) and report['issues'] == 0 and type(report['counts']) is dict
+             and re.fullmatch(uuid, str(report['runId'])) is not None)
+    if not clean:
         raise ValueError('importer report is not a clean, complete import')
     return report
 
