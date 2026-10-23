@@ -48,3 +48,12 @@ export async function mentorWithCohort(db:Q,o:{from?:number;hours?:number;capaci
  const mentor=await addMentor(db,{userId:o.userId});const topic=await addTopic(db);const mentorTopic=await addMentorTopic(db,mentor,topic);
  return {mentor,topic,mentorTopic,cohort:await addCohort(db,mentorTopic,o)};
 }
+/** Turma que já começou (simula o tempo passando): única fixture gravada sem triggers, numa transação própria do dono. */
+export async function startedCohort(url:string,mentorTopicId:string,o:{hoursAgo?:number;hours?:number;capacity?:number;status?:string}={}){
+ return withClients(url,[undefined],async c=>{
+  await c.query('begin');await c.query('set local session_replication_role=replica');
+  const from=new Date(Date.now()-(o.hoursAgo??1)*3600e3);
+  const id=await one(c,'insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,$4,$5) returning id',[mentorTopicId,from.toISOString(),new Date(from.getTime()+(o.hours??2)*3600e3).toISOString(),o.capacity??5,o.status??'open']);
+  await c.query('commit');return id;
+ });
+}

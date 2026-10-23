@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort} from './agenda-harness';
+import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -58,4 +58,41 @@ test('temas: no máximo dois vínculos por mentora, mesmo com UNIQUE de posiçã
   await c.query('update mentor_topic set position=3-position where mentor_id=$1',[mentor]);await c.query('commit');
  });
  assert.deepEqual((await db.query('select id::text,position from mentor_topic where mentor_id=$1 order by id',[mentor])).rows,[{id:a,position:2},{id:b,position:1}]);
+}));
+
+test('turma: criação só draft/open e futura; transições exatas do DER; cancelada é terminal; reabrir exige futura', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db),mt=await addMentorTopic(db,mentor,await addTopic(db));
+ for(const status of ['closed','cancelled']) await pgFails(addCohort(db,mt,{from:0,status}),'23514','agenda_invalid_transition');
+ await pgFails(db.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,now()-interval '1 minute',now()+interval '1 hour',5,'draft')",[mt]),'23514','agenda_not_future');
+ const c=await addCohort(db,mt,{from:0,status:'draft'});
+ const to=(status:string)=>db.query('update cohort set status=$2 where id=$1',[c,status]);
+ await pgFails(to('closed'),'23514','agenda_invalid_transition');
+ await to('open');await pgFails(to('draft'),'23514','agenda_invalid_transition');
+ await to('closed');await to('open');await to('closed');await to('cancelled');
+ for(const status of ['open','draft','closed']) await pgFails(to(status),'23514','agenda_invalid_transition');
+ await pgFails(db.query('update cohort set capacity=7 where id=$1',[c]),'23514','agenda_invalid_transition');
+ const started=await startedCohort(url,mt,{hoursAgo:1,status:'closed'});
+ await pgFails(db.query("update cohort set status='open' where id=$1",[started]),'23514','agenda_not_future');
+ await db.query("update cohort set status='cancelled' where id=$1",[started]);
+ const later=await addCohort(db,mt,{from:5});
+ await pgFails(db.query("update cohort set starts_at=now()-interval '1 hour' where id=$1",[later]),'23514','agenda_not_future');
+ await db.query('update cohort set starts_at=$2,ends_at=$3 where id=$1',[later,at(6),at(7)]);
+}));
+
+test('imutabilidade: ids, slug, mentora do vínculo e FKs de inscrição; tema do vínculo só troca sem turma', ()=>withDb(async ({db})=>{
+ const mentor=await addMentor(db),other=await addMentor(db),participant=await addParticipant(db),[t1,t2,t3]=[await addTopic(db),await addTopic(db),await addTopic(db)];
+ const used=await addMentorTopic(db,mentor,t1,1),free=await addMentorTopic(db,mentor,t2,2),c=await addCohort(db,used,{from:0});
+ await pgFails(db.query("update topic set slug='novo-slug' where id=$1",[t1]),'23514','agenda_immutable');
+ await pgFails(db.query('update topic set id=id+1000 where id=$1',[t1]),'23514','agenda_immutable');
+ await pgFails(db.query('update mentor_topic set mentor_id=$2 where id=$1',[free,other]),'23514','agenda_immutable');
+ await pgFails(db.query('update mentor_topic set topic_id=$2 where id=$1',[used,t3]),'23514','agenda_cohort_in_use');
+ await db.query('update mentor_topic set topic_id=$2 where id=$1',[free,t3]);
+ await pgFails(db.query('update cohort set id=id+1000 where id=$1',[c]),'23514','agenda_immutable');
+ await pgFails(db.query('update mentor set id=id+1000 where id=$1',[mentor]),'23514','agenda_immutable');
+ await pgFails(db.query('update participant set id=id+1000 where id=$1',[participant]),'23514','agenda_immutable');
+ const e=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[participant,c])).rows[0].id;
+ const other2=await addCohort(db,await addMentorTopic(db,other,t1),{from:3});
+ await pgFails(db.query('update enrollment set cohort_id=$2 where id=$1',[e,other2]),'23514','agenda_immutable');
+ await pgFails(db.query('update enrollment set participant_id=$2 where id=$1',[e,await addParticipant(db)]),'23514','agenda_immutable');
+ await pgFails(db.query('update enrollment set id=id+1000 where id=$1',[e]),'23514','agenda_immutable');
 }));
