@@ -135,6 +135,16 @@ def _log_text(host):
     return log.read_bytes().decode() if log.exists() else ''
 
 
+def _frozen(host, quiet_seconds=1):
+    candidate, state = _staged(host)
+    state.transition('frozen', NOW_FIXED, freeze={
+        'at': NOW_FIXED, 'cutoff_at': NOW_FIXED, 'quiet_seconds': quiet_seconds, 'ip': ORIGINAL_IP,
+        'original_container': 'tech-woman-sqlite-original', 'original_image': ORIGINAL_IMAGE,
+        'writers_checked': ['app-container', 'mailer-containers', 'timers', 'cron', 'file-handles', 'quiet-window']})
+    return candidate, state
+
+
+Host.frozen = _frozen
 Host.cutover_log_text = _log_text
 Host.staged = _staged
 Host.sqlite = _sqlite
