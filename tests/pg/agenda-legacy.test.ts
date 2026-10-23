@@ -6,9 +6,15 @@ import * as overview from '../../src/app/api/admin/overview/route';
 import * as decide from '../../src/app/api/admin/decide/route';
 import * as change from '../../src/app/api/admin/change/route';
 import * as event from '../../src/app/api/admin/event/route';
+import * as state from '../../src/app/api/state/[token]/route';
+import * as choice from '../../src/app/api/choice/[token]/route';
+import {stateFor} from '../../src/lib/service';
+import {randomBytes} from 'node:crypto';
+import {tokenDigest} from '../../src/lib/db';
 import {sessionFor} from './identity-harness.test';
 import {withDb,addParticipant,addMentor,linkFixture,mentorWithCohort} from './agenda-harness';
 import {actorOf,as,call,code,snapshot,type Actor,type Reply} from './agenda-api-kit';
+import {captureOutput} from './identity-http-kit.test';
 
 const O='/api/admin/overview',D='/api/admin/decide',C='/api/admin/change',E='/api/admin/event';
 const post=(a:Actor,handler:Parameters<typeof call>[0],path:string,body:unknown,headers?:Record<string,string|null>)=>as(a).send(handler,path,{body,headers});
@@ -144,4 +150,54 @@ test('event: GET admin/team com sessão full, PUT só admin com CSRF, DTO fechad
  r=await as(admin).send(event.PUT,E,{method:'PUT',body:{...body,venue:'  Recife sintético  '}});assert.deepEqual([r.status,r.json],[200,body]);
  r=await as(team).get(event.GET,E);assert.deepEqual(r.json,body);
  assert.deepEqual((await audits(db,'event_content')).map(a=>[a.actor_user_id,a.action,a.entity_id]),[[admin.id,'event.update','1']]);
+}));
+
+/** Participante legada com link por token (só o hash no banco) e tentativa histórica de e-mail. */
+async function legacyLink(db:Pool,o:{email?:string;userId?:string|null;revoked?:boolean}={}){
+ const raw=randomBytes(32).toString('hex');
+ const id=String((await db.query("insert into participant(email,goal,moment,interests,skills,area,token_hash,consent_version,user_id,legacy_access_revoked_at) values($1,'growth','working','[\"dados\"]','[\"analise\"]','dados',$2,'v0',$3,$4) returning id",
+  [o.email??`l-${raw.slice(0,8)}@example.invalid`,tokenDigest(raw),o.userId??null,o.revoked?new Date().toISOString():null])).rows[0].id);
+ await db.query("insert into email_attempt(participant_id,status,updated_at) values($1,'mock-not-sent',now())",[id]);
+ return {id,raw};
+}
+const noLeak=(r:Reply)=>{assert.equal(r.headers.get('cache-control'),'no-store');assert.equal(r.headers.get('referrer-policy'),'no-referrer');};
+
+test('state/choice por token: histórico legado pelo hash sem e-mail/conta da mentora; protegido/ativado/revogado/inválido 404; no-store/no-referrer; POST choice 409 sem criar match nem log do token',()=>withDb(async({db})=>{
+ const f=await fixtures(db);
+ const secret=String((await db.query("insert into mentor(email,trajectory,specialties,availability,capacity,active) values('mentora-secreta@example.invalid','Trajetória pública','[\"dados\"]','a',3,true) returning id")).rows[0].id);
+ const chosen=await legacyLink(db,{email:'escolheu@example.invalid'});await legacyMatch(db,chosen.id,secret);
+ await db.query("insert into choice_email_attempt(participant_id,mentor_id,status,updated_at) values($1,$2,'mock-not-sent',now())",[chosen.id,secret]);
+ const waiting=await legacyLink(db,{email:'aguarda@example.invalid'});
+ const activatedUser=await actorOf(db,['participant']);
+ const bad=[await legacyLink(db,{email:'multi@example.invalid'}),await legacyLink(db,{email:'ativada@example.invalid',userId:activatedUser.id,revoked:true}),await legacyLink(db,{email:'revogada@example.invalid',revoked:true})];
+ const candidate=await legacyLink(db,{email:'cand-link@example.invalid'});await f.link('participant',candidate.id,null,'privileged_candidate');bad.push(candidate);
+ const tokens=[...bad.map(b=>b.raw),'f'.repeat(64),'abc',chosen.raw.toUpperCase()];
+ const out=captureOutput();
+ try{
+  let r=await call(state.GET,'/api/state/x',{params:{token:chosen.raw}});
+  assert.equal(r.status,200);noLeak(r);
+  assert.deepEqual(Object.keys(r.json).sort(),['choiceEmailStatus','email','emailStatus','mentor','protocol','status']);
+  assert.deepEqual([r.json.protocol,r.json.status,r.json.email],[`TW-${chosen.id.padStart(5,'0')}`,'Mentoria reservada','escolheu@example.invalid']);
+  assert.match(r.json.emailStatus,/NÃO ENVIADA/);assert.match(r.json.choiceEmailStatus,/NÃO ENVIADA/);
+  assert.deepEqual(r.json.mentor,{email:`Mentora #${secret}`,displayName:`Mentora #${secret}`,demo:false,trajectory:'Trajetória pública',reasons:['legado']},'rótulo público no lugar do e-mail; histórico preservado');
+  assert.equal(r.text.includes('mentora-secreta'),false);assert.equal(/userId|user_id|token|hash/i.test(r.text),false);
+  assert.deepEqual(await stateFor(chosen.raw),r.json,'página SSR recebe a mesma projeção segura');
+  r=await call(state.GET,'/api/state/x',{params:{token:waiting.raw}});assert.deepEqual([r.status,r.json.status,r.json.mentor,r.json.choiceEmailStatus],[200,'Aguardando escolha ou revisão da equipe',null,null]);
+  const misses:Reply[]=[];for(const token of tokens)misses.push(await call(state.GET,'/api/state/x',{params:{token}}),await call(choice.GET,'/api/choice/x',{params:{token}}));
+  for(const m of misses){assert.deepEqual([m.status,code(m)],[404,'NOT_FOUND']);noLeak(m);assert.equal(JSON.stringify(m.json.error),JSON.stringify(misses[0].json.error));}
+  for(const token of tokens)assert.equal(await stateFor(token),null);
+  r=await call(choice.GET,'/api/choice/x',{params:{token:chosen.raw}});assert.equal(r.status,200);noLeak(r);
+  assert.deepEqual([r.json.choices,r.json.assigned,r.json.next],[[],true,'activate_account']);assert.match(r.json.instruction,/ativ/i);
+  r=await call(choice.GET,'/api/choice/x',{params:{token:waiting.raw}});assert.deepEqual([r.json.choices,r.json.assigned],[[],false]);
+  // POST nunca cria match/tentativa: identidade reconciliada é exigida (reserva só por sessão v1)
+  const before=await snapshot(db);const attempts=async()=>(await db.query('select count(*)::int n from choice_email_attempt')).rows[0].n;const n=await attempts();
+  r=await call(choice.POST,'/api/choice/x',{params:{token:waiting.raw},body:{mentorId:f.mentor}});assert.deepEqual([r.status,code(r)],[409,'IDENTITY_RECONCILIATION_REQUIRED']);noLeak(r);
+  r=await call(choice.POST,'/api/choice/x',{params:{token:chosen.raw},body:{mentorId:Number(f.mentor)}});assert.deepEqual([r.status,code(r)],[409,'IDENTITY_RECONCILIATION_REQUIRED']);
+  for(const token of tokens){r=await call(choice.POST,'/api/choice/x',{params:{token},body:{mentorId:f.mentor}});assert.deepEqual([r.status,code(r)],[404,'NOT_FOUND']);noLeak(r);}
+  r=await call(choice.POST,'/api/choice/x',{params:{token:waiting.raw},body:{mentorId:f.mentor},headers:{Origin:null}});assert.deepEqual([r.status,code(r)],[403,'CSRF_REJECTED']);noLeak(r);
+  r=await call(choice.POST,'/api/choice/x',{params:{token:waiting.raw},body:{mentorId:f.mentor},headers:{'Content-Type':'text/plain'}});assert.deepEqual([r.status,code(r)],[400,'INVALID_JSON']);
+  for(const body of [{mentorId:f.mentor,cohortId:'1'},{participantId:waiting.id},[{mentorId:f.mentor}]]){r=await call(choice.POST,'/api/choice/x',{params:{token:waiting.raw},body});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT']);}
+  assert.equal(await snapshot(db),before,'nenhum match/reserva por token');assert.equal(await attempts(),n);
+ }finally{out.stop();}
+ for(const t of [chosen.raw,waiting.raw,...bad.map(b=>b.raw)])assert.equal(out.text().includes(t),false,'token/path nunca vão ao log');
 }));
