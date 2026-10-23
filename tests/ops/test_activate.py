@@ -5,7 +5,10 @@ from tests.ops.hostfixture import DIGEST, Host, ORIGINAL_IMAGE
 
 cutover = harness.load_ops_module('cutover')
 IMAGE = 'ghcr.io/dellanio/tech-woman@' + DIGEST
-RESTORE = [['rm', '-f', 'tech-woman'], ['rename', 'tech-woman-sqlite-original', 'tech-woman'], ['start', 'tech-woman']]
+# safe restoration: maintenance parked, original renamed/started/smoked, only then the parked maintenance removed
+RESTORE = [['stop', 'tech-woman'], ['rename', 'tech-woman', 'tech-woman-maintenance'],
+           ['rename', 'tech-woman-sqlite-original', 'tech-woman'], ['start', 'tech-woman'], ['exec', 'tech-woman'],
+           ['rm', '-f', 'tech-woman-maintenance']]
 
 
 def docker(calls):
@@ -69,7 +72,7 @@ class ActivateTests(ActivateTestCase):
                 done = self.host.cutover('activate')
                 self.assertEqual(done.returncode, 77, done.stderr)
                 self.assertEqual(self.state().phase, 'aborted_pre_write')
-                self.assertEqual(docker(self.host.cutover_calls())[-3:], RESTORE)
+                self.assertEqual([c[:2] if c[0] == 'exec' else c for c in docker(self.host.cutover_calls())][-len(RESTORE):], RESTORE)
                 self.assertTrue((os.stat(self.db).st_mode & 0o200 != 0))
 
     def test_activate_needs_the_imported_phase_and_a_valid_window(self):
