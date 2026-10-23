@@ -75,10 +75,10 @@ class StagedOps:
             (self.host / name).mkdir(parents=True)
         self.script = self.ops / 'deploy.sh'
         (self.ops / 'paths.env').write_bytes(('\n'.join([
-            'PATH=%s' % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
-            'TW_LOCK_FILE=%s' % _posix(self.host / 'lock/deploy.lock'),
-            'TW_STATE_DIR=%s' % _posix(self.host / 'state'),
-            'TW_APP_DIR=%s' % _posix(self.host / 'app'), '']).encode('utf-8')))
+            "PATH='%s'" % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
+            "TW_LOCK_FILE='%s'" % _posix(self.host / 'lock/deploy.lock'),
+            "TW_STATE_DIR='%s'" % _posix(self.host / 'state'),
+            "TW_APP_DIR='%s'" % _posix(self.host / 'app'), '']).encode('utf-8')))
 
     def run(self, stdin, extra_env=None):
         return run_script(self.script, stdin, extra_env)

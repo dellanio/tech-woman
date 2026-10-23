@@ -30,5 +30,11 @@ re_count='^[1-9][0-9]{0,3}$' re_token='^[A-Za-z0-9_.~+/=-]+$'
    && "$migrations_aggregate" =~ $re_sha256 && "$migrations_count" =~ $re_count \
    && "$token" =~ $re_token && ${#token} -le 512 ]] || reject
 unset lines input
+
+source "$(dirname -- "$self")/paths.env"
+export PATH
+exec 9>"$TW_LOCK_FILE"
+flock -n 9 || { echo 'deployment in progress' >&2; exit 66; }
+
 echo 'state marker unavailable' >&2
 exit 70
