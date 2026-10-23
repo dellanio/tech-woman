@@ -8,7 +8,8 @@ import * as csrfRoute from '../../src/app/api/v1/auth/csrf/route';
 import * as users from '../../src/app/api/v1/admin/users/route';
 import * as user from '../../src/app/api/v1/admin/users/[id]/route';
 import * as temporary from '../../src/app/api/v1/admin/users/[id]/temporary-password/route';
-import {withDb,addUser,sessionFor,synthetic,participantRow,mentorRow,linkFixture,activeEnrollment} from './identity-harness.test';
+import {runPrivilegedAccount} from '../../scripts/privileged-account';
+import {withDb,addUser,sessionFor,synthetic,participantRow,mentorRow,linkFixture} from './identity-harness.test';
 import {call,code,sameShape,captureOutput,has,type Reply} from './identity-http-kit.test';
 
 const LIST='/api/v1/admin/users';
@@ -45,7 +46,8 @@ test('leitura HTTP: coleção paginada e GET por ID só de contas comuns; proteg
  for(const h of hidden){assert.deepEqual([h.status,code(h)],[404,'NOT_FOUND']);assert.equal(sameShape(h,hidden[0]),true);assert.equal(h.headers.get('etag'),null);}
  assert.equal((await get(team,a.id)).status,200);assert.equal((await call(users.GET,LIST,{cookie:team.token})).status,200);
  const plain=await actorOf(db,['participant']);
- assert.deepEqual([(await call(users.GET,LIST,{cookie:plain.token})).status,code(await get(plain,a.id))],[403,'FORBIDDEN']);
+ assert.deepEqual([(await call(users.GET,LIST,{cookie:plain.token})).status,code(await call(users.GET,LIST,{cookie:plain.token}))],[403,'FORBIDDEN'],'coleção: papel insuficiente');
+ assert.deepEqual([(await get(plain,a.id)).status,code(await get(plain,a.id))],[404,'NOT_FOUND'],'ID: não autorizado = inexistente');
  await db.query('update app_user set must_change_password=true where id=$1',[a.id]);const limited=await sessionFor(db,a.id,'password_change');
  assert.equal(code(await call(users.GET,LIST,{cookie:limited})),'PASSWORD_CHANGE_REQUIRED');assert.equal(code(await call(user.GET,`${LIST}/${a.id}`,{cookie:limited,params:{id:a.id}})),'PASSWORD_CHANGE_REQUIRED');
  assert.deepEqual([(await call(users.GET,LIST)).status,(await call(users.GET,LIST,{cookie:'z'.repeat(43)})).status],[401,401]);
@@ -148,4 +150,35 @@ test('temporary-password HTTP: confirm:true, 202 {jobId,status}, idempotente por
   let leaked=false;for(const {s,t} of tables){if(has(JSON.stringify((await db.query(`select to_jsonb(x)::text j from ${s}.${t} x`)).rows),secrets))leaked=true;}
   assert.equal(leaked,false,'nenhum segredo em tabela');assert.equal(has(logs.text(),secrets),false,'nenhum segredo em log');
  }finally{logs.stop();}
+}));
+
+test('ID alheio: quem não é admin/team recebe 404 idêntico ao inexistente em todas as rotas por ID; coleção continua 403',async()=>withDb(async({db})=>{
+ const admin=await actorOf(db,['admin']),plain=await actorOf(db,['participant']),mentor=await actorOf(db,['mentor']);
+ const target=await addUser(db,{email:'alvo@example.invalid'});
+ const missing=await get(admin,randomUUID());assert.deepEqual([missing.status,code(missing)],[404,'NOT_FOUND']);
+ const before=await snap(db);
+ for(const who of [plain,mentor]){
+  const probes=[await get(who,target.id),await get(who,who.id),await patch(who,target.id,{status:'disabled'},'1'),await patch(who,target.id,{status:'disabled'}),await del(who,target.id,'1'),await resend(who,target.id),await resend(who,who.id)];
+  for(const p of probes){assert.deepEqual([p.status,code(p)],[404,'NOT_FOUND']);assert.equal(sameShape(p,missing),true);}
+  const collection=[await call(users.GET,LIST,{cookie:who.token}),await create(who,{email:'n@example.invalid',roles:['participant'],participant:profile})];
+  for(const c of collection)assert.deepEqual([c.status,code(c)],[403,'FORBIDDEN']);
+ }
+ assert.equal(await snap(db),before,'zero mutação');
+}));
+
+test('corrida elevação × CRUD via HTTP: PATCH (e-mail e perfis), DELETE e temporary-password esperam o lock e viram 404 sem mutação',async()=>withDb(async({db,url})=>{
+ const admin=await actorOf(db,['admin']);const u=await addUser(db,{email:'corrida@example.invalid',password:synthetic()});await participantRow(db,1,'corrida@example.invalid',u.id);await mentorRow(db,20,'corrida@example.invalid',u.id);
+ const v=etagOf(await get(admin,u.id));const before=JSON.parse(await snap(db));
+ const blocked=async(n:number)=>{for(let i=0;i<200;i++){const c=(await db.query("select count(*)::int n from pg_stat_activity where datname=current_database() and state='active' and wait_event_type='Lock'")).rows[0].n;if(c>=n)return;await new Promise(r=>setTimeout(r,25));}throw new Error('operações não bloquearam');};
+ let pending:Promise<Reply[]>=Promise.resolve([]);
+ const elevated=await runPrivilegedAccount(['grant-admin','--user-id',u.id,'--confirm'],{MIGRATION_DATABASE_URL:url},{afterLock:async()=>{
+  pending=Promise.all([patch(admin,u.id,{email:'novo@example.invalid'},v),patch(admin,u.id,{roles:['participant']},v),del(admin,u.id,v),resend(admin,u.id)]);await blocked(4);
+ }});
+ assert.deepEqual(elevated,{code:'ok'});
+ const results=await pending;for(const r of results)assert.deepEqual([r.status,code(r)],[404,'NOT_FOUND']);
+ const after=JSON.parse(await snap(db));
+ assert.deepEqual([after.audits,after.idem,after.jobs.length],[before.audits+1,0,0],'só a auditoria da elevação; nenhum job nem chave de idempotência');
+ assert.deepEqual((await db.query('select email,status from app_user where id=$1',[u.id])).rows[0],{email:'corrida@example.invalid',status:'active'});
+ assert.deepEqual((await db.query('select role from user_role where user_id=$1 order by role',[u.id])).rows.map(r=>r.role),['admin','participant']);
+ const hidden=await get(admin,u.id);assert.deepEqual([hidden.status,code(hidden)],[404,'NOT_FOUND'],'depois da elevação a conta some do CRUD');
 }));
