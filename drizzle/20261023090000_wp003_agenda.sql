@@ -1,8 +1,9 @@
 -- WP-003 Task 1: guard global de Agenda, transições/imutabilidade e validação integral por statement.
 -- Ordem de locks: app_user (API, em ordem de UUID) -> internal.agenda_guard -> domínio. SQL direto da editora começa pelo guard.
 -- Escrita real da revisão (não só FOR UPDATE): snapshot REPEATABLE READ/SERIALIZABLE obsoleto falha com 40001.
+-- lock_timeout próprio: nenhuma sessão (pgAdmin, runtime) espera o guard indefinidamente; 55P03 vira conflito/retry no serviço.
 CREATE OR REPLACE FUNCTION internal.acquire_agenda_guard() RETURNS trigger
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '5s' AS $$
 BEGIN
  UPDATE internal.agenda_guard SET revision = revision + 1 WHERE id = 1;
  RETURN NULL;

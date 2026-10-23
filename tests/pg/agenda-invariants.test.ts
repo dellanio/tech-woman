@@ -129,7 +129,7 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
  assert.equal(fns.length,AGENDA_FUNCTIONS.length);
  for(const f of fns){
   assert.equal(f.owner,OWNER,`${f.proname} owner`);assert.equal(f.provolatile,'v',`${f.proname} VOLATILE`);
-  assert.deepEqual(f.proconfig,['search_path=pg_catalog, pg_temp'],`${f.proname} search_path`);
+  assert.equal(f.proconfig[0],'search_path=pg_catalog, pg_temp',`${f.proname} search_path`);
   assert.deepEqual(f.grantees,[],`${f.proname} sem EXECUTE concedido (inclusive PUBLIC)`);assert.equal(f.runtime,false);
   if(f.proname!=='agenda_reject')assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
  }
@@ -235,8 +235,8 @@ test('limites finitos: guard com lock_timeout próprio; script do operador fixa 
  const owner=(await db.query('select rolcanlogin,rolbypassrls from pg_roles where rolname=$1',[OWNER])).rows[0];assert.deepEqual(owner,{rolcanlogin:false,rolbypassrls:false});
  await withClients(url,[undefined,EDITOR],async (holder,b)=>{
   await holder.query('begin');await holder.query("insert into topic(slug,name) values('segura-guard','S')");
-  const started=Date.now();const pending=b.query("insert into topic(slug,name) values('espera-guard','E')");
-  await waitLocked(db,await pidOf(b));
+  const pid=await pidOf(b),started=Date.now();const pending=b.query("insert into topic(slug,name) values('espera-guard','E')");
+  pending.catch(()=>undefined);await waitLocked(db,pid);
   await pgFails(pending,'55P03');assert.ok(Date.now()-started<15000,'espera pelo guard é finita');
   await holder.query('rollback');
  });
