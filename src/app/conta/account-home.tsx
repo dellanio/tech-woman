@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AccountPanel, setFlash, takeFlash } from '../account-ui';
+import { ChoiceJourney } from '../inscricao/choices';
 import { DEFAULT_AFTER_LOGIN, Frame, loadSession, loginHref, passwordChangeHref, type SessionUser } from '../shared';
 
 type View = { state: 'checking' } | { state: 'failed'; message: string } | { state: 'ready'; user: SessionUser; expiresAt: string };
@@ -36,6 +37,7 @@ export function AccountHome() {
             {!participant && !mentor && !staff && <section className="form-panel account-role" aria-labelledby="none-title"><p className="eyebrow">PERFIS</p><h2 id="none-title">Nenhum perfil ainda</h2><div className="auth-links"><Link href="/inscricao">Quero participar ↗</Link><Link href="/mentora">Quero ser mentora ↗</Link></div></section>}
           </div>
         </div>}
+      {view.state === 'ready' && participant && <ChoiceJourney/>}
     </div>
   </Frame>;
 }

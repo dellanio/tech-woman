@@ -96,3 +96,14 @@
 .account-roles{display:grid;gap:clamp(20px,2.4vw,32px)}
 .account-role h2{margin-bottom:6px}
 .account-role .text-link:focus-visible,.account-role .button-primary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.choice-journey{margin-top:0}
+.choice-journey>h2{font-size:clamp(36px,4vw,56px);margin:0 0 18px}
+.choice-step-title{font:500 clamp(26px,2.6vw,34px) var(--font-display);text-transform:uppercase;margin:22px 0 8px}
+.choice-step-title:focus-visible,.choice-journey button:focus-visible,.cohort-option:has(input:focus-visible){outline:3px solid var(--focus);outline-offset:3px}
+.choice-group{margin-top:26px}
+.choice-group-title{color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;margin:0}
+.choice-group-title small{color:var(--muted);letter-spacing:0}
+.choice-neutral{grid-column:1/-1;color:var(--muted);font-size:14px;margin:4px 0}
+.choice-mentor h3,.choice-mentor p{overflow-wrap:anywhere}
+.choice-more{margin-top:20px}
+@media(max-width:760px){.choices-section .suggestion{grid-template-columns:1fr}.choices-section .suggestion .score{text-align:left}}
