@@ -194,3 +194,37 @@ test('mentora pública: nome de exibição obrigatório, capacidade legada, foco
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+test('prazo da mentora: falha de rede não finge encerramento e permite tentar de novo; prazo encerrado publicado é outro estado',{timeout:240_000},async()=>{
+ const {page,context}=await ui.newPage();
+ try{
+  // falha de transporte (injeção só nesta tela de teste): erro honesto com retry, nunca "encerrado"
+  await page.route('**/api/mentor',r=>r.abort('internetdisconnected'));
+  await page.goto(ui.origin+'/mentora');
+  const text=await alertText(page,/Não foi possível verificar o prazo/);
+  assert.doesNotMatch(text,/TypeError|Failed to fetch|stack/i);
+  assert.doesNotMatch(await main(page).innerText(),/encerrad/i);
+  assert.equal(await page.getByLabel('Nome de exibição').count(),0,'sem prazo confirmado não mostra formulário');
+  // volta a rede: retry real consulta o prazo publicado (aberto) e libera o formulário
+  await page.unroute('**/api/mentor');
+  const [real]=await Promise.all([page.waitForResponse(r=>new URL(r.url()).pathname==='/api/mentor'),page.getByRole('button',{name:/Tentar novamente/}).click()]);
+  assert.equal(real.status(),200);assert.equal(((await real.json()) as {open:boolean}).open,true);
+  await page.getByLabel('Nome de exibição').waitFor();
+  assert.equal(await main(page).getByRole('alert').count(),0);
+  // resposta de prazo encerrado (publicada pelo servidor; simulada só aqui): estado próprio, sem retry nem formulário
+  const closed=await ui.newPage();
+  try{
+   await closed.page.route('**/api/mentor',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({open:false,deadline:'2026-10-31T02:59:59.999Z'})}));
+   await closed.page.goto(ui.origin+'/mentora');
+   await main(closed.page).getByRole('status').filter({hasText:/Cadastro encerrado/}).waitFor();
+   assert.equal(await closed.page.getByRole('button',{name:/Tentar novamente/}).count(),0);
+   assert.equal(await closed.page.getByLabel('Nome de exibição').count(),0);
+   assert.doesNotMatch(await main(closed.page).innerText(),/Não foi possível verificar/);
+  }finally{await closed.context.close();}
+  // resposta fora do contrato também é erro com retry, não encerramento
+  await page.route('**/api/mentor',r=>r.fulfill({status:503,contentType:'text/html',body:'<h1>indisponível</h1>'}));
+  await page.reload();
+  await alertText(page,/Não foi possível verificar o prazo/);
+  assert.doesNotMatch(await main(page).innerText(),/encerrad/i);
+ }finally{await context.close();}
+});
