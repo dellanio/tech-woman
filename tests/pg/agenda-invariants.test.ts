@@ -182,7 +182,7 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
  const sameEmailMentor=await addMentor(db,{email:` ${team.email.toUpperCase()} `});
  const candidateEmail='candidata@example.invalid',ambiguousEmail='ambigua@example.invalid';const links=await linkFixture(db);
  await links.link('admin_user',candidateEmail,null,'privileged_candidate');await links.link('participant','999999',null,'ambiguous_domain');
- const candidate=await addParticipant(db,{email:candidateEmail}),ambiguous=await addParticipant(db,{email:ambiguousEmail});
+ const candidate=await addParticipant(db,{email:candidateEmail,userId:null}),ambiguous=await addParticipant(db,{email:ambiguousEmail,userId:null});
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
  const hiddenMt=await addMentorTopic(db,adminMentor,topic),hiddenCohort=await addCohort(db,hiddenMt,{from:0,capacity:3});
  const mt=await addMentorTopic(db,mentor,topic),full=await addCohort(db,mt,{from:2,capacity:1});
@@ -207,7 +207,7 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
   await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(5),at(6)]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]),'42501');
-  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,full]),'23514','agenda_capacity_exceeded');
+  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,full]),'23514','agenda_capacity_exceeded');
   assert.equal((await runtime.query('select count(*)::int n from participant')).rows[0].n,4,'runtime aplica a exclusão no serviço, não perde linhas');
   assert.equal((await runtime.query('select count(*)::int n from mentor')).rows[0].n,3);
  });
