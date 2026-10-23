@@ -22,7 +22,8 @@ const NO_PROMISE=/enviamos|foi enviad|entregue|chegou|verifique sua caixa|protoc
 /** Etapa 1 do diagnóstico: objetivo e momento. */
 async function stepOne(page:Page){
  await page.getByRole('radio',{name:/Crescimento/}).check();
- await page.getByRole('radio',{name:'Em atividade'}).check();
+ // o rótulo estilizado cobre o radio: clica-se no texto visível, como a usuária
+ await page.locator('.moment-options label',{hasText:'Em atividade'}).click();
  await page.getByRole('button',{name:/Continuar/}).click();
  await page.getByRole('group',{name:/O que faz parte da sua trajetória/}).waitFor();
 }
@@ -55,7 +56,7 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   await alertText(page,/momento/);
   assert.equal((await focused(page)).name,'moment');
   assert.equal(await page.getByRole('radio',{name:/Crescimento/}).isChecked(),true,'escolha preservada após erro');
-  await page.getByRole('radio',{name:'Em atividade'}).check();
+  await page.locator('.moment-options label',{hasText:'Em atividade'}).click();
   await page.getByRole('button',{name:/Continuar/}).click();
   await main(page).getByText('ETAPA 02 / 02').waitFor();
   // etapa 2 vazia: foco no primeiro interesse

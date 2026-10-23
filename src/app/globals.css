@@ -77,3 +77,12 @@
 .auth-inline{background:none;border:0;padding:0;color:var(--accent);font:inherit;font-weight:700;text-decoration:underline;text-underline-offset:4px;min-height:44px}
 .auth-inline:focus-visible,.visible-error a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 .visible-error a{color:inherit;text-decoration:underline;text-underline-offset:3px}
+/* WP-004 — diagnóstico/cadastro e anexo de perfil (aditivo) */
+.signup-login{color:var(--muted);font-size:14px;margin:14px 0 0;order:5}
+.signup-login a{color:var(--accent);font-weight:700;display:inline-flex;align-items:center;min-height:44px;text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.signup-login a:hover{color:var(--ink)}
+.signup-login a:focus-visible,.signup-next a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.signup-next{margin:18px 0}
+.form-panel fieldset.field-invalid>legend{color:var(--accent)}
+.form-panel fieldset.field-invalid>legend::after{content:' *';color:var(--accent)}
+.form-panel [aria-invalid="true"]{outline:2px solid var(--accent);outline-offset:2px}
