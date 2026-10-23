@@ -30,12 +30,21 @@ export function parseInstant(value:unknown):string{
 const tags=['produto','dados','desenvolvimento','design'] as const;
 const skills=['comunicacao','analise','codigo','gestao'] as const;
 export type ParticipantRegistration={email:string;goal:'transition'|'growth'|'leadership';moment:'starting'|'working'|'returning';interests:Tag[];skills:Skill[];area:Tag|'outra';otherArea?:string;consent:true};
-export function parseParticipantRegistration(value:unknown):ParticipantRegistration{
- const p=object(value,['email','goal','moment','interests','skills','area','otherArea','consent']);const area=enumeration(p.area,[...tags,'outra'],'area');
- return {email:email(p.email),goal:enumeration(p.goal,['transition','growth','leadership'],'goal'),moment:enumeration(p.moment,['starting','working','returning'],'moment'),interests:list(p.interests,tags,3,'interests'),skills:list(p.skills,skills,4,'skills'),area,...(area==='outra'?{otherArea:text(p.otherArea,'otherArea',1,80)}:{}),consent:consent(p.consent)};
+type ParticipantFields=Omit<ParticipantRegistration,'email'>;
+function participantFields(p:Record<string,unknown>):ParticipantFields{
+ const area=enumeration(p.area,[...tags,'outra'],'area');
+ return {goal:enumeration(p.goal,['transition','growth','leadership'],'goal'),moment:enumeration(p.moment,['starting','working','returning'],'moment'),interests:list(p.interests,tags,3,'interests'),skills:list(p.skills,skills,4,'skills'),area,...(area==='outra'?{otherArea:text(p.otherArea,'otherArea',1,80)}:{}),consent:consent(p.consent)};
 }
+const PARTICIPANT_KEYS=['goal','moment','interests','skills','area','otherArea','consent'];
+export function parseParticipantRegistration(value:unknown):ParticipantRegistration{const p=object(value,['email',...PARTICIPANT_KEYS]);return {email:email(p.email),...participantFields(p)};}
+/** Perfil de participante da própria sessão: mesmos dados de domínio, sem email/userId/roles. */
+export function parseParticipantProfile(value:unknown):ParticipantFields{return participantFields(object(value,PARTICIPANT_KEYS));}
 export type MentorRegistration={email:string;displayName:string;trajectory:string;specialties:Tag[];availability:string;legacyCapacity:number;consent:true};
-export function parseMentorRegistration(value:unknown):MentorRegistration{const p=object(value,['email','displayName','trajectory','specialties','availability','legacyCapacity','consent']);return {email:email(p.email),displayName:text(p.displayName,'displayName',1,120),trajectory:text(p.trajectory,'trajectory',1,1000),specialties:list(p.specialties,tags,3,'specialties'),availability:text(p.availability,'availability',1,300),legacyCapacity:integer(p.legacyCapacity,1,50,'legacyCapacity'),consent:consent(p.consent)};}
+type MentorFields=Omit<MentorRegistration,'email'>;
+function mentorFields(p:Record<string,unknown>):MentorFields{return {displayName:text(p.displayName,'displayName',1,120),trajectory:text(p.trajectory,'trajectory',1,1000),specialties:list(p.specialties,tags,3,'specialties'),availability:text(p.availability,'availability',1,300),legacyCapacity:integer(p.legacyCapacity,1,50,'legacyCapacity'),consent:consent(p.consent)};}
+const MENTOR_KEYS=['displayName','trajectory','specialties','availability','legacyCapacity','consent'];
+export function parseMentorRegistration(value:unknown):MentorRegistration{const p=object(value,['email',...MENTOR_KEYS]);return {email:email(p.email),...mentorFields(p)};}
+export function parseMentorProfile(value:unknown):MentorFields{return mentorFields(object(value,MENTOR_KEYS));}
 export function parseLogin(value:unknown){const p=object(value,['email','password']);if(typeof p.password!=='string'||p.password.length<1||p.password.length>128)throw new ContractError(['password']);return {email:email(p.email),password:p.password};}
 export function parseTopic(value:unknown){const p=object(value,['slug','name','description']);const slug=text(p.slug,'slug',1,80);if(!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug))throw new ContractError(['slug']);return {slug,name:text(p.name,'name',1,120),description:p.description===undefined?'':text(p.description,'description',0,1000)};}
 export function parseMentorTopic(value:unknown){const p=object(value,['topicId','position']);return {topicId:parseSqlId(p.topicId),position:integer(p.position,1,2,'position') as 1|2};}
@@ -52,9 +61,10 @@ export type RegistrationReceived={status:'received';next:'check_email'};
 export type LoginState={state:'authenticated'|'password_change_required'};
 export type SessionDto={user:{id:string;email:string;roles:Role[]};state:'authenticated'|'password_change_required';expiresAt:string};
 export type LegacyMatchDto={id:SqlId;mentorId:SqlId;status:string;origin:'legacy';enrollmentId:null};
-/** Stubs RED (WP-002 Task 2): substituídos no GREEN. */
-export const registrationReceived: RegistrationReceived = { status: 'received', next: 'check_email' };
-export type ForgotReceived = { status: 'received' };
-export const parsePasswordForgot = (_value: unknown): { email: string } => ({ email: '' });
-export const parseParticipantProfile = (_value: unknown): Omit<ParticipantRegistration, 'email'> => ({ goal: 'growth', moment: 'working', interests: [], skills: [], area: 'dados', consent: true });
-export const parseMentorProfile = (_value: unknown): Omit<MentorRegistration, 'email'> => ({ displayName: '', trajectory: '', specialties: [], availability: '', legacyCapacity: 1, consent: true });
+export const registrationReceived:RegistrationReceived={status:'received',next:'check_email'};
+export type ForgotReceived={status:'received'};
+export const forgotReceived:ForgotReceived={status:'received'};
+export type TemporaryPasswordQueued={jobId:string;status:'queued'};
+export const parsePasswordForgot=(value:unknown)=>({email:email(object(value,['email']).email)});
+export const parseTemporaryPasswordRequest=(value:unknown):{confirm:true}=>{const p=object(value,['confirm']);if(p.confirm!==true)throw new ContractError(['confirm']);return {confirm:true};};
+export const parsePasswordReset=(value:unknown)=>{const p=object(value,['token','newPassword']);if(typeof p.token!=='string'||p.token.length<1||p.token.length>256)throw new ContractError(['token']);if(typeof p.newPassword!=='string'||[...p.newPassword].length<12||[...p.newPassword].length>128)throw new ContractError(['newPassword']);return {token:p.token,newPassword:p.newPassword};};

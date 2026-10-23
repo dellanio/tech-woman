@@ -10,7 +10,7 @@ import * as registration from '../../src/lib/registration';
 const base=process.env.MIGRATION_DATABASE_URL;
 type Ctx={db:Pool;url:string};
 const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
-const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role}`);return u.toString();};
+const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role} -c jit=off`);return u.toString();};
 
 /** Banco isolado; o app roda de verdade como techwoman_runtime (SET ROLE na conexão), as fixtures como dono. */
 async function withDb(fn:(ctx:Ctx)=>Promise<void>){
@@ -18,7 +18,7 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  const created:string[]=[];
  for(const role of ['techwoman_runtime','techwoman_mailer']){ if(!(await control.query('select 1 from pg_roles where rolname=$1',[role])).rowCount){await control.query(`create role ${role} nologin`);created.push(role);} }
  await control.query(`create database ${name}`);const u=new URL(base);u.pathname='/'+name;const url=u.toString();
- const db=new Pool({connectionString:url,max:6});const previous=process.env.DATABASE_URL;const deadline=process.env.MENTOR_DEADLINE;
+ const db=new Pool({connectionString:url,max:6,options:'-c jit=off'});const previous=process.env.DATABASE_URL;const deadline=process.env.MENTOR_DEADLINE;
  try{ await migrate(url);await closeDb();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');await fn({db,url}); }
  finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;if(deadline===undefined)delete process.env.MENTOR_DEADLINE;else process.env.MENTOR_DEADLINE=deadline;
   await db.end();await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
@@ -64,7 +64,7 @@ test('cadastro novo de mentora: perfil ligado e prazo verificado antes de qualqu
  const runtimeUrl=process.env.DATABASE_URL!;
  const out=await registration.registerMentor(mentorDto('mentora@example.invalid'));assert.deepEqual(out,{status:'received',next:'check_email'});
  assert.deepEqual(await counts(db),{users:1,roles:1,participants:0,mentors:1,jobs:1});
- const m=(await db.query(`select m.user_id=u.id linked,m.email,m.display_name,m.trajectory,m.specialties,m.availability,m.capacity,m.active,m.demo,m.consent_version,m.consent_at is not null c,(select role from user_role r where r.user_id=u.id) role,u.status from mentor m join app_user u on true`)).rows[0];
+ const m=(await db.query(`select m.user_id=u.id linked,m.email,m.display_name,m.trajectory,m.specialties,m.availability,m.capacity,m.active,m.demo,m.consent_version,m.consent_at is not null c,(select role from user_role r where r.user_id=u.id) role,u.status from mentor m join app_user u on u.id=m.user_id`)).rows[0];
  assert.deepEqual(m,{linked:true,email:'mentora@example.invalid',display_name:'Mentora Fictícia',trajectory:'Trajetória de teste',specialties:['produto'],availability:'Quartas à tarde',capacity:3,active:true,demo:false,consent_version:'v1',c:true,role:'mentor',status:'pending_activation'});
  assert.equal((await db.query("select kind from email_job")).rows[0].kind,'registration');
  process.env.MENTOR_DEADLINE='2020-01-01T00:00:00.000Z';
