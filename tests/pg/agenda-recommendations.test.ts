@@ -7,8 +7,11 @@ import * as mentorCohorts from '../../src/app/api/v1/mentors/[mentorId]/cohorts/
 import * as recommendations from '../../src/app/api/v1/me/recommendations/route';
 import * as enrollments from '../../src/app/api/v1/me/enrollments/route';
 import * as enrollment from '../../src/app/api/v1/me/enrollments/[id]/route';
-import {withDb,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,mentorWithCohort,at} from './agenda-harness';
-import {actorOf,participantActor,as,call,code,sameShape,snapshot,type Reply} from './agenda-api-kit';
+import * as adminEnrollments from '../../src/app/api/v1/admin/enrollments/route';
+import * as adminEnrollment from '../../src/app/api/v1/admin/enrollments/[id]/route';
+import * as reassign from '../../src/app/api/v1/admin/enrollments/[id]/reassign/route';
+import {withDb,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,mentorWithCohort,linkFixture,at} from './agenda-harness';
+import {actorOf,participantActor,as,call,code,etagOf,sameShape,snapshot,type Reply} from './agenda-api-kit';
 
 type Choice={id:string;displayName:string;demo:boolean;trajectory:string;specialties:string[];score?:number;reasons?:string[]};
 const choiceIds=(list:Choice[])=>list.map(c=>c.id);
@@ -120,4 +123,50 @@ test('reserva própria: score0 → turma → reserva sem aprovação (201), part
  const actions=(await db.query("select actor_user_id,action from audit_event where entity_type='enrollment' order by id")).rows.map(a=>[a.actor_user_id,a.action]);
  assert.deepEqual(actions,[[p.id,'enrollment.create'],[p.id,'enrollment.create'],[p.id,'enrollment.cancel'],[other.id,'enrollment.create']]);
  void mentorWithCohort;void ({} as Reply);
+}));
+
+test('admin enrollments: lista/GET sem protegidas, cancelamento com If-Match idempotente, realocação atômica (cancela+cria+match/job/auditoria) e falha no destino preserva a reserva original',()=>withDb(async({db})=>{
+ const admin=await actorOf(db,['admin']),team=await actorOf(db,['team']);const A=as(admin);const X='/api/v1/admin/enrollments';
+ const p=await participantActor(db);const other=await participantActor(db);
+ const c1=await eligible(db,['dados'],{from:0}),c2=await eligible(db,['dados'],{from:2,capacity:1}),c3=await eligible(db,['dados'],{from:4,capacity:1}),c4=await eligible(db,['dados'],{from:6}),c5=await eligible(db,['dados'],{from:8}),c6=await eligible(db,['dados'],{from:8});
+ await db.query("update cohort set status='closed' where id=$1",[c4.cohort]);
+ let r=await as(other).send(enrollments.POST,'/api/v1/me/enrollments',{body:{cohortId:c3.cohort},key:randomUUID()});assert.equal(r.status,201,'c3 lotada por outra');
+ r=await as(p).send(enrollments.POST,'/api/v1/me/enrollments',{body:{cohortId:c6.cohort},key:randomUUID()});assert.equal(r.status,201);
+ r=await as(p).send(enrollments.POST,'/api/v1/me/enrollments',{body:{cohortId:c1.cohort},key:randomUUID()});assert.equal(r.status,201);const original=r.json.data.id;
+ // protegida: participante candidata privilegiada com reserva feita por SQL do dono
+ const {link}=await linkFixture(db);const hiddenP=await addParticipant(db);await link('participant',hiddenP,null,'privileged_candidate');
+ const hiddenE=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text id",[hiddenP,c1.cohort])).rows[0].id;
+ r=await as(team).get(adminEnrollments.GET,X);assert.equal(r.status,200);assert.equal(r.json.data.some((e:{id:string})=>e.id===hiddenE),false);
+ assert.deepEqual(Object.keys(r.json.data[0]).sort(),['cancelledAt','cohortId','endsAt','id','participantId','startsAt','status','version']);
+ r=await A.get(adminEnrollment.GET,`${X}/${original}`,{id:original});assert.deepEqual([r.status,r.json.data.participantId,r.json.data.status],[200,p.participantId,'active']);const v=etagOf(r);
+ for(const h of [await A.get(adminEnrollment.GET,`${X}/${hiddenE}`,{id:hiddenE}),await A.send(adminEnrollment.DELETE,`${X}/${hiddenE}`,{method:'DELETE',params:{id:hiddenE},version:'1'}),
+  await A.send(reassign.POST,`${X}/${hiddenE}/reassign`,{body:{cohortId:c2.cohort,confirm:true},params:{id:hiddenE},key:randomUUID()}),await as(p).get(adminEnrollment.GET,`${X}/${original}`,{id:original})])
+  assert.deepEqual([h.status,code(h)],[404,'NOT_FOUND']);
+ // destino inválido: nada muda (cancelamento da origem desfeito junto)
+ const before=await snapshot(db);
+ const failures:[string,number,string][]=[[c3.cohort,409,'COHORT_FULL'],[c4.cohort,409,'COHORT_NOT_OPEN'],[c5.cohort,409,'SCHEDULE_CONFLICT'],[c6.cohort,409,'ALREADY_ENROLLED'],['999999',422,'INVALID_INPUT'],[c1.cohort,422,'INVALID_INPUT']];
+ for(const [target,status,err] of failures){r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:target,confirm:true},params:{id:original},key:randomUUID()});assert.deepEqual([target,r.status,code(r)],[target,status,err]);}
+ for(const bad of [{cohortId:c2.cohort},{cohortId:c2.cohort,confirm:false},{cohortId:c2.cohort,confirm:true,participantId:other.participantId}]){r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:bad,params:{id:original},key:randomUUID()});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT']);}
+ r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:c2.cohort,confirm:true},params:{id:original}});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT'],'Idempotency-Key');
+ r=await as(team).send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:c2.cohort,confirm:true},params:{id:original},key:randomUUID()});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ assert.equal(await snapshot(db),before,'falha no destino preserva a reserva anterior e não deixa efeitos');
+ // sucesso atômico
+ const key=randomUUID();
+ r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:c2.cohort,confirm:true},params:{id:original},key});
+ assert.equal(r.status,201);assert.deepEqual([r.json.data.cohortId,r.json.data.status,r.json.data.participantId],[c2.cohort,'active',p.participantId]);const moved=r.json.data.id;
+ r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{confirm:true,cohortId:c2.cohort},params:{id:original},key});assert.deepEqual([r.status,r.json.data.id],[201,moved],'replay');
+ r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:c1.cohort,confirm:true},params:{id:original},key});assert.deepEqual([r.status,code(r)],[409,'IDEMPOTENCY_CONFLICT']);
+ const rows=(await db.query("select e.id::text id,e.status,e.cancelled_at is not null cancelled,m.status match,j.status job from enrollment e join match m on m.enrollment_id=e.id join email_job j on j.enrollment_id=e.id where e.id in ($1,$2) order by e.id",[original,moved])).rows;
+ assert.deepEqual(rows,[{id:original,status:'cancelled',cancelled:true,match:'cancelled',job:'cancelled'},{id:moved,status:'active',cancelled:false,match:'selected',job:'queued'}]);
+ const audit=(await db.query("select actor_user_id,action,entity_id from audit_event where entity_type='enrollment' and actor_user_id=$1 order by id",[admin.id])).rows.map(a=>[a.action,a.entity_id]);
+ assert.deepEqual(audit,[['enrollment.cancel',original],['enrollment.create',moved],['enrollment.reassign',original]]);
+ r=await A.send(reassign.POST,`${X}/${original}/reassign`,{body:{cohortId:c5.cohort,confirm:true},params:{id:original},key:randomUUID()});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT'],'origem já cancelada');
+ // cancelamento administrativo: If-Match, idempotente
+ const mv=etagOf(await A.get(adminEnrollment.GET,`${X}/${moved}`,{id:moved}));
+ r=await A.send(adminEnrollment.DELETE,`${X}/${moved}`,{method:'DELETE',params:{id:moved}});assert.deepEqual([r.status,code(r)],[428,'PRECONDITION_REQUIRED']);
+ r=await A.send(adminEnrollment.DELETE,`${X}/${moved}`,{method:'DELETE',params:{id:moved},version:String(Number(mv)+5)});assert.deepEqual([r.status,code(r)],[412,'VERSION_MISMATCH']);
+ r=await as(team).send(adminEnrollment.DELETE,`${X}/${moved}`,{method:'DELETE',params:{id:moved},version:mv});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ r=await A.send(adminEnrollment.DELETE,`${X}/${moved}`,{method:'DELETE',params:{id:moved},version:mv});assert.deepEqual([r.status,r.json.data.status],[200,'cancelled']);assert.match(r.json.data.cancelledAt,/Z$/);
+ r=await A.send(adminEnrollment.DELETE,`${X}/${moved}`,{method:'DELETE',params:{id:moved},version:r.json.data.version});assert.deepEqual([r.status,r.json.data.status],[200,'cancelled']);
+ void sameShape;
 }));
