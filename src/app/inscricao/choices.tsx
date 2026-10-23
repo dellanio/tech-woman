@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import type { CohortDto, EnrollmentDto } from '@/lib/contracts';
 import type { OwnEnrollments } from '@/lib/agenda';
 import type { RankedChoice, Recommendations } from '@/lib/recommendations';
-import { abilities, authRedirect, errorMessage, newIdempotencyKey, postJson, request, topics, type ApiFailure, type ApiResult } from '../shared';
+import { abilities, authRedirect, errorMessage, newIdempotencyKey, request, topics, type ApiFailure, type ApiResult } from '../shared';
 
 const ACCOUNT = '/conta';
 const PAGE_SIZE = 8;
@@ -254,13 +254,3 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
   </section>;
 }
 
-// ---- Escolha antiga por token (ainda usada pela página de histórico; substituída na fatia do histórico) ----
-type Choice={mentorId:string;mentorEmail:string;demo:boolean;trajectory:string;specialties:string[];capacity:number;occupied:number;score:number;reasons:string[]};
-type Suggestions={choices:Choice[];assigned:boolean};
-export function Choices({token}:{token:string}){
- const [data,setData]=useState<Suggestions|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[chosen,setChosen]=useState(''),[emailStatus,setEmailStatus]=useState('');
- const refresh=useCallback(async()=>{const response=await fetch(`/api/choice/${token}`,{cache:'no-store'});if(response.ok)setData(await response.json() as Suggestions);else setError('Não foi possível atualizar as vagas. Tente novamente.')},[token]);
- useEffect(()=>{void refresh()},[refresh]);
- async function choose(id:string){setBusy(true);setError('');try{const result=await postJson<{mentorEmail:string;emailStatus:string}>(`/api/choice/${token}`,{mentorId:id});setChosen(result.mentorEmail);setEmailStatus(result.emailStatus);await refresh()}catch(e){setError(e instanceof Error?e.message:'Vaga indisponível.');await refresh()}finally{setBusy(false)}}
- return <section className="choices-section" aria-label="Mentoras disponíveis"><p className="eyebrow">MENTORAS COM VAGA / SUAS CONEXÕES</p>{chosen?<div className="notice" role="status"><strong>Mentoria reservada com {chosen}.</strong><p>Sem data ou horário definidos. {emailStatus}</p></div>:data===null?<p role="status">Buscando vagas disponíveis…</p>:data.assigned?<p role="status">Você já reservou uma mentoria. Consulte seu estado individual.</p>:data.choices.length===0?<div className="empty-inline" role="status">Ainda não encontramos mentora compatível com vaga. Sua inscrição permanece na fila para a equipe; volte ao seu link para consultar novas opções.</div>:<><p className="field-hint">Até três opções por compatibilidade. A sugestão não segura a vaga: confirme sua escolha.</p>{data.choices.map(choice=><article className="suggestion choice-mentor" key={choice.mentorId}><div><p className="eyebrow">MENTORA · {choice.occupied} / {choice.capacity} VAGAS OCUPADAS {choice.demo&&<span className="demo-badge">Demonstração</span>}</p><h3>{choice.mentorEmail}</h3><p>{choice.trajectory}</p><p className="field-hint">Aptidões: {choice.specialties.join(' · ')}</p></div><div className="score"><strong>{choice.score}</strong><small>PONTOS</small></div><ul>{choice.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul><button type="button" className="button-primary" disabled={busy} onClick={()=>choose(choice.mentorId)}>{busy?'Confirmando…':'Agendar mentoria ↗'}</button></article>)}</>}{error&&<p className="visible-error" role="alert">{error} <button type="button" className="button-quiet" onClick={()=>void refresh()}>Atualizar opções</button></p>}</section>
-}

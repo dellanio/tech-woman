@@ -134,3 +134,6 @@
 .enrollment-active .enrollment-status{color:var(--success)}
 .enrollment-legacy{border-style:dashed}
 @media(prefers-reduced-motion:reduce){.cohort-option{transition:none}}
+.legacy-state .legacy-flag{display:inline-block;border:1px dashed var(--accent);border-radius:var(--radius-control);color:var(--ink);padding:6px 10px;margin:4px 0 10px;font-weight:700}
+.legacy-state .auth-actions a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.legacy-state ul{color:var(--muted);padding-left:20px}
