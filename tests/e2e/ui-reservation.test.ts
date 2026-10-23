@@ -2,14 +2,15 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync,readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import type {Page,Request} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 
 let ui:Ui;
 // Next dev compila cada rota no primeiro acesso: aquece antes dos testes para que o timeout de navegação meça a UI.
-before(async()=>{ui=await startUi('ui-reservation');for(const route of ['/conta','/login','/troca-senha','/inscricao','/','/inscricao/estado/'+'0'.repeat(64)])await fetch(ui.origin+route);},{timeout:420_000});
+// grants-local.sql é o passo LOCAL_ROLE_SETUP do compose depois das migrations: a home lê event_content como runtime.
+before(async()=>{ui=await startUi('ui-reservation');await ui.db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));for(const route of ['/conta','/login','/troca-senha','/inscricao','/','/inscricao/estado/'+'0'.repeat(64)])await fetch(ui.origin+route);},{timeout:420_000});
 after(async()=>{await ui?.stop();});
 
 const unique=(label:string)=>`ui-${label}-${randomBytes(4).toString('hex')}@example.invalid`;
@@ -383,4 +384,15 @@ test('histórico anterior: link antigo mostra a mentoria legada sem turma/data/h
   assert.doesNotMatch(own,/\b\d{1,2}:\d{2}\b/);
   ui.assertNoLeak();
  }finally{await account.context.close();}
+});
+
+test('home: as duas frases explicam a escolha da turma (sem "não um horário" nem "sem marcar data ou horário")',{timeout:120_000},async()=>{
+ const {page,context}=await ui.newPage();
+ try{
+  await page.goto(ui.origin+'/');
+  const text=await main(page).innerText();
+  assert.doesNotMatch(text,/não um horário|sem marcar data ou horário/);
+  assert.match(text,/Você escolhe a mentora e a turma, com data e horário de Recife\./);
+  assert.match(text,/Veja os motivos da sugestão, escolha o tema e a turma e reserve sua vaga\./);
+ }finally{await context.close();}
 });
