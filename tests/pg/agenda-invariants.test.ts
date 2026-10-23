@@ -16,7 +16,7 @@ test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, 
  ] as const;
  for(const [sql,args] of statements){
   const before=await revision(db);await db.query(sql,[...args]);
-  assert.equal(await revision(db),before+1n,`revision não avançou em: ${sql}`);
+  assert.equal(await revision(db),before+BigInt(1),`revision não avançou em: ${sql}`);
  }
 }));
 
