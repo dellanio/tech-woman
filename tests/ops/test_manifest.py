@@ -353,7 +353,7 @@ def git(repo, *args, env=None):
     return done.stdout.strip()
 
 
-class GitIdentityTests(unittest.TestCase):
+class GitRepoCase(unittest.TestCase):
     """Real git repositories: tree identity, ancestry and squash/main-advance races."""
 
     def setUp(self):
@@ -390,6 +390,8 @@ class GitIdentityTests(unittest.TestCase):
         return manifest('seal', '--facts', facts_path, '--migrations-dir', mig, '--ops-dir', ops,
                         '--out', self.tmp / 'candidate.json', '--repo', self.repo), ops, mig
 
+
+class GitIdentityTests(GitRepoCase):
     def test_tree_command_prints_the_git_tree_of_a_revision(self):
         done = manifest('tree', 'feature', '--repo', self.repo)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -430,6 +432,45 @@ class GitIdentityTests(unittest.TestCase):
         git(self.repo, 'commit', '-q', '-m', 'unrelated change landed on main')
         later = git(self.repo, 'rev-parse', 'HEAD')
         self.assertEqual(verify(git(self.repo, 'rev-parse', 'HEAD^{tree}'), later).returncode, 71)
+
+
+class ReleaseFactsTests(GitRepoCase):
+    """What the deploy workflow computes before building: commit, tree and migrations of the checked-out main."""
+
+    def facts_cmd(self, *extra):
+        mig = self.repo / 'drizzle'
+        mig.mkdir(exist_ok=True)
+        write(mig / '20260101000000_a.sql', b'select 1;\n')
+        return manifest('release-facts', '--repo', self.repo, '--migrations-dir', mig, *extra)
+
+    def test_release_facts_are_github_output_lines_for_the_checked_out_head(self):
+        done = self.facts_cmd()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = dict(line.split('=', 1) for line in done.stdout.splitlines())
+        migrations = json.loads(manifest('migrations', self.repo / 'drizzle').stdout)
+        self.assertEqual(lines, {'sha': self.head, 'tree': self.tree,
+                                 'migrations_aggregate': migrations['aggregate_sha256'],
+                                 'migrations_count': str(migrations['count'])})
+
+    def test_main_that_advanced_past_the_expected_sha_is_refused_with_71(self):
+        self.assertEqual(self.facts_cmd('--expect', self.head).returncode, 0)
+        done = self.facts_cmd('--expect', self.main)
+        self.assertEqual(done.returncode, 71, done.stderr)
+        self.assertEqual(done.stdout, '')
+        self.assertEqual(self.facts_cmd('--expect', 'HEAD; rm -rf').returncode, 64)
+
+    def test_squash_commit_keeps_the_tree_and_an_extra_migration_changes_the_aggregate(self):
+        before = dict(l.split('=', 1) for l in self.facts_cmd().stdout.splitlines())
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'merge', '--squash', 'feature')
+        git(self.repo, 'commit', '-q', '-m', 'squash')
+        squashed = dict(l.split('=', 1) for l in self.facts_cmd().stdout.splitlines())
+        self.assertNotEqual(squashed['sha'], before['sha'])
+        self.assertEqual(squashed['tree'], before['tree'])
+        write(self.repo / 'drizzle' / '20260105000000_extra.sql', b'select 9;\n')
+        extra = dict(l.split('=', 1) for l in self.facts_cmd().stdout.splitlines())
+        self.assertNotEqual(extra['migrations_aggregate'], before['migrations_aggregate'])
+        self.assertEqual(extra['migrations_count'], '2')
 
 
 if __name__ == '__main__':
