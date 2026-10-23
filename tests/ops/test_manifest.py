@@ -3,9 +3,9 @@ import hashlib, json, pathlib, subprocess, sys, tempfile, unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / 'ops/manifest.py'
 
-NODE_SHA = ("const {createHash}=require('node:crypto');const {readFileSync}=require('node:fs');"
-            "const s=readFileSync(process.argv[1],'utf8');"
-            "process.stdout.write(createHash('sha256').update(s.replace(/\r\n/g,'\n')).digest('hex'))")
+NODE_SHA = (r"const {createHash}=require('node:crypto');const {readFileSync}=require('node:fs');"
+            r"const s=readFileSync(process.argv[1],'utf8');"
+            r"process.stdout.write(createHash('sha256').update(s.replace(/\r\n/g,'\n')).digest('hex'))")
 
 
 def manifest(*args, stdin=None, cwd=None):
