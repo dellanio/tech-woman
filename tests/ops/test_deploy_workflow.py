@@ -76,6 +76,12 @@ class MergeIdentityTests(unittest.TestCase):
         for required in ('merged_at != null', 'merge_commit_sha == env.RELEASE_SHA', '.user.login == "beatrizbenz"',
                          '.base.ref == "main"', 'commits/$RELEASE_SHA/pulls'):
             self.assertIn(required, verify)
+        for required in ('RUN_ID: ${{ github.event.workflow_run.id }}', 'actions/runs/$RUN_ID',
+                         '.path == ".github/workflows/approved-merge.yml"', '.event == "workflow_run"',
+                         '.conclusion == "success"', '.repository.full_name == env.GH_REPO',
+                         'event=pull_request', '.path == ".github/workflows/ci.yml"', '.head_sha == env.PR_HEAD',
+                         '^[0-9a-f]{40}$'):
+            self.assertIn(required, verify)
         order = [step_index(text, m) for m in ('name: Resolve immutable release',
                                                'name: Verify the merged pull request result',
                                                'name: Probe installed deploy package', 'docker/build-push-action',
