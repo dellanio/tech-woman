@@ -1,5 +1,5 @@
 /** Contrato HTTP v1: estruturas reais e parsers fechados. Não registra endpoints futuros. */
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 export type SqlId=string;
 export type Role='admin'|'team'|'mentor'|'participant';
 export type UserStatus='pending_activation'|'active'|'disabled';
@@ -68,3 +68,50 @@ export type TemporaryPasswordQueued={jobId:string;status:'queued'};
 export const parsePasswordForgot=(value:unknown)=>({email:email(object(value,['email']).email)});
 export const parseTemporaryPasswordRequest=(value:unknown):{confirm:true}=>{const p=object(value,['confirm']);if(p.confirm!==true)throw new ContractError(['confirm']);return {confirm:true};};
 export const parsePasswordReset=(value:unknown)=>{const p=object(value,['token','newPassword']);if(typeof p.token!=='string'||p.token.length<1||p.token.length>256)throw new ContractError(['token']);if(typeof p.newPassword!=='string'||[...p.newPassword].length<12||[...p.newPassword].length>128)throw new ContractError(['newPassword']);return {token:p.token,newPassword:p.newPassword};};
+
+// ---- Contas administrativas (WP-002 Task 3) ----
+const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid=(value:unknown):value is string=>typeof value==='string'&&UUID_RE.test(value);
+export type ManagedRole='participant'|'mentor';
+const MANAGED_ROLES=['participant','mentor'] as const;
+function managedRoles(value:unknown,min:number):ManagedRole[]{
+ if(!Array.isArray(value)||value.length<min||value.length>2||new Set(value).size!==value.length)throw new ContractError(['roles']);
+ return value.map(v=>enumeration(v,MANAGED_ROLES,'roles'));
+}
+export type AdminUserPatch={email?:string;status?:'active'|'disabled';roles?:ManagedRole[]};
+/** PATCH fechado: nunca id/hash/senha/userId/admin/team; ao menos um campo. */
+export function parseAdminUserPatch(value:unknown):AdminUserPatch{
+ const p=object(value,['email','status','roles']);if(!Object.keys(p).length)throw new ContractError(['body']);
+ const patch:AdminUserPatch={};
+ if('email' in p)patch.email=email(p.email);
+ if('status' in p)patch.status=enumeration<'active'|'disabled'>(p.status,['active','disabled'],'status');
+ if('roles' in p)patch.roles=managedRoles(p.roles,0);
+ return patch;
+}
+const nested=<T>(key:string,parse:()=>T):T=>{try{return parse();}catch(error){if(error instanceof ContractError)throw new ContractError(error.fields.map(f=>`${key}.${f}`));throw error;}};
+export type AdminUserCreate={email:string;roles:ManagedRole[];participant?:ReturnType<typeof parseParticipantProfile>;mentor?:ReturnType<typeof parseMentorProfile>};
+/** roles deve corresponder exatamente aos domínios fornecidos; sem usuário órfão, sem admin/team. */
+export function parseAdminUserCreate(value:unknown):AdminUserCreate{
+ const p=object(value,['email','roles','participant','mentor']);const roles=managedRoles(p.roles,1);
+ const out:AdminUserCreate={email:email(p.email),roles};
+ if('participant' in p)out.participant=nested('participant',()=>parseParticipantProfile(p.participant));
+ if('mentor' in p)out.mentor=nested('mentor',()=>parseMentorProfile(p.mentor));
+ if(roles.includes('participant')!==!!out.participant)throw new ContractError(['roles','participant']);
+ if(roles.includes('mentor')!==!!out.mentor)throw new ContractError(['roles','mentor']);
+ return out;
+}
+export const encodeCursor=(id:string)=>Buffer.from(JSON.stringify({id}),'utf8').toString('base64url');
+export function decodeCursor(value:string):string{
+ try{const parsed:unknown=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+  if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&Object.keys(parsed).join()==='id'&&isUuid((parsed as {id?:unknown}).id))return String((parsed as {id:string}).id).toLowerCase();}catch{/* cursor inválido */}
+ throw new ContractError(['cursor']);
+}
+export function parseListQuery(query:{cursor?:unknown;limit?:unknown}):{after:string|null;limit:number}{
+ const limit=query.limit===undefined||query.limit===null?20:integer(query.limit,1,100,'limit');
+ if(query.cursor===undefined||query.cursor===null)return {after:null,limit};
+ if(typeof query.cursor!=='string'||query.cursor.length>200)throw new ContractError(['cursor']);
+ return {after:decodeCursor(query.cursor),limit};
+}
+const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,v])=>[k,canonical(v)])):value;
+/** Hash do corpo canônico (chaves ordenadas) para idempotência. */
+export const canonicalHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');

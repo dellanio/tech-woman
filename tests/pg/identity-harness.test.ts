@@ -5,6 +5,7 @@ import {randomUUID,randomBytes} from 'node:crypto';
 import {migrate} from '../../scripts/migration/migrate';
 import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
 import {newSessionToken} from '../../src/lib/identity';
+import {closeEmailPool} from '../../src/lib/email';
 
 export const base=process.env.MIGRATION_DATABASE_URL;
 export type Ctx={db:Pool;url:string;runtimeUrl:string};
@@ -12,7 +13,7 @@ export const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
 export const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role} -c jit=off`);return u.toString();};
 /** Espera os backends encerrarem antes do DROP: derrubar socket ainda fechando gera erro assíncrono após o teste. */
 const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
-const ENV_KEYS=['DATABASE_URL','MENTOR_DEADLINE','SESSION_SECRET','APP_ORIGIN','TRUST_PROXY','RATE_LIMIT_SECRET','NODE_ENV','ALLOW_LOCAL_HTTP'] as const;
+const ENV_KEYS=['DATABASE_URL','MAILER_DATABASE_URL','RATE_LOGIN_PAIR_PER_MIN','RATE_EMAIL_PER_HOUR','EMAIL_MODE','MENTOR_DEADLINE','SESSION_SECRET','APP_ORIGIN','TRUST_PROXY','RATE_LIMIT_SECRET','NODE_ENV','ALLOW_LOCAL_HTTP'] as const;
 
 export async function withDb(fn:(ctx:Ctx)=>Promise<void>,env:Partial<Record<typeof ENV_KEYS[number],string>>={}){
  assert.ok(base,'MIGRATION_DATABASE_URL');const control=new Pool({connectionString:base});const name='tw_acc_'+randomUUID().replace(/-/g,'');
@@ -22,13 +23,13 @@ export async function withDb(fn:(ctx:Ctx)=>Promise<void>,env:Partial<Record<type
  const db=new Pool({connectionString:url,max:8,options:'-c jit=off'});
  const previous=Object.fromEntries(ENV_KEYS.map(k=>[k,process.env[k]]));
  try{
-  await migrate(url);await closeDb();
+  await migrate(url);await closeDb();await closeEmailPool();
   process.env.SESSION_SECRET=randomBytes(48).toString('hex');process.env.APP_ORIGIN='http://app.example.invalid';
   for(const [k,v] of Object.entries(env))Reflect.set(process.env,k,v);
-  const runtimeUrl=roleUrl(url,'techwoman_runtime');process.env.DATABASE_URL=runtimeUrl;
+  const runtimeUrl=roleUrl(url,'techwoman_runtime');process.env.DATABASE_URL=runtimeUrl;process.env.MAILER_DATABASE_URL=roleUrl(url,'techwoman_mailer');
   await fn({db,url,runtimeUrl});
  }finally{
-  await closeDb();for(const k of ENV_KEYS){const v=previous[k];if(v===undefined)Reflect.deleteProperty(process.env,k);else Reflect.set(process.env,k,v);}
+  await closeDb();await closeEmailPool();for(const k of ENV_KEYS){const v=previous[k];if(v===undefined)Reflect.deleteProperty(process.env,k);else Reflect.set(process.env,k,v);}
   await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end();
  }
 }

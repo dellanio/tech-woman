@@ -231,7 +231,7 @@ test('script offline de elevação: só por UUID, mesmo lock, recusa desativado/
  const dis=await addUser(db,{email:'dis@example.invalid',status:'disabled'}),pend=await addUser(db,{email:'pend@example.invalid',status:'pending_activation'});
  assert.deepEqual([await cmd('grant-admin',dis.id),await cmd('revoke-admin',dis.id),await cmd('grant-team',pend.id)],[{code:'USER_DISABLED'},{code:'USER_DISABLED'},{code:'USER_NOT_ACTIVE'}]);
  const col=await addUser(db,{email:'Colisao@Example.invalid',password:synthetic()});await link('admin_user','colisao@example.invalid',null,'credential_conflict');
- assert.deepEqual(await cmd('grant-admin',col.id),{code:'COLLISION_UNRESOLVED'});assert.deepEqual((await db.query('select count(*)::int n from user_role where user_id=$1',[col.id])).rows[0],{n:0});
+ assert.deepEqual(await cmd('grant-admin',col.id),{code:'COLLISION_UNRESOLVED'});assert.deepEqual((await db.query("select count(*)::int n from user_role where user_id=$1 and role in ('admin','team')",[col.id])).rows[0],{n:0});
  void second;
  const cli=await run(process.execPath,['--import','tsx','scripts/privileged-account.ts','grant-team','--user-id',u.id,'--confirm'],{env:{...process.env,MIGRATION_DATABASE_URL:url}});
  assert.equal(cli.stdout,'ok\n');assert.equal(cli.stderr,'');
@@ -271,7 +271,7 @@ test('corrida elevação × CRUD: elevação segura o lock, CRUD espera e vira 4
 test('fronteira: runtime executa só as funções fechadas de contas/limites; helpers e escrita livre negados; mailer sem emissão nua',async()=>withDb(async({db})=>{
  const u=await addUser(db,{password:synthetic()});
  const exec=async(role:string,sig:string)=>(await db.query('select has_function_privilege($1,$2,\'execute\') p',[role,sig])).rows[0].p;
- for(const sig of ['internal.admin_user_list(text,uuid,integer)','internal.admin_user_get(text,uuid)','internal.admin_user_update(text,uuid,bigint,jsonb,uuid)','internal.admin_user_disable(text,uuid,bigint,uuid)','internal.admin_user_resend(text,uuid,uuid,text,text)','internal.admin_user_create(text,uuid,text,text,text,text,text[],jsonb,jsonb,uuid)','internal.rate_hit(text,integer,integer)'])
+ for(const sig of ['internal.admin_user_list(text,uuid,integer)','internal.admin_user_get(text,uuid)','internal.admin_user_update(text,uuid,bigint,jsonb,uuid)','internal.admin_user_disable(text,uuid,bigint,uuid)','internal.admin_user_resend(text,uuid,uuid)','internal.admin_user_create(text,uuid,text,text,text[],jsonb,jsonb,uuid)'])
   assert.deepEqual([sig,await exec('techwoman_runtime',sig),await exec('techwoman_mailer',sig),await exec('public',sig)],[sig,true,false,false]);
  for(const sig of ['internal.lock_users(uuid,uuid)','internal.admin_actor(text,boolean,uuid)'])assert.deepEqual([sig,await exec('techwoman_runtime',sig)],[sig,false]);
  assert.equal(await exec('techwoman_mailer','internal.issue_temporary_credential(uuid,text)'),false);

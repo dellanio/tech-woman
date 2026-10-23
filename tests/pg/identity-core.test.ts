@@ -165,7 +165,8 @@ test('fronteira de privilégios: runtime só executa funções fechadas; mailer 
  assert.equal(await as('techwoman_runtime','select * from internal.identity_session_get($1)',['0'.repeat(64)]),true);
  assert.equal(await as('techwoman_runtime','select internal.issue_temporary_credential($1::uuid,$2)',[user.id,'x']),false);
  assert.equal(await as('techwoman_runtime','select internal.issue_reset_token($1::uuid,$2)',[user.id,'x']),false);
- assert.equal(await as('techwoman_mailer','select internal.issue_reset_token($1::uuid,$2)',[user.id,tokenDigest('synthetic')]),true);
+ assert.equal(await as('techwoman_mailer','select internal.issue_reset_token($1::uuid,$2)',[user.id,tokenDigest('synthetic')]),false,'mailer emite só pelo worker (email_emit_*), nunca pela função nua');
+ assert.equal(await as('techwoman_mailer','select internal.issue_temporary_credential($1::uuid,$2)',[user.id,'x']),false);
  assert.equal(await as('techwoman_mailer','select * from internal.identity_login_begin($1)',[user.email]),false);
  const defs=(await db.query("select p.proname,p.prosecdef,pg_get_userbyid(p.proowner) owner,p.proconfig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='internal' and p.proname like any(array['identity\\_%','issue\\_%','consume\\_%'])")).rows;
  assert.ok(defs.length>=7);for(const d of defs){assert.equal(d.prosecdef,true,d.proname);assert.ok(/search_path=/.test(String(d.proconfig)),d.proname);}
