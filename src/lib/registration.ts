@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
-import { getDb } from './db';
-import { parseParticipantRegistration, parseMentorRegistration, registrationReceived, type RegistrationReceived } from './contracts';
+import { getDb, tokenDigest } from './db';
+import { isSessionToken } from './identity';
+import { parseParticipantRegistration, parseMentorRegistration, parseParticipantProfile, parseMentorProfile, registrationReceived, type RegistrationReceived } from './contracts';
 
 export class RegistrationClosedError extends Error { readonly code = 'REGISTRATION_CLOSED'; readonly status = 403; constructor() { super('Cadastro de mentoras encerrado.'); } }
 /** Mesmo default e semântica de service.ts (MENTOR_DEADLINE), lido a cada chamada. */
@@ -22,6 +23,19 @@ export async function registerMentor(input: unknown): Promise<RegistrationReceiv
   return received();
 }
 
-/** Stub RED (slice B). */
 export type OwnProfileOutcome = 'created' | 'conflict' | 'reconciliation' | 'not_found';
-export async function addOwnProfile(_sessionToken: string, _domain: 'participant' | 'mentor', _input: unknown): Promise<OwnProfileOutcome> { return 'not_found'; }
+const outcomes: readonly string[] = ['created', 'conflict', 'reconciliation', 'not_found'];
+/** Anexa perfil ao PRÓPRIO usuário da sessão full (nunca por e-mail/ID do cliente). Admin/team, sessão limitada ou inválida → not_found. */
+export async function addOwnProfile(sessionToken: string, domain: 'participant' | 'mentor', input: unknown): Promise<OwnProfileOutcome> {
+  if (domain === 'mentor' && !mentorRegistrationOpen()) throw new RegistrationClosedError();
+  const digest = isSessionToken(sessionToken) ? tokenDigest(sessionToken) : null;
+  if (domain === 'participant') {
+    const p = parseParticipantProfile(input);
+    if (!digest) return 'not_found';
+    return outcome(await getDb().execute(sql`select internal.add_own_participant_profile(${digest},${p.goal},${p.moment},${JSON.stringify(p.interests)}::jsonb,${JSON.stringify(p.skills)}::jsonb,${participantArea(p.area, p.otherArea)}) as r`));
+  }
+  const p = parseMentorProfile(input);
+  if (!digest) return 'not_found';
+  return outcome(await getDb().execute(sql`select internal.add_own_mentor_profile(${digest},${p.displayName},${p.trajectory},${JSON.stringify(p.specialties)}::jsonb,${p.availability},${p.legacyCapacity}) as r`));
+}
+const outcome = (result: { rows: Record<string, unknown>[] }): OwnProfileOutcome => { const r = result.rows[0]?.r; return typeof r === 'string' && outcomes.includes(r) ? r as OwnProfileOutcome : 'not_found'; };

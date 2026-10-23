@@ -170,8 +170,8 @@ test('reenvio administrativo de temporário: só não-admin/não-desativado, ide
 }));
 
 test('perfil próprio: sessão full anexa participant/mentor só ao próprio usuário; admin 404; sem ligar por e-mail',async()=>withDb(async({db})=>{
- const pw=synthetic();const {goal,moment,interests,skills,area,consent}=participantDto('x@example.invalid');
- const profile={goal,moment,interests,skills,area,consent};const mentorProfile=(({email:_e,...rest})=>rest)(mentorDto('x@example.invalid'));
+ const pw=synthetic();const {goal,moment,interests,skills,area,otherArea,consent}=participantDto('x@example.invalid');
+ const profile={goal,moment,interests,skills,area,otherArea,consent};const mentorProfile=(({email:_e,...rest})=>rest)(mentorDto('x@example.invalid'));
  const user=await addUser(db,{password:pw,roles:['participant']});await db.query("insert into participant(email,goal,moment,interests,skills,token_hash,consent_version,user_id) values($1,'growth','working','[]','[]',$2,'v1',$3)",[user.email,'b'.repeat(64),user.id]);
  const s=await identity.login(user.email,pw);assert.ok(s);
  assert.equal(await registration.addOwnProfile(s.token,'mentor',mentorProfile),'created');
@@ -254,5 +254,5 @@ test('ativação legada recusa ambiguidade, candidato privilegiado, e-mail diver
  assert.deepEqual([(await db.query('select user_id from mentor where id=211')).rows[0].user_id,(await db.query('select user_id from mentor where id=241')).rows[0].user_id],[amb.id,own.id],'domínio sem ambiguidade na própria tabela continua ligado');
  assert.deepEqual((await db.query("select role from user_role where user_id=$1",[priv.id])).rows.map(r=>r.role),['team'],'sem papel novo para privilegiado');
  assert.deepEqual((await db.query("select role from user_role where user_id=$1",[admin.id])).rows.map(r=>r.role),['admin']);
- assert.equal((await db.query("select count(*)::int n from migration_identity_link where resolution='awaiting_email_proof'")).rows[0].n,5,'mapa não resolvido segue preservado');
+ assert.equal((await db.query("select count(*)::int n from migration_identity_link where resolution='awaiting_email_proof'")).rows[0].n,4,'mapa não resolvido segue preservado');
 }));

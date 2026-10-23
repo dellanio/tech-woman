@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { getDb, hashPassword, verifyPassword, tokenDigest } from './db';
+import { forgotReceived, type ForgotReceived, type TemporaryPasswordQueued } from './contracts';
 
 export type IdentityRole='admin'|'team'|'mentor'|'participant';
 export type IdentitySession={id:string;userId:string;email:string;roles:IdentityRole[];scope:'full'|'password_change';state:'authenticated'|'password_change_required';expiresAt:string};
@@ -63,6 +64,16 @@ export async function logout(token:string):Promise<void>{
   if(isSessionToken(token)) await getDb().execute(sql`select internal.identity_logout(${tokenDigest(token)})`);
 }
 
-/** Stubs RED (WP-002 Task 2 slice B): substituídos no GREEN. */
-export async function requestPasswordForgot(_email: unknown): Promise<{ status: 'received' }> { return { status: 'received' }; }
-export async function enqueueAdminTemporaryPassword(_userId: string, _idempotencyKey: string): Promise<{ jobId: string; status: 'queued' } | null> { return null; }
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Resposta sempre genérica; a decisão (reset, temporário ou nada) é feita sob lock no banco e nunca revoga senha/sessão. */
+export async function requestPasswordForgot(email:unknown):Promise<ForgotReceived>{
+  if(typeof email==='string'&&email.length<=320) await getDb().execute(sql`select internal.request_password_forgot(${email})`);
+  return {...forgotReceived};
+}
+/** Enfileira intenção explícita (sem segredo). null = alvo inexistente, desativado ou privilegiado (404/409 no HTTP). Idempotente por chave. */
+export async function enqueueAdminTemporaryPassword(userId:string,idempotencyKey:string):Promise<TemporaryPasswordQueued|null>{
+  if(typeof idempotencyKey!=='string'||!UUID.test(idempotencyKey)) throw new IdentityError('INVALID_INPUT');
+  if(typeof userId!=='string'||!UUID.test(userId)) return null;
+  const [row]=await rows(sql`select job_id from internal.enqueue_admin_temporary(${userId}::uuid,${idempotencyKey})`);
+  return row?{jobId:String(row.job_id),status:'queued'}:null;
+}
