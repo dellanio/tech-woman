@@ -80,5 +80,53 @@ class OpsPackageTests(unittest.TestCase):
         self.assertNotEqual(changed['aggregate_sha256'], first['aggregate_sha256'])
 
 
+HEAD, TREE, MAIN = 'a' * 40, 'b' * 40, 'c' * 40
+
+
+def good_facts():
+    return {
+        'tested_head': HEAD, 'tested_tree': TREE, 'base_main': MAIN,
+        'ci': {'run_id': '123', 'conclusion': 'success', 'head_sha': HEAD, 'tree': TREE},
+        'gates': {'GATE-001': 'green', 'GATE-002': 'green', 'GATE-003': 'green'},
+        'window': {'decision_ref': 'dec-1', 'authorized_at': '2026-10-23T12:00:00Z',
+                   'expires_at': '2026-10-23T14:00:00Z', 'measured_seconds': 900},
+        'recovery_evidence_sha256': 'd' * 64,
+        'rpo_declared': 'ate 24h (dump diario)',
+    }
+
+
+class SealTests(unittest.TestCase):
+    def seal(self, tmp, facts):
+        ops = OpsPackageTests().make_ops(tmp)
+        mig = tmp / 'drizzle'
+        mig.mkdir()
+        write(mig / '20260101000000_a.sql', b'select 1;\n')
+        facts_path = write(tmp / 'facts.json', json.dumps(facts).encode())
+        out = tmp / 'candidate.json'
+        done = manifest('seal', '--facts', facts_path, '--migrations-dir', mig, '--ops-dir', ops, '--out', out)
+        return done, out, mig, ops
+
+    def test_seal_writes_closed_candidate_bound_to_tree_migrations_and_ops_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            done, out, mig, ops = self.seal(tmp, good_facts())
+            self.assertEqual(done.returncode, 0, done.stderr)
+            candidate = json.loads(out.read_text())
+            self.assertEqual(json.loads(done.stdout), {'candidate_sha256': hashlib.sha256(out.read_bytes()).hexdigest()})
+            self.assertEqual(candidate['migrations'], json.loads(manifest('migrations', mig).stdout))
+            package = json.loads(manifest('ops-package', ops).stdout)
+            self.assertEqual(candidate['ops_package'], package)
+            self.assertEqual(candidate['deploy_script_sha256'],
+                             [f for f in package['files'] if f['name'] == 'deploy.sh'][0]['sha256'])
+        self.assertEqual(sorted(candidate), sorted([
+            'schema', 'tested_head', 'tested_tree', 'base_main', 'migrations', 'ops_package',
+            'deploy_script_sha256', 'image', 'ci', 'gates', 'window', 'recovery_evidence_sha256', 'rpo_declared']))
+        self.assertEqual((candidate['schema'], candidate['tested_head'], candidate['tested_tree'], candidate['base_main']),
+                         (1, HEAD, TREE, MAIN))
+        self.assertEqual(candidate['image']['platform'], 'linux/arm64')
+        self.assertEqual(candidate['image']['repository'], 'ghcr.io/dellanio/tech-woman')
+        self.assertEqual(sorted(candidate['image']['entrypoints']), ['mailer', 'migrator', 'web'])
+
+
 if __name__ == '__main__':
     unittest.main()
