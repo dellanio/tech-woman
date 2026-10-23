@@ -1,8 +1,9 @@
 """Hermetic runner for ops scripts: fake PATH, call log, no real host binaries."""
-import json, os, pathlib, subprocess, tempfile
+import json, os, pathlib, shutil, subprocess, tempfile
 
 BASH = 'C:/Program Files/Git/bin/bash.exe' if os.name == 'nt' else 'bash'
 FAKES = pathlib.Path(__file__).resolve().parent / 'fakes'
+OPS_SOURCE = pathlib.Path(__file__).resolve().parents[2] / 'ops'
 UTIL_DIRS = ['C:/Program Files/Git/usr/bin'] if os.name == 'nt' else ['/usr/bin', '/bin']
 EFFECT_COMMANDS = ('stop', 'rename', 'run', 'start', 'rm', 'network', 'login', 'pull')
 
@@ -59,3 +60,28 @@ def run_script(path, stdin, extra_env=None):
                                    capture_output=True, env=env)
         return Result(completed, log_path)
 
+
+
+class StagedOps:
+    """Byte-exact copy of ops/ whose paths.env points at a scratch host tree (no normalization of the scripts)."""
+
+    def __init__(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix='tw-staged-')
+        root = pathlib.Path(self._tmp.name)
+        self.ops = root / 'lib'
+        self.host = root / 'host'
+        shutil.copytree(OPS_SOURCE, self.ops, ignore=shutil.ignore_patterns('__pycache__'))
+        for name in ('lock', 'state', 'app'):
+            (self.host / name).mkdir(parents=True)
+        self.script = self.ops / 'deploy.sh'
+        (self.ops / 'paths.env').write_bytes(('\n'.join([
+            'PATH=%s' % ':'.join([_posix(FAKES)] + [_posix(d) for d in UTIL_DIRS]),
+            'TW_LOCK_FILE=%s' % _posix(self.host / 'lock/deploy.lock'),
+            'TW_STATE_DIR=%s' % _posix(self.host / 'state'),
+            'TW_APP_DIR=%s' % _posix(self.host / 'app'), '']).encode('utf-8')))
+
+    def run(self, stdin, extra_env=None):
+        return run_script(self.script, stdin, extra_env)
+
+    def cleanup(self):
+        self._tmp.cleanup()

@@ -74,6 +74,30 @@ class ProtocolRejectionTests(unittest.TestCase):
                 self.assert_rejected(stdin)
 
 
+class LockTests(unittest.TestCase):
+    def staged(self):
+        ops = harness.StagedOps()
+        self.addCleanup(ops.cleanup)
+        return ops
+
+    def test_busy_lock_exits_66_before_anything_else_and_leaks_no_token(self):
+        result = self.staged().run(request(*deploy_lines()), extra_env={'TW_FAKE_FLOCK': 'busy'})
+        self.assertEqual(result.returncode, 66, result.stderr)
+        self.assertNotIn(SECRET, result.stdout + result.stderr)
+        self.assertEqual([c['cmd'] for c in result.calls()], ['flock'])
+        self.assertEqual(result.calls()[0]['args'][0], '-n')
+
+    def test_free_lock_proceeds_to_the_marker_check(self):
+        result = self.staged().run(request(*deploy_lines()))
+        self.assertEqual(result.returncode, 70, result.stderr)
+        self.assertEqual([c['cmd'] for c in result.calls()], ['flock'])
+
+    def test_malformed_request_is_rejected_before_the_lock_is_taken(self):
+        result = self.staged().run('latest\n', extra_env={'TW_FAKE_FLOCK': 'busy'})
+        self.assertEqual(result.returncode, 64, result.stderr)
+        self.assertEqual(result.calls(), [])
+
+
 class ProbeTests(unittest.TestCase):
     def test_probe_reports_script_hash_and_touches_no_host_tool(self):
         result = harness.run_script(DEPLOY, request('TWDEPLOY/2', 'probe'))
