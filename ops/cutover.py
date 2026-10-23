@@ -68,6 +68,7 @@ TRANSITIONS = {
     ('smoke_ok', 'recovering'): 'operator recover',
     ('pg_write_open', 'recovering'): 'operator recover',
     ('pg_write_open', 'pg_write_open'): 'release by deploy.sh',
+    ('recovering', 'pg_write_open'): 'operator recovery verified on PostgreSQL',
 }
 
 
@@ -108,7 +109,7 @@ def _check_ownership(directory, policy):
 PHASES = {phase for pair in TRANSITIONS for phase in pair}
 REQUIRED_KEYS = {'schema', 'seq', 'prev_sha256', 'phase', 'candidate_sha256'}
 OPTIONAL_KEYS = {'staged', 'window', 'freeze', 'snapshot', 'import', 'activation', 'known_pg_images',
-                 'last_good_pg_image', 'schema_migrations', 'first_pg_write', 'abort'}
+                 'last_good_pg_image', 'schema_migrations', 'first_pg_write', 'abort', 'recovery'}
 JOURNAL_KEYS = {'seq', 'phase', 'from', 'at', 'state_sha256', 'prev_entry_sha256'}
 HEX64 = re.compile(r'\A[0-9a-f]{64}\Z')
 
@@ -229,7 +230,7 @@ class State:
 
 
 HERE = pathlib.Path(__file__).resolve().parent
-PATH_KEYS = {'TW_CRON_PATHS', 'TW_BACKUP_DIR', 'TW_PG_CONTAINER', 'TW_PG_DB', 'TW_PG_DUMP_USER', 'TW_SMOKE_ATTEMPTS', 'TW_SMOKE_DELAY', 'TW_DB_FILE', 'TW_NETWORK', 'TW_BASH', 'TW_ENV_DIR', 'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
+PATH_KEYS = {'TW_PG_ADMIN_USER', 'TW_CRON_PATHS', 'TW_BACKUP_DIR', 'TW_PG_CONTAINER', 'TW_PG_DB', 'TW_PG_DUMP_USER', 'TW_SMOKE_ATTEMPTS', 'TW_SMOKE_DELAY', 'TW_DB_FILE', 'TW_NETWORK', 'TW_BASH', 'TW_ENV_DIR', 'PATH', 'TW_LOCK_FILE', 'TW_STATE_DIR', 'TW_APP_DIR', 'TW_PYTHON', 'TW_STATE_OWNER_UID',
              'TW_STATE_MODE_CHECK'}
 
 
@@ -792,6 +793,105 @@ def cmd_register_release(paths, flags):
     print(json.dumps({'phase': 'pg_write_open', 'last_good': attestation['digest']}))
 
 
+def cmd_record_first_write(paths, flags):
+    """pg_write_open: record kind and UTC time of the first audited PostgreSQL change above the baseline, once."""
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != 'pg_write_open':
+        raise StateError(75, 'record-first-write needs phase pg_write_open')
+    first = state.data.get('first_pg_write') or {}
+    if first.get('kind'):
+        raise StateError(75, 'the first PostgreSQL write is already recorded')
+    recover = _sibling('recover')
+    baseline = first.get('baseline') or {}
+    try:
+        found = recover.first_write(recover.Pg(paths), baseline)
+    except recover.Unreadable as error:
+        raise StateError(85, 'the live database is not readable: %s' % error)
+    except ValueError as error:
+        raise StateError(70, str(error))
+    if found is None:
+        print(json.dumps({'first_pg_write': None}))
+        return
+    if not (type(found) is dict and sorted(found) == ['at', 'kind']
+            and re.fullmatch(r'[a-z_]{1,40}\.[a-z_]{1,40}', str(found['kind']))
+            and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', str(found['at']))):
+        raise StateError(70, 'unexpected first-write description')
+    state.transition('pg_write_open', _now(), first_pg_write={'at': found['at'], 'kind': found['kind'],
+                                                              'baseline': baseline})
+    print(json.dumps({'first_pg_write': found}))
+
+
+RECOVERY_PHASES = ('pg_write_open', 'recovering')
+
+
+def _no_proof(paths, candidate, reason):
+    """Fail closed: without a readable live database nothing is restored and no success is claimed."""
+    backups = pathlib.Path(paths['TW_BACKUP_DIR'])
+    try:
+        dumps = sorted((p for p in backups.iterdir() if p.is_file() and p.suffix == '.dump'),
+                       key=lambda p: p.stat().st_mtime)
+        newest = '%s (%s UTC)' % (dumps[-1].name, datetime.datetime.fromtimestamp(
+            dumps[-1].stat().st_mtime, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')) if dumps else 'none found'
+    except OSError:
+        newest = 'backup directory unreadable'
+    return StateError(85, 'live PostgreSQL is not readable (%s): nothing was restored and no success is claimed. '
+                          'RPO declared for this cutover: %s. Newest dump on the host: %s. Restoring an older dump '
+                          'loses every change after it: an explicit operator decision (decision_ref) is required.'
+                      % (reason, candidate['rpo_declared'], newest))
+
+
+def _recover_restart(paths, state, candidate, now):
+    """R-A: PostgreSQL intact after a crash/restart. Prove it by reading it, then bring the known PG web back."""
+    recover, hostops = _sibling('recover'), _sibling('hostops')
+    baseline = (state.data.get('first_pg_write') or {}).get('baseline') or {}
+    try:
+        facts = recover.live_facts(recover.Pg(paths), baseline)
+    except recover.Unreadable as error:
+        raise _no_proof(paths, candidate, str(error))
+    except ValueError as error:
+        raise StateError(70, str(error))
+    lost = [t for t in ('app_user', 'participant', 'enrollment', 'match', 'audit_event')
+            if t in baseline and facts['tables'].get(t, -1) < baseline[t]]
+    if lost or facts['sequences_behind'] != 0 or \
+            ((state.data.get('first_pg_write') or {}).get('kind') and facts['audit_after_baseline'] < 1):
+        raise StateError(86, 'the live database does not hold what was committed (tables: %s, sequences behind: %d); '
+                             'operator decision required' % (','.join(lost) or '-', facts['sequences_behind']))
+    runner = hostops.Runner(paths)
+    try:
+        running = runner.run(['docker', 'inspect', 'tech-woman', '--format', '{{.Config.Image}}'],
+                             error='cannot inspect the public web').stdout.strip().split('|')[0]
+    except hostops.HostError as error:
+        raise StateError(83, str(error))
+    match = re.fullmatch(r'ghcr\.io/dellanio/tech-woman@(sha256:[0-9a-f]{64})', running)
+    if not match or match.group(1) not in (state.data.get('known_pg_images') or []):
+        raise StateError(76, 'the web container is not a known PostgreSQL image; it is never restarted')
+    try:
+        runner.run(['docker', 'start', 'tech-woman'], error='cannot start the PostgreSQL web')
+        runner.run(['docker', 'start', 'tech-woman-mailer'], error='cannot start the mailer')
+        runner.run(['docker', 'exec', 'tech-woman', 'node', '-e', SMOKE_SCRIPT], error='internal smoke failed')
+    except hostops.HostError as error:
+        raise StateError(77, 'recovery stopped on PostgreSQL (never SQLite): %s' % error)
+    return facts
+
+
+def cmd_recover(paths, flags):
+    """Post-write recovery. Never touches SQLite; deploys stay denied (phase recovering) until it succeeds."""
+    mode = flags.get('mode')
+    if mode not in ('restart',):
+        raise StateError(64, '--mode must be restart')
+    manifest = _manifest()
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase not in RECOVERY_PHASES:
+        raise StateError(75, 'recover needs phase pg_write_open or recovering')
+    candidate = _sealed_candidate(paths, manifest)
+    now = _now()
+    if state.phase == 'pg_write_open':
+        state.transition('recovering', now, recovery={'mode': mode, 'started_at': now, 'result': 'in-progress'})
+    facts = _recover_restart(paths, state, candidate, now)
+    state.transition('pg_write_open', _now(), recovery={'mode': mode, 'started_at': now, 'result': 'ok', 'live': facts})
+    print(json.dumps({'mode': mode, 'phase': 'pg_write_open', 'live': facts}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -807,8 +907,11 @@ COMMANDS = {
     'release-check': cmd_release_check,
     'rebind': cmd_rebind,
     'register-release': cmd_register_release,
+    'record-first-write': cmd_record_first_write,
+    'recover': cmd_recover,
 }
-FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason'], 'release-check': ['previous-image']}
+FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason'], 'release-check': ['previous-image'],
+              'recover': ['mode', 'dump']}
 
 
 def main(argv):

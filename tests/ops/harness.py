@@ -92,6 +92,7 @@ class StagedOps:
             "TW_NETWORK='testnet'",
             "TW_BACKUP_DIR='%s'" % (self.host / 'backups').as_posix(),
             "TW_PG_CONTAINER='test-postgres'", "TW_PG_DB='%s'" % pg_db, "TW_PG_DUMP_USER='techwoman_backup'",
+            "TW_PG_ADMIN_USER='postgres'",
             'TW_SMOKE_ATTEMPTS=2', 'TW_SMOKE_DELAY=0',
             "TW_CRON_PATHS='%s'" % (self.host / 'cron').as_posix(),
             # Windows has no uid/mode bits: ownership is only exercised on POSIX (Linux container run).
