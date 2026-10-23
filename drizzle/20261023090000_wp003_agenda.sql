@@ -42,3 +42,52 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('CREATE TRIGGER agenda_validate AFTER INSERT OR UPDATE OR DELETE ON public.%I FOR EACH STATEMENT EXECUTE FUNCTION internal.validate_agenda_state()', t);
  END LOOP;
 END $$;
+--> statement-breakpoint
+-- Recusa com nome estável (mapeado pelo serviço via constraint); sem dados da linha na mensagem.
+CREATE OR REPLACE FUNCTION internal.agenda_reject(p_name text) RETURNS void
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN RAISE EXCEPTION '%', p_name USING ERRCODE = 'check_violation', CONSTRAINT = p_name; END $$;
+--> statement-breakpoint
+-- BEFORE ROW (depois do guard do statement): imutabilidade de id/FK/slug e transições exatas de cohort.
+-- Exigência de início futuro só na criação, reabertura e mudança de horário; cancelar após o início é permitido.
+CREATE OR REPLACE FUNCTION internal.agenda_row_check() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+ IF TG_OP = 'UPDATE' AND NEW.id IS DISTINCT FROM OLD.id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+ IF TG_TABLE_NAME = 'topic' THEN
+  IF TG_OP = 'UPDATE' AND NEW.slug IS DISTINCT FROM OLD.slug THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+ ELSIF TG_TABLE_NAME = 'mentor_topic' AND TG_OP = 'UPDATE' THEN
+  IF NEW.mentor_id IS DISTINCT FROM OLD.mentor_id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+  IF NEW.topic_id IS DISTINCT FROM OLD.topic_id AND EXISTS (SELECT 1 FROM public.cohort c WHERE c.mentor_topic_id = OLD.id) THEN
+   PERFORM internal.agenda_reject('agenda_cohort_in_use');
+  END IF;
+ ELSIF TG_TABLE_NAME = 'enrollment' AND TG_OP = 'UPDATE' THEN
+  IF NEW.participant_id IS DISTINCT FROM OLD.participant_id OR NEW.cohort_id IS DISTINCT FROM OLD.cohort_id THEN PERFORM internal.agenda_reject('agenda_immutable'); END IF;
+ ELSIF TG_TABLE_NAME = 'cohort' THEN
+  IF TG_OP = 'INSERT' THEN
+   IF NEW.status NOT IN ('draft','open') THEN PERFORM internal.agenda_reject('agenda_invalid_transition'); END IF;
+   IF NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+  ELSE
+   IF OLD.status = 'cancelled' AND (NEW.status, NEW.mentor_topic_id, NEW.starts_at, NEW.ends_at, NEW.capacity) IS DISTINCT FROM (OLD.status, OLD.mentor_topic_id, OLD.starts_at, OLD.ends_at, OLD.capacity) THEN
+    PERFORM internal.agenda_reject('agenda_invalid_transition');
+   END IF;
+   IF NEW.status <> OLD.status AND NOT ((OLD.status = 'draft' AND NEW.status IN ('open','cancelled')) OR (OLD.status = 'open' AND NEW.status IN ('closed','cancelled')) OR (OLD.status = 'closed' AND NEW.status IN ('open','cancelled'))) THEN
+    PERFORM internal.agenda_reject('agenda_invalid_transition');
+   END IF;
+   IF NEW.status = 'open' AND OLD.status <> 'open' AND NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+   IF (NEW.mentor_topic_id, NEW.starts_at, NEW.ends_at) IS DISTINCT FROM (OLD.mentor_topic_id, OLD.starts_at, OLD.ends_at) THEN
+    IF EXISTS (SELECT 1 FROM public.enrollment e WHERE e.cohort_id = OLD.id AND e.status = 'active') THEN PERFORM internal.agenda_reject('agenda_cohort_in_use'); END IF;
+    IF NEW.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+   END IF;
+  END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION internal.agenda_reject(text), internal.agenda_row_check() FROM PUBLIC;
+--> statement-breakpoint
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['topic','mentor_topic','cohort','enrollment','mentor','participant'] LOOP
+  EXECUTE format('CREATE TRIGGER agenda_row BEFORE INSERT OR UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION internal.agenda_row_check()', t);
+ END LOOP;
+END $$;
