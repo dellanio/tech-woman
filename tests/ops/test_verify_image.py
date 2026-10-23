@@ -12,6 +12,19 @@ class VerifyImageHappyPathTests(unittest.TestCase):
         self.host = Host(self)
         self.host.good_image()
 
+    def test_verification_containers_have_bounded_memory_cpu_and_logs(self):
+        result = self.host.verify_image()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runs = [args for args in docker_calls(result) if args[0] == 'run']
+        self.assertTrue(runs)
+        for args in runs:
+            self.assertIn('--memory', args)
+            self.assertEqual(args[args.index('--memory') + 1], '128m')
+            self.assertIn('--cpus', args)
+            self.assertEqual(args[args.index('--cpus') + 1], '0.25')
+            self.assertIn('max-size=10m', args)
+            self.assertIn('max-file=3', args)
+
     def test_a_matching_image_is_verified_with_isolated_read_only_docker_calls(self):
         result = self.host.verify_image()
         self.assertEqual(result.returncode, 0, result.stderr)
