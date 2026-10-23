@@ -25,7 +25,7 @@ re_sha256='^[0-9a-f]{64}$' re_count='^[1-9][0-9]{0,3}$'
 source "$here/paths.env"
 export PATH
 
-in_image() { docker run --rm --network none --entrypoint test "$ref" "$@"; }
+in_image() { docker run --rm --network none --memory 128m --cpus 0.25 --log-opt max-size=10m --log-opt max-file=3 --entrypoint test "$ref" "$@"; }
 
 meta=$(docker image inspect "$ref" \
   --format '{{.Architecture}}|{{.Os}}|{{index .Config.Labels "org.opencontainers.image.revision"}}') \
@@ -37,7 +37,7 @@ for required in /app/server.js /tools/scripts/email-worker.ts /tools/scripts/mig
 done
 
 rc=0
-docker run --rm --network none --entrypoint tar "$ref" -cf - -C /tools/drizzle . \
+docker run --rm --network none --memory 128m --cpus 0.25 --log-opt max-size=10m --log-opt max-file=3 --entrypoint tar "$ref" -cf - -C /tools/drizzle . \
   | "$TW_PYTHON" -I "$here/manifest.py" check-migrations-tar "$aggregate" "$count" >/dev/null || rc=$?
 [[ $rc -eq 0 ]] || fail "$rc" 'image migrations differ from the sealed candidate'
 
@@ -45,7 +45,7 @@ for forbidden in /app/node_modules/better-sqlite3 /tools/node_modules/better-sql
   in_image ! -e "$forbidden" || fail 76 'SQLite fallback present in the image'
 done
 rc=0
-docker run --rm --network none --entrypoint grep "$ref" -rIlE 'better-sqlite3|sqlite-core' /tools/src/lib >/dev/null || rc=$?
+docker run --rm --network none --memory 128m --cpus 0.25 --log-opt max-size=10m --log-opt max-file=3 --entrypoint grep "$ref" -rIlE 'better-sqlite3|sqlite-core' /tools/src/lib >/dev/null || rc=$?
 case $rc in
   1) ;;
   0) fail 76 'SQLite code present in the image' ;;
