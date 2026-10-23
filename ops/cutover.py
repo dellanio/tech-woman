@@ -310,7 +310,19 @@ def cmd_gate(paths, flags):
     sealed = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
     if sealed != state.candidate_sha256:
         raise StateError(70, 'candidate.json is not the one recorded by prepare')
-    print(json.dumps({'gate': 'ok', 'op': 'stage', 'phase': state.phase}))
+    operation = {'prepared': 'stage', 'pg_write_open': 'release'}.get(state.phase)
+    if operation is None:
+        raise StateError(75, 'phase %s does not allow deploy' % state.phase)
+    if flags['release-tree'] != candidate['tested_tree']:
+        raise StateError(71, 'release tree is not the tested tree')
+    migrations = candidate['migrations']
+    if flags['migrations-aggregate'] != migrations['aggregate_sha256'] \
+            or flags['migrations-count'] != str(migrations['count']):
+        raise StateError(72, 'migrations differ from the sealed candidate')
+    window = candidate['window']
+    if operation == 'stage' and not window['authorized_at'] <= _now() < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    print(json.dumps({'gate': 'ok', 'op': operation, 'phase': state.phase}))
 
 
 COMMANDS = {'prepare': cmd_prepare, 'status': cmd_status}
