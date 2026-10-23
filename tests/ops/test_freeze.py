@@ -138,7 +138,7 @@ class FreezeRestoreFailureTests(FreezeTestCase):
     def test_a_restore_that_fails_is_reported_loudly_and_never_claimed_as_available(self):
         fake = self.host.ops.fake
         (fake / 'fuser.rc').write_bytes(b'0')     # a writer is found, so the freeze must back out ...
-        (fake / 'rename.rc').write_bytes(b'1')    # ... but putting the original back fails
+        (fake / 'rename.rc.2').write_bytes(b'1')  # ... but putting the original back (2nd rename) fails
         done = self.freeze()
         self.assertEqual(done.returncode, 84, done.stderr)
         self.assertIn('NOT restored', done.stderr)

@@ -19,7 +19,10 @@ case "$sub" in
     cat "$d/inspect" ;;
   inspect) [[ -f "$d/container-inspect" ]] && cat "$d/container-inspect"; exit "$(rc_of inspect-container.rc 0)" ;;
   ps) [[ -f "$d/ps" ]] && cat "$d/ps"; exit 0 ;;
-  stop|rename|rm|start) exit "$(rc_of "$sub.rc" 0)" ;;
+  stop|rename|rm|start)
+    n=$(cat "$d/$sub.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/$sub.count"
+    if [[ -f "$d/$sub.rc.$n" ]]; then exit "$(cat "$d/$sub.rc.$n")"; fi
+    exit "$(rc_of "$sub.rc" 0)" ;;
   run)
     ep='' detached=false
     while [[ $# -gt 0 ]]; do

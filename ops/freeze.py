@@ -35,14 +35,25 @@ def _sample(db_path, connection):
 
 
 def _restore(runner, raised):
-    """Put the original service back (best effort, every step attempted)."""
+    """Put the original service back. Returns the commands that FAILED (empty list = restored)."""
     steps = [['docker', 'rm', '-f', CONTAINER], ['docker', 'rename', ORIGINAL, CONTAINER],
              ['docker', 'start', CONTAINER]] if raised else [['docker', 'start', CONTAINER]]
+    failed = []
     for argv in steps:
         try:
             runner.run(argv)
         except hostops.HostError:
-            pass
+            failed.append(' '.join(argv[1:]))
+    return failed
+
+
+def _back_out(runner, raised, reason, code):
+    failed = _restore(runner, raised)
+    if failed:
+        raise Refusal(84, 'NOT restored (%s): the original container is kept as %s and the public page may be '
+                          'down or in maintenance; operator action required. Original reason: %s'
+                      % (', '.join(failed), ORIGINAL, reason))
+    raise Refusal(code, reason)
 
 
 def freeze(paths, quiet_seconds):
@@ -89,10 +100,8 @@ def freeze(paths, quiet_seconds):
         if first != second:
             raise Refusal(80, 'the database changed during the quiet window')
     except hostops.HostError as error:
-        _restore(runner, raised)
-        raise Refusal(error.code, str(error))
-    except Refusal:
-        _restore(runner, raised)
-        raise
+        _back_out(runner, raised, str(error), error.code)
+    except Refusal as refusal:
+        _back_out(runner, raised, str(refusal), refusal.code)
     return {'original_container': ORIGINAL, 'original_image': image, 'ip': ip, 'quiet_seconds': quiet_seconds,
             'writers_checked': list(WRITERS)}
