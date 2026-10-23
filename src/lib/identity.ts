@@ -62,3 +62,7 @@ export async function confirmPasswordReset(token:string,newPassword:string):Prom
 export async function logout(token:string):Promise<void>{
   if(isSessionToken(token)) await getDb().execute(sql`select internal.identity_logout(${tokenDigest(token)})`);
 }
+
+/** Stubs RED (WP-002 Task 2 slice B): substituídos no GREEN. */
+export async function requestPasswordForgot(_email: unknown): Promise<{ status: 'received' }> { return { status: 'received' }; }
+export async function enqueueAdminTemporaryPassword(_userId: string, _idempotencyKey: string): Promise<{ jobId: string; status: 'queued' } | null> { return null; }

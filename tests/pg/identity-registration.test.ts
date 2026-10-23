@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {Pool} from 'pg';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {migrate} from '../../scripts/migration/migrate';
-import {closeDb,hashPassword} from '../../src/lib/db';
+import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
+import * as identity from '../../src/lib/identity';
 import * as contracts from '../../src/lib/contracts';
 import * as registration from '../../src/lib/registration';
 
@@ -118,4 +119,140 @@ test('fronteira: runtime só executa os cadastros fechados; sem DML livre nem ma
  const fns=(await db.query("select p.proname,p.prosecdef,p.proconfig::text cfg,has_function_privilege('public',p.oid,'execute') pub,has_function_privilege('techwoman_runtime',p.oid,'execute') rt,has_function_privilege('techwoman_mailer',p.oid,'execute') ml from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='internal' and p.proname in ('register_participant_account','register_mentor_account','activate_legacy_identity')")).rows;
  assert.deepEqual(fns.map(f=>f.proname).sort(),['activate_legacy_identity','register_mentor_account','register_participant_account']);
  for(const f of fns){assert.equal(f.prosecdef,true,f.proname);assert.equal(/search_path=pg_catalog, pg_temp/.test(f.cfg),true,f.proname);assert.equal(f.pub,false,f.proname);assert.equal(f.ml,false,f.proname);assert.equal(f.rt,f.proname!=='activate_legacy_identity',f.proname);}
+}));
+
+async function addUser(db:Pool,opts:{email?:string;status?:string;password?:string;roles?:string[]}={}){
+ const id=randomUUID(),email=opts.email??`u-${id.slice(0,8)}@example.invalid`;
+ await db.query("insert into app_user(id,email,status,password_hash) values($1,$2,$3,$4)",[id,email,opts.status??'active',opts.password?await hashPassword(opts.password):null]);
+ for(const role of opts.roles??['participant'])await db.query('insert into user_role(user_id,role) values($1,$2)',[id,role]);
+ return {id,email};
+}
+const jobs=async(db:Pool,userId:string)=>(await db.query('select kind,status,generation::int g,dedupe_key,attempts,lease_owner is null lo from email_job where user_id=$1 order by created_at,id',[userId])).rows;
+const userState=async(db:Pool,id:string)=>JSON.stringify((await db.query('select password_hash,temporary_password_hash,temporary_expires_at,temporary_used_at,credential_generation::text g,must_change_password,status,session_version::text sv,updated_at from app_user where id=$1',[id])).rows[0]);
+
+test('esqueci a senha: conta ativa (inclusive admin) → job de reset; pendente → job temporário; nada mais; nunca revoga senha/sessão',async()=>withDb(async({db})=>{
+ const pw=synthetic();
+ const active=await addUser(db,{password:pw}),admin=await addUser(db,{password:pw,roles:['admin','mentor']}),pending=await addUser(db,{status:'pending_activation'});
+ const privPending=await addUser(db,{status:'pending_activation',roles:['team']}),disabled=await addUser(db,{password:pw,status:'disabled'});
+ const session=await identity.login(active.email,pw);assert.ok(session);
+ const before=await userState(db,active.id);
+ assert.deepEqual(await identity.requestPasswordForgot(`  ${active.email.toUpperCase()} `),{status:'received'});
+ assert.equal(same(await userState(db,active.id),before),true,'forgot não toca hash, geração, sessão ou status');
+ assert.ok(await identity.identitySession(session.token));assert.ok(await identity.login(active.email,pw));
+ const a=await jobs(db,active.id);assert.deepEqual(a.map(j=>[j.kind,j.status,j.attempts,j.lo]),[['password_reset','queued',0,true]]);
+ assert.equal(a[0].g,Number(JSON.parse(before).g));
+ await Promise.all([1,2,3,4].map(()=>identity.requestPasswordForgot(active.email)));assert.equal((await jobs(db,active.id)).length,1,'job ativo deduplica corridas e repetições');
+ await identity.requestPasswordForgot(admin.email);assert.deepEqual((await jobs(db,admin.id)).map(j=>j.kind),['password_reset'],'autoatendimento de admin com prova por e-mail');
+ await identity.requestPasswordForgot(pending.email);await identity.requestPasswordForgot(pending.email);
+ assert.deepEqual((await jobs(db,pending.id)).map(j=>[j.kind,j.status]),[['registration','queued']]);
+ for(const email of [privPending.email,disabled.email,'ninguem@example.invalid'])assert.deepEqual(await identity.requestPasswordForgot(email),{status:'received'});
+ assert.equal((await jobs(db,privPending.id)).length+(await jobs(db,disabled.id)).length,0,'privilegiado pendente e desativado nunca recebem emissão');
+ assert.equal((await db.query('select count(*)::int n from email_job')).rows[0].n,3);
+ await db.query("update email_job set status='accepted' where user_id=$1",[active.id]);await identity.requestPasswordForgot(active.email);
+ assert.equal((await jobs(db,active.id)).length,2,'novo pedido após aceite gera nova intenção');
+}));
+
+test('reenvio administrativo de temporário: só não-admin/não-desativado, idempotente por chave, intenção distinta',async()=>withDb(async({db})=>{
+ const pw=synthetic();const user=await addUser(db,{password:pw});const pending=await addUser(db,{status:'pending_activation'});
+ const admin=await addUser(db,{password:pw,roles:['admin']}),team=await addUser(db,{password:pw,roles:['team']}),disabled=await addUser(db,{password:pw,status:'disabled'});
+ const session=await identity.login(user.email,pw);assert.ok(session);const before=await userState(db,user.id);
+ const [k1,k2]=[randomUUID(),randomUUID()];
+ const first=await identity.enqueueAdminTemporaryPassword(user.id,k1);assert.ok(first);assert.equal(first.status,'queued');assert.match(first.jobId,/^[0-9a-f-]{36}$/);
+ const again=await identity.enqueueAdminTemporaryPassword(user.id,k1);assert.deepEqual(again,first);assert.equal((await jobs(db,user.id)).length,1);
+ const other=await identity.enqueueAdminTemporaryPassword(user.id,k2);assert.ok(other);assert.equal(other.jobId===first.jobId,false);
+ assert.deepEqual((await jobs(db,user.id)).map(j=>j.kind),['temporary_password','temporary_password']);
+ assert.equal(same(await userState(db,user.id),before),true,'enfileirar não emite nem revoga: a emissão é do worker');assert.ok(await identity.identitySession(session.token));
+ assert.ok(await identity.enqueueAdminTemporaryPassword(pending.id,randomUUID()));
+ for(const target of [admin.id,team.id,disabled.id,randomUUID()])assert.equal(await identity.enqueueAdminTemporaryPassword(target,randomUUID()),null);
+ assert.equal((await jobs(db,admin.id)).length+(await jobs(db,team.id)).length+(await jobs(db,disabled.id)).length,0);
+ await assert.rejects(()=>identity.enqueueAdminTemporaryPassword(user.id,'nao-e-uuid'),(e:unknown)=>e instanceof identity.IdentityError&&e.code==='INVALID_INPUT');
+ const concurrent=await Promise.all([1,2,3].map(()=>identity.enqueueAdminTemporaryPassword(pending.id,k1)));assert.equal(new Set(concurrent.map(c=>c?.jobId)).size,concurrent[0]?1:0);
+}));
+
+test('perfil próprio: sessão full anexa participant/mentor só ao próprio usuário; admin 404; sem ligar por e-mail',async()=>withDb(async({db})=>{
+ const pw=synthetic();const {goal,moment,interests,skills,area,consent}=participantDto('x@example.invalid');
+ const profile={goal,moment,interests,skills,area,consent};const mentorProfile=(({email:_e,...rest})=>rest)(mentorDto('x@example.invalid'));
+ const user=await addUser(db,{password:pw,roles:['participant']});await db.query("insert into participant(email,goal,moment,interests,skills,token_hash,consent_version,user_id) values($1,'growth','working','[]','[]',$2,'v1',$3)",[user.email,'b'.repeat(64),user.id]);
+ const s=await identity.login(user.email,pw);assert.ok(s);
+ assert.equal(await registration.addOwnProfile(s.token,'mentor',mentorProfile),'created');
+ const m=(await db.query('select user_id,email,display_name,capacity,consent_version from mentor')).rows[0];assert.deepEqual([m.user_id,m.email,m.display_name,m.capacity,m.consent_version],[user.id,user.email,'Mentora Fictícia',3,'v1']);
+ assert.deepEqual((await db.query('select role from user_role where user_id=$1 order by role',[user.id])).rows.map(r=>r.role),['mentor','participant']);
+ assert.equal(await registration.addOwnProfile(s.token,'mentor',mentorProfile),'conflict');assert.equal(await registration.addOwnProfile(s.token,'participant',profile),'conflict');
+ assert.equal((await db.query('select count(*)::int n from mentor')).rows[0].n,1);
+ const mentorOnly=await addUser(db,{password:pw,roles:['mentor']});const s2=await identity.login(mentorOnly.email,pw);assert.ok(s2);
+ assert.equal(await registration.addOwnProfile(s2.token,'participant',profile),'created');
+ assert.deepEqual((await db.query('select user_id=$1 own,email from participant where user_id=$1',[mentorOnly.id])).rows,[{own:true,email:mentorOnly.email}]);
+ const adminUser=await addUser(db,{password:pw,roles:['admin']});const teamUser=await addUser(db,{password:pw,roles:['team','participant']});
+ const sa=await identity.login(adminUser.email,pw),st=await identity.login(teamUser.email,pw);assert.ok(sa&&st);
+ const beforeAdmin=await snapshot(db);
+ assert.equal(await registration.addOwnProfile(sa.token,'mentor',mentorProfile),'not_found');assert.equal(await registration.addOwnProfile(st.token,'mentor',mentorProfile),'not_found');
+ assert.equal(same(await snapshot(db),beforeAdmin),true,'alvo privilegiado: nada muda');
+ const temp=await addUser(db,{status:'pending_activation'});const t=identity.generateTemporaryPassword();await db.query('select internal.issue_temporary_credential($1::uuid,$2)',[temp.id,await hashPassword(t)]);
+ const limited=await identity.login(temp.email,t);assert.ok(limited);assert.equal(await registration.addOwnProfile(limited.token,'participant',profile),'not_found','sessão limitada não anexa perfil');
+ assert.equal(await registration.addOwnProfile(identity.newSessionToken(),'participant',profile),'not_found');assert.equal(await registration.addOwnProfile('lixo','participant',profile),'not_found');
+ await db.query(`insert into participant(id,email,goal,moment,interests,skills,token_hash,consent_version) values(501,'Colisao@Example.invalid','growth','working','[]','[]','${'c'.repeat(64)}','v0')`);
+ const clash=await addUser(db,{password:pw,email:'colisao@example.invalid',roles:['mentor']});const sc=await identity.login(clash.email,pw);assert.ok(sc);
+ assert.equal(await registration.addOwnProfile(sc.token,'participant',profile),'reconciliation','não liga nem duplica registro legado por e-mail');
+ assert.equal((await db.query('select user_id is null n from participant where id=501')).rows[0].n,true);
+ await assert.rejects(()=>registration.addOwnProfile(s2.token,'participant',{...profile,email:'x@example.invalid',roles:['admin'],userId:'1'}),(e:unknown)=>e instanceof contracts.ContractError);
+ process.env.MENTOR_DEADLINE='2020-01-01T00:00:00.000Z';await assert.rejects(()=>registration.addOwnProfile(s2.token,'mentor',mentorProfile),(e:unknown)=>e instanceof registration.RegistrationClosedError);
+}));
+
+async function legacyFixture(db:Pool){
+ const run=randomUUID();await db.query("insert into migration_run(id,source_checksum,status) values($1,$2,'pending')",[run,run]);
+ const link=(table:string,key:string,user:string|null,resolution:string)=>db.query('insert into migration_identity_link(run_id,source_table,source_key,user_id,resolution) values($1,$2,$3,$4,$5)',[run,table,key,user,resolution]);
+ const participant=(id:number,email:string,userId:string|null=null)=>db.query("insert into participant(id,email,goal,moment,interests,skills,token_hash,consent_version,user_id) values($1,$2,'growth','working','[]','[]',$3,'v0',$4)",[id,email,String(id).padStart(64,'e'),userId]);
+ const mentor=(id:number,email:string)=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity) values($1,$2,'t','[]','a',2)",[id,email]);
+ return {link,participant,mentor};
+}
+const temporaryLogin=async(db:Pool,userId:string,email:string)=>{const t=identity.generateTemporaryPassword();await db.query('select internal.issue_temporary_credential($1::uuid,$2)',[userId,await hashPassword(t)]);const s=await identity.login(email,t);assert.ok(s);return {temp:t,session:s};};
+
+test('ativação legada: só a troca inicial comprovada liga perfis do mapa privado e revoga o token legado',async()=>withDb(async({db})=>{
+ const {link,participant,mentor}=await legacyFixture(db);
+ const user=await addUser(db,{email:'leg@example.invalid',status:'pending_activation',roles:[]});
+ await participant(101,'Leg@Example.invalid ');await mentor(201,'LEG@example.invalid');
+ await link('participant','101',user.id,'awaiting_email_proof');await link('mentor','201',user.id,'awaiting_email_proof');
+ const tokenBefore=(await db.query('select token_hash from participant where id=101')).rows[0].token_hash;
+ const {temp,session}=await temporaryLogin(db,user.id,user.email);
+ assert.deepEqual((await db.query('select (select user_id from participant where id=101) p,(select user_id from mentor where id=201) m,(select count(*)::int from user_role) r')).rows[0],{p:null,m:null,r:0},'login com temporário ainda não liga nada');
+ const guard0=(await db.query('select revision::int r from internal.agenda_guard')).rows[0].r;
+ const first=synthetic();const done=await identity.changePassword(session.token,temp,first);
+ const p=(await db.query('select user_id,legacy_access_revoked_at is not null revoked,token_hash=$1 same from participant where id=101',[tokenBefore])).rows[0];
+ assert.deepEqual([p.user_id,p.revoked,p.same],[user.id,true,true],'FK ligada, acesso legado revogado, hash preservado para auditoria');
+ assert.equal((await db.query('select user_id from mentor where id=201')).rows[0].user_id,user.id);
+ assert.deepEqual((await db.query('select role from user_role where user_id=$1 order by role',[user.id])).rows.map(r=>r.role),['mentor','participant']);
+ assert.deepEqual((await db.query('select source_table,resolution from migration_identity_link order by source_table')).rows,[{source_table:'mentor',resolution:'activated'},{source_table:'participant',resolution:'activated'}]);
+ assert.equal((await db.query('select revision::int r from internal.agenda_guard')).rows[0].r>guard0,true,'escrita do guard de Agenda');
+ await participant(106,'leg@example.invalid');await link('participant','106',user.id,'awaiting_email_proof');
+ await identity.changePassword(done.token,first,synthetic());
+ assert.equal((await db.query('select user_id is null n from participant where id=106')).rows[0].n,true,'troca por sessão full nunca ativa mapa novo');
+}));
+
+test('ativação legada recusa ambiguidade, candidato privilegiado, e-mail divergente e perfil já existente, sem quebrar a troca',async()=>withDb(async({db})=>{
+ const {link,participant,mentor}=await legacyFixture(db);
+ // ambíguo: outro registro legado sem user_id com a mesma chave fora do mapa do usuário
+ const amb=await addUser(db,{email:'amb@example.invalid',status:'pending_activation',roles:[]});
+ await participant(111,'amb@example.invalid');await participant(112,'AMB@example.invalid');await mentor(211,'amb@example.invalid');
+ await link('participant','111',amb.id,'awaiting_email_proof');await link('mentor','211',amb.id,'awaiting_email_proof');
+ // privilegiado: usuário team/admin com mapa awaiting (nunca vinculado) e candidato sem user_id
+ const priv=await addUser(db,{email:'priv@example.invalid',status:'pending_activation',roles:['team']});
+ await participant(121,'priv@example.invalid');await link('participant','121',priv.id,'awaiting_email_proof');
+ await participant(122,'Dona@Example.invalid');await link('participant','122',null,'privileged_candidate');
+ const admin=await addUser(db,{email:'dona@example.invalid',password:synthetic(),roles:['admin']});
+ // e-mail divergente da chave do usuário
+ const mis=await addUser(db,{email:'mis@example.invalid',status:'pending_activation',roles:[]});
+ await participant(131,'outra.pessoa@example.invalid');await link('participant','131',mis.id,'awaiting_email_proof');
+ // usuário que já tem perfil de participante próprio
+ const own=await addUser(db,{email:'own@example.invalid',status:'pending_activation',roles:['participant']});
+ await participant(141,'own@example.invalid',own.id);await participant(142,'own@example.invalid');await mentor(241,'own@example.invalid');
+ await link('participant','142',own.id,'awaiting_email_proof');await link('mentor','241',own.id,'awaiting_email_proof');
+ for(const u of [amb,priv,mis,own]){const {temp,session}=await temporaryLogin(db,u.id,u.email);await identity.changePassword(session.token,temp,synthetic());}
+ const rows=(await db.query('select id::int,user_id,legacy_access_revoked_at is not null revoked from participant order by id')).rows;
+ const linked=Object.fromEntries(rows.map(r=>[r.id,r.user_id]));
+ assert.deepEqual([linked[111],linked[112],linked[121],linked[122],linked[131],linked[142]],[null,null,null,null,null,null],'nenhum registro ambíguo, privilegiado, divergente ou duplicado é ligado');
+ assert.equal(rows.filter(r=>r.id!==141).some(r=>r.revoked),false,'nenhum token legado revogado');assert.equal(linked[141],own.id);
+ assert.deepEqual([(await db.query('select user_id from mentor where id=211')).rows[0].user_id,(await db.query('select user_id from mentor where id=241')).rows[0].user_id],[amb.id,own.id],'domínio sem ambiguidade na própria tabela continua ligado');
+ assert.deepEqual((await db.query("select role from user_role where user_id=$1",[priv.id])).rows.map(r=>r.role),['team'],'sem papel novo para privilegiado');
+ assert.deepEqual((await db.query("select role from user_role where user_id=$1",[admin.id])).rows.map(r=>r.role),['admin']);
+ assert.equal((await db.query("select count(*)::int n from migration_identity_link where resolution='awaiting_email_proof'")).rows[0].n,5,'mapa não resolvido segue preservado');
 }));

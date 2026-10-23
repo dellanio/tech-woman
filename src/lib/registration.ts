@@ -21,3 +21,7 @@ export async function registerMentor(input: unknown): Promise<RegistrationReceiv
   await getDb().execute(sql`select internal.register_mentor_account(${p.email},${p.displayName},${p.trajectory},${JSON.stringify(p.specialties)}::jsonb,${p.availability},${p.legacyCapacity})`);
   return received();
 }
+
+/** Stub RED (slice B). */
+export type OwnProfileOutcome = 'created' | 'conflict' | 'reconciliation' | 'not_found';
+export async function addOwnProfile(_sessionToken: string, _domain: 'participant' | 'mentor', _input: unknown): Promise<OwnProfileOutcome> { return 'not_found'; }
