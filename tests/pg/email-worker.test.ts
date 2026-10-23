@@ -7,6 +7,8 @@ import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
 import * as identity from '../../src/lib/identity';
 import * as registration from '../../src/lib/registration';
 import * as email from '../../src/lib/email';
+import * as accounts from '../../src/lib/accounts';
+import {sessionFor} from './identity-harness.test';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 type Ctx={db:Pool;url:string;mailer:Pool};
@@ -49,6 +51,8 @@ const leaked=async(db:Pool,secrets:string[])=>{
  for(const {s,t} of tables){const dump=JSON.stringify((await db.query(`select to_jsonb(x)::text j from ${s}.${t} x`)).rows);if(secrets.some(v=>v.length>0&&dump.includes(v)))return true;}
  return false;
 };
+/** Reenvio administrativo pelo caminho real (ator admin com sessão); devolve o job ou null. */
+const resend=async(db:Pool,userId:string)=>{const actor=await addUser(db,{roles:['admin'],password:synthetic()});const r=await accounts.resendTemporary(await sessionFor(db,actor.id),userId,randomUUID());return r.outcome==='ok'?r.job??null:null;};
 const zero:email.EmailWorkerResult={claimed:0,accepted:0,simulated:0,unconfirmed:0,failed:0,cancelled:0,stale:0};
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
@@ -80,7 +84,7 @@ test('dois workers concorrentes: nenhuma emissão duplicada e nunca duas tentati
  assert.equal((await db.query("select count(*)::int n from email_job where status='simulated' and attempts=1")).rows[0].n,8);
  // mesmo usuário com duas intenções: serializadas, a última emissão vence
  const user=await register('dupla@example.invalid').then(()=>idByEmail(db,'dupla@example.invalid'));
- assert.ok(await identity.enqueueAdminTemporaryPassword(user,randomUUID()));
+ assert.ok(await resend(db,user));
  const got:email.EmailMessage[]=[];let clash=false,live=0;
  const slow=()=>email.createMemoryTransport(async m=>{live++;if(live>1)clash=true;got.push(m);await sleep(120);live--;});
  await Promise.all([email.runEmailWorkerOnce(slow(),randomUUID()),email.runEmailWorkerOnce(slow(),randomUUID())]);
@@ -171,7 +175,7 @@ test('reenvio explícito emite temporário para usuária ativa e revoga sessões
  const tok=(await db.query('select token_hash,generation::int g,expires_at-now()<=interval \'30 minutes\' ok,used_at is null u from password_reset_token')).rows;
  assert.deepEqual([tok.length,tok[0].token_hash===tokenDigest(rm.secret),tok[0].ok,tok[0].u],[1,true,true,true]);
  assert.equal(tok[0].g,(await userRow(db,user.id)).g);
- const sent=await identity.enqueueAdminTemporaryPassword(user.id,randomUUID());assert.ok(sent);
+ const sent=await resend(db,user.id);assert.ok(sent);
  const g0=(await userRow(db,user.id)).g;const temp=capture();await email.runEmailWorkerOnce(temp.transport);
  assert.equal(temp.messages.length,1);assert.equal(temp.messages[0].kind,'temporary_password');
  assert.equal(await identity.identitySession(s.token),null,'emissão explícita revoga sessões anteriores');assert.equal(await identity.login(user.email,pw),null,'senha definitiva suspensa enquanto temporário pendente');
@@ -283,7 +287,7 @@ test('sem deadlock: cadastros, logins, trocas, resets, reenvios e dois workers e
  const pend=[];for(let i=0;i<6;i++){await register(`p${i}@example.invalid`);pend.push(`p${i}@example.invalid`);}
  for(const u of users)await identity.requestPasswordForgot(u.email);
  const ops:Promise<unknown>[]=[];
- for(const u of users){ops.push(identity.login(u.email,pw));ops.push(identity.enqueueAdminTemporaryPassword(u.id,randomUUID()));ops.push(identity.requestPasswordForgot(u.email));}
+ for(const u of users){ops.push(identity.login(u.email,pw));ops.push(resend(db,u.id));ops.push(identity.requestPasswordForgot(u.email));}
  for(const addr of pend)ops.push(identity.requestPasswordForgot(addr));
  ops.push(email.runEmailWorkerOnce(capture().transport),email.runEmailWorkerOnce(capture().transport));
  const settled=await Promise.allSettled(ops);assert.equal(settled.filter(r=>r.status==='rejected').length,0);

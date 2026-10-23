@@ -7,6 +7,8 @@ import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
 import * as identity from '../../src/lib/identity';
 import * as contracts from '../../src/lib/contracts';
 import * as registration from '../../src/lib/registration';
+import * as accounts from '../../src/lib/accounts';
+import {sessionFor} from './identity-harness.test';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 type Ctx={db:Pool;url:string};
@@ -159,16 +161,17 @@ test('reenvio administrativo de temporário: só não-admin/não-desativado, ide
  const admin=await addUser(db,{password:pw,roles:['admin']}),team=await addUser(db,{password:pw,roles:['team']}),disabled=await addUser(db,{password:pw,status:'disabled'});
  const session=await identity.login(user.email,pw);assert.ok(session);const before=await userState(db,user.id);
  const [k1,k2]=[randomUUID(),randomUUID()];
- const first=await identity.enqueueAdminTemporaryPassword(user.id,k1);assert.ok(first);assert.equal(first.status,'queued');assert.match(first.jobId,/^[0-9a-f-]{36}$/);
- const again=await identity.enqueueAdminTemporaryPassword(user.id,k1);assert.deepEqual(again,first);assert.equal((await jobs(db,user.id)).length,1);
- const other=await identity.enqueueAdminTemporaryPassword(user.id,k2);assert.ok(other);assert.equal(other.jobId===first.jobId,false);
+ const actor=await addUser(db,{password:pw,roles:['admin']});const token=await sessionFor(db,actor.id);
+ const first=await accounts.resendTemporary(token,user.id,k1);assert.equal(first.outcome,'ok');assert.equal(first.job?.status,'queued');assert.match(String(first.job?.jobId),/^[0-9a-f-]{36}$/);
+ const again=await accounts.resendTemporary(token,user.id,k1);assert.deepEqual(again,first);assert.equal((await jobs(db,user.id)).length,1);
+ const other=await accounts.resendTemporary(token,user.id,k2);assert.equal(other.outcome,'ok');assert.equal(other.job?.jobId===first.job?.jobId,false);
  assert.deepEqual((await jobs(db,user.id)).map(j=>j.kind),['temporary_password','temporary_password']);
  assert.equal(same(await userState(db,user.id),before),true,'enfileirar não emite nem revoga: a emissão é do worker');assert.ok(await identity.identitySession(session.token));
- assert.ok(await identity.enqueueAdminTemporaryPassword(pending.id,randomUUID()));
- for(const target of [admin.id,team.id,disabled.id,randomUUID()])assert.equal(await identity.enqueueAdminTemporaryPassword(target,randomUUID()),null);
+ assert.equal((await accounts.resendTemporary(token,pending.id,randomUUID())).outcome,'ok');
+ for(const target of [admin.id,team.id,disabled.id,randomUUID()])assert.deepEqual(await accounts.resendTemporary(token,target,randomUUID()),{outcome:'not_found'});
  assert.equal((await jobs(db,admin.id)).length+(await jobs(db,team.id)).length+(await jobs(db,disabled.id)).length,0);
- await assert.rejects(()=>identity.enqueueAdminTemporaryPassword(user.id,'nao-e-uuid'),(e:unknown)=>e instanceof identity.IdentityError&&e.code==='INVALID_INPUT');
- const concurrent=await Promise.all([1,2,3].map(()=>identity.enqueueAdminTemporaryPassword(pending.id,k1)));assert.equal(new Set(concurrent.map(c=>c?.jobId)).size,concurrent[0]?1:0);
+ await assert.rejects(()=>accounts.resendTemporary(token,user.id,'nao-e-uuid'),(e:unknown)=>e instanceof identity.IdentityError&&e.code==='INVALID_INPUT');
+ const concurrent=await Promise.all([1,2,3].map(()=>accounts.resendTemporary(token,pending.id,k1)));assert.equal(new Set(concurrent.map(c=>c.job?.jobId)).size,1);
 }));
 
 test('perfil próprio: sessão full anexa participant/mentor só ao próprio usuário; admin 404; sem ligar por e-mail',async()=>withDb(async({db})=>{

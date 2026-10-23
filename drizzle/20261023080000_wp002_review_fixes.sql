@@ -69,3 +69,11 @@ BEGIN
  END;
  RETURN QUERY SELECT * FROM internal.account_result('ok', v_user);
 END $$;
+--> statement-breakpoint
+-- M3: o reenvio HTTP usa admin_user_resend (revalida o ator); a função nua sem checagem de ator não fica executável pelo app/worker.
+REVOKE ALL ON FUNCTION internal.enqueue_admin_temporary(uuid,text) FROM PUBLIC;
+--> statement-breakpoint
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='techwoman_runtime') THEN REVOKE EXECUTE ON FUNCTION internal.enqueue_admin_temporary(uuid,text) FROM techwoman_runtime; END IF;
+ IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='techwoman_mailer') THEN REVOKE EXECUTE ON FUNCTION internal.enqueue_admin_temporary(uuid,text) FROM techwoman_mailer; END IF;
+END $$;
