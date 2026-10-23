@@ -303,6 +303,8 @@ test('estados: turma encerrada antes de abrir vira vazio com volta; falha de red
  const {page,context}=await participantOnAccount('states');
  try{
   await main(page).locator('article.choice-mentor').first().waitFor();
+  // Next dev (StrictMode) pede a lista duas vezes: só muda o banco depois que as duas respostas chegaram
+  await page.waitForLoadState('networkidle');
   // a turma fecha depois que a lista foi carregada: a mentora aparece, mas não há turma aberta
   await ui.db.query("update cohort set status='closed' where id=$1",[empty.cohortId]);
   await openMentor(page,'Eva Sem Turma');
