@@ -41,7 +41,10 @@ def ops_package(directory):
     for path in sorted(root.rglob('*'), key=lambda p: p.relative_to(root).as_posix()):
         rel = path.relative_to(root).as_posix()
         if path.is_file() and '__pycache__' not in path.parts and not rel.endswith('.pyc'):
-            files.append({'name': rel, 'sha256': _sha256(path.read_bytes())})
+            data = path.read_bytes()
+            if b'\r' in data:
+                raise ManifestError(65, '%s has CR bytes; ops files must be real LF' % rel)
+            files.append({'name': rel, 'sha256': _sha256(data)})
     return {'files': files, 'aggregate_sha256': _aggregate(files)}
 
 
@@ -136,7 +139,14 @@ def _flags(args, names):
 
 
 def main(argv):
-    cmd, args = (argv[1] if len(argv) > 1 else ''), argv[2:]
+    try:
+        return _run(argv[1] if len(argv) > 1 else '', argv[2:])
+    except ManifestError as error:
+        print('manifest: %s' % error, file=sys.stderr)
+        return error.code
+
+
+def _run(cmd, args):
     if cmd == 'migrations' and len(args) == 1:
         print(json.dumps(migrations(args[0])))
         return 0
@@ -146,14 +156,6 @@ def main(argv):
     if cmd == 'ops-package' and len(args) == 1:
         print(json.dumps(ops_package(args[0])))
         return 0
-    try:
-        return _run(cmd, args)
-    except ManifestError as error:
-        print('manifest: %s' % error, file=sys.stderr)
-        return error.code
-
-
-def _run(cmd, args):
     if cmd == 'seal':
         flags = _flags(args, ['facts', 'migrations-dir', 'ops-dir', 'out'])
         facts = json.loads(pathlib.Path(flags['facts']).read_text())
