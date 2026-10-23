@@ -10,10 +10,13 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import {readFileSync,readdirSync} from 'node:fs';
 import {Client,Pool} from 'pg';
 import {migrate} from '../../scripts/migration/migrate';
+import {tokenDigest} from '../../src/lib/db';
+import {newSessionToken} from '../../src/lib/identity';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 const MATRIX='scripts/migration/agenda-grants-matrix.sql';
 const LOGIN_ROLES=['techwoman_migrator','techwoman_runtime','techwoman_mailer'] as const;
+const I4_HELPERS=['internal.api_account_create(text,text)','internal.api_session_actor(text,uuid[])','internal.domain_lock_users(text,bigint[])','internal.lock_user_set(uuid[])','internal.lock_users(uuid,uuid)'];
 const urlFor=(db:string,user?:string,password?:string)=>{const u=new URL(String(base));u.pathname='/'+db;if(user){u.username=user;u.password=password??'';}return u.toString();};
 const redact=(text:string,secrets:string[])=>secrets.reduce((t,s)=>t.split(s).join('<redacted>'),text);
 function psql(url:string,file:string,env:Record<string,string>={}){
@@ -55,6 +58,9 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   assert.deepEqual((await admin.query(`select distinct pg_get_userbyid(relowner) o from pg_class where relnamespace in ('public'::regnamespace,'internal'::regnamespace) and relkind in ('r','v','S')`)).rows,[{o:'techwoman_migrator'}]);
   assert.deepEqual((await admin.query(`select distinct pg_get_userbyid(proowner) o from pg_proc where pronamespace='internal'::regnamespace order by 1`)).rows.map(r=>r.o),['techwoman_migrator','techwoman_owner']);
   assert.equal((await admin.query("select pg_get_userbyid(proowner) o from pg_proc where oid='internal.api_legacy_state(text)'::regprocedure")).rows[0].o,'techwoman_owner');
+  // I4: helpers privilegiados novos/redefinidos no WP-003 pertencem ao owner NOLOGIN, não à migradora LOGIN
+  const helpers=(await admin.query('select p.oid::regprocedure::text sig,pg_get_userbyid(p.proowner) o,r.rolcanlogin login,p.prosecdef from pg_proc p join pg_roles r on r.oid=p.proowner where p.oid=any($1::regprocedure[]) order by 1',[I4_HELPERS])).rows;
+  assert.deepEqual(helpers.map(h=>[h.sig,h.o,h.login,h.prosecdef]),[...I4_HELPERS].sort().map(s=>[s,'techwoman_owner',false,true]));
   // 3. sessões LOGIN reais (não superusuárias): troca de role negada; runtime só por funções
   const runtime=await connectAs(urlFor(db,'techwoman_runtime',secrets.RUNTIME_PASSWORD)),mailer=await connectAs(urlFor(db,'techwoman_mailer',secrets.MAILER_PASSWORD)),migrator=await connectAs(migratorUrl);clients.push(runtime,mailer,migrator);
   for(const c of [runtime,mailer])for(const role of ['techwoman_owner','techwoman_beatriz','techwoman_migrator','techwoman_runtime','techwoman_mailer'])
@@ -62,6 +68,18 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   assert.equal((await runtime.query('select internal.api_legacy_state(null) r')).rows[0].r,null);
   await denied(runtime,'select * from app_user');await denied(runtime,'select * from topic');await denied(mailer,'select * from email_job');
   await migrator.query('set role techwoman_owner');await denied(migrator,'select * from app_user');await migrator.query('reset role');
+  // fluxos reais sob migradora não superusuária: helpers do owner (sessão, lock de contas, conta nova, lock de domínio) e função WP-002 que chama lock_users
+  const adminId=randomUUID(),target=randomUUID(),digest=tokenDigest(newSessionToken()),hash='a'.repeat(64);
+  await admin.query("insert into app_user(id,email,status) values($1,'boot-admin@example.invalid','active'),($2,'boot-p@example.invalid','active')",[adminId,target]);
+  await admin.query("insert into user_role(user_id,role) values($1,'admin'),($2,'participant')",[adminId,target]);
+  await admin.query("insert into auth_session(id,user_id,token_hash,scope,session_version,expires_at) select gen_random_uuid(),id,$2,'full',session_version,now()+interval '1 hour' from app_user where id=$1",[adminId,digest]);
+  const op=async(q:string,args:unknown[])=>(await runtime.query(q,args)).rows[0].r;
+  assert.equal((await op('select internal.api_topic_create($1,$2,$3,$4,$5) r',[digest,randomUUID(),randomUUID(),hash,{slug:'boot-topic',name:'Boot'}])).slug,'boot-topic');
+  const made=await op("select internal.api_admin_domain_create($1,$2,$3,$4,'participant',$5) r",[digest,randomUUID(),randomUUID(),hash,{email:'boot-new@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true}]);
+  assert.equal(made.email,'boot-new@example.invalid');
+  assert.equal((await op('select internal.api_legacy_change($1,$2,$3) r',[digest,randomUUID(),{action:'remove-demo'}])).status,'0 mentoras de demonstração desativadas.');
+  const version=(await admin.query('select version from app_user where id=$1',[target])).rows[0].version;
+  assert.equal((await runtime.query('select o_outcome from internal.admin_user_disable($1,$2,$3,$4)',[digest,target,version,randomUUID()])).rows[0].o_outcome,'ok');
   // 4. matriz do OPS: o mesmo arquivo, executado de verdade
   let r=psql(urlFor(db),MATRIX);assert.equal(r.status,0,r.out);
   const counts=/MATRIX OK: (\d+) negações por privilégio executadas, (\d+) execuções permitidas, (\d+) verificações/.exec(r.out);assert.ok(counts,r.out);
@@ -74,6 +92,7 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    ['grant select on public.auth_session to techwoman_runtime','revoke select on public.auth_session from techwoman_runtime'],
    ['alter table public.cohort no force row level security','alter table public.cohort force row level security'],
    ['alter function internal.api_legacy_state(text) reset search_path','alter function internal.api_legacy_state(text) set search_path = pg_catalog, pg_temp'],
+   ['alter function internal.lock_user_set(uuid[]) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.lock_user_set(uuid[]) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
   ] as const){
    await migrator.query(grant);
    r=psql(urlFor(db),MATRIX);

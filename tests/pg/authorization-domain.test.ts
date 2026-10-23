@@ -223,19 +223,20 @@ test('segurança SQL das operações: owner NOLOGIN e search_path fixo; runtime 
  const fns=(await db.query(`select p.proname,pg_get_userbyid(p.proowner)::text owner,p.prosecdef,p.proconfig,
    has_function_privilege('techwoman_runtime',p.oid,'EXECUTE') runtime,has_function_privilege('techwoman_beatriz',p.oid,'EXECUTE') editor,has_function_privilege('techwoman_mailer',p.oid,'EXECUTE') mailer,
    exists(select 1 from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a where a.privilege_type='EXECUTE' and a.grantee=0) public_exec
-  from pg_proc p where p.pronamespace='internal'::regnamespace and (p.proname like 'api\\_%' or p.proname in ('lock_user_set','lock_users','agenda_ranking','enrollment_check_eligible','enrollment_effects'))`)).rows;
+  from pg_proc p where p.pronamespace='internal'::regnamespace and (p.proname like 'api\\_%' or p.proname in ('lock_user_set','lock_users','domain_lock_users','agenda_ranking','enrollment_check_eligible','enrollment_effects'))`)).rows;
  const operations=new Set(['api_topic_list','api_topic_get','api_topic_create','api_topic_update','api_mentor_topic_list','api_mentor_topic_get','api_mentor_topic_create','api_mentor_topic_reorder','api_mentor_topic_update','api_mentor_topic_delete',
   'api_cohort_list','api_cohort_get','api_cohort_create','api_cohort_update','api_catalog_mentors','api_catalog_mentor','api_catalog_cohorts','api_recommendations','api_my_enrollments','api_enroll','api_my_enrollment_cancel',
   'api_admin_domain_list','api_admin_domain_get','api_admin_domain_create','api_admin_domain_update','api_match_list','api_match_get','api_match_create','api_match_update',
   'api_admin_enrollment_list','api_admin_enrollment_get','api_admin_enrollment_cancel','api_admin_enrollment_reassign',
   // T5: adaptadores antigos também são operações (helpers api_legacy_owners/visible/begin continuam sem EXECUTE do runtime)
   'api_legacy_overview','api_legacy_decide','api_legacy_change','api_legacy_event_save','api_legacy_state']);
- const identity=new Set(['api_session_actor','api_account_create','lock_user_set','lock_users']);
+ // helpers de identidade novos/redefinidos no WP-003: também do owner NOLOGIN (sem exceção para a migradora LOGIN)
+ const identity=new Set(['api_session_actor','api_account_create','lock_user_set','lock_users','domain_lock_users']);
  assert.ok(fns.length>=operations.size+identity.size+10);
  for(const f of fns){
   assert.deepEqual([f.proname,f.proconfig?.[0]],[f.proname,'search_path=pg_catalog, pg_temp']);
   assert.deepEqual([f.proname,f.public_exec,f.editor,f.mailer],[f.proname,false,false,false]);
-  if(!identity.has(f.proname))assert.equal(f.owner,'techwoman_owner',f.proname);
+  assert.equal(f.owner,'techwoman_owner',f.proname);
   assert.equal(f.runtime,operations.has(f.proname),`${f.proname}: runtime só nas operações`);
   if(operations.has(f.proname))assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
  }
