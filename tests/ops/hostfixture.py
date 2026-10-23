@@ -84,10 +84,10 @@ def _good_image(host, commit=COMMIT):
         (fake / stale).unlink(missing_ok=True)
 
 
-def _verify_image(host, ref=IMAGE_REF, commit=COMMIT, aggregate=None, count=None):
+def _verify_image(host, ref=IMAGE_REF, commit=COMMIT, aggregate=None, count=None, flags=()):
     migrations = host.migrations()
     return host.ops.run('', script='verify-image.sh',
-                        args=[ref, commit, aggregate or migrations['aggregate_sha256'],
+                        args=[*flags, ref, commit, aggregate or migrations['aggregate_sha256'],
                               count or str(migrations['count'])])
 
 

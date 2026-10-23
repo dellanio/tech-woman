@@ -114,5 +114,31 @@ class VerifyImageDenialTests(unittest.TestCase):
         self.assertEqual(result.returncode, 64)
 
 
+class VerifyImageLocalCiTests(unittest.TestCase):
+    ID = 'sha256:' + '2' * 64
+
+    def setUp(self):
+        self.host = Host(self)
+        self.host.good_image()
+
+    def test_image_only_verifies_a_local_image_id_without_any_host_env_files(self):
+        for name in ('web.env', 'mailer.env', 'migrator.env'):
+            (self.host.ops.env_dir / name).unlink()
+        result = self.host.verify_image(ref=self.ID, flags=['--image-only'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['checks'], ['platform', 'revision', 'entrypoints', 'migrations', 'no-sqlite'])
+        for args in docker_calls(result):
+            if args[0] == 'run':
+                self.assertIn('none', args)
+
+    def test_image_only_still_denies_a_bad_image_and_a_bare_id_needs_the_flag(self):
+        (self.host.ops.fake / 'inspect').write_bytes(('amd64|linux|' + COMMIT + chr(10)).encode())
+        self.assertEqual(self.host.verify_image(ref=self.ID, flags=['--image-only']).returncode, 74)
+        self.host.good_image()
+        self.assertEqual(self.host.verify_image(ref=self.ID).returncode, 64)
+        self.assertEqual(self.host.verify_image(ref='latest', flags=['--image-only']).returncode, 64)
+        self.assertEqual(self.host.verify_image(ref=self.ID, flags=['--image-only', '--image-only']).returncode, 64)
+
+
 if __name__ == '__main__':
     unittest.main()
