@@ -182,6 +182,7 @@ test('participante escolhe mentora sem afinidade → tema e turma em Recife (12 
   await main(page).getByText(/ainda não tem reservas/).waitFor();
   await openMentor(page,'Clara Score Zero');
   // filtro de tema = seleção local das turmas retornadas
+  await main(page).getByRole('radio').first().waitFor();
   const filter=main(page).getByLabel('Filtrar por tema');
   assert.deepEqual((await filter.locator('option').allInnerTexts()).slice(1),['Design de produto','Pesquisa com usuárias']);
   assert.equal(await main(page).getByRole('radio').count(),3);
