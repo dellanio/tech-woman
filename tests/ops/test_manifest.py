@@ -49,5 +49,36 @@ class MigrationHashTests(unittest.TestCase):
         self.assertEqual(out['aggregate_sha256'], hashlib.sha256(lines.encode()).hexdigest())
 
 
+class OpsPackageTests(unittest.TestCase):
+    def make_ops(self, tmp):
+        ops = tmp / 'ops'
+        (ops / '__pycache__').mkdir(parents=True)
+        write(ops / 'deploy.sh', b'#!/usr/bin/env bash\necho deploy\n')
+        write(ops / 'manifest.py', b'print(1)\n')
+        write(ops / 'verify-image.sh', b'#!/usr/bin/env bash\necho verify\n')
+        write(ops / '__pycache__' / 'manifest.cpython-312.pyc', b'\x00junk')
+        return ops
+
+    def test_script_sha_is_sha256_of_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write(pathlib.Path(tmp) / 'deploy.sh', b'#!/usr/bin/env bash\necho hi\n')
+            out = manifest('script-sha', path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), {'sha256': hashlib.sha256(b'#!/usr/bin/env bash\necho hi\n').hexdigest()})
+
+    def test_ops_package_hash_covers_every_helper_and_ignores_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.make_ops(pathlib.Path(tmp))
+            first = json.loads(manifest('ops-package', ops).stdout)
+            write(ops / '__pycache__' / 'manifest.cpython-312.pyc', b'\x00other')
+            self.assertEqual(json.loads(manifest('ops-package', ops).stdout), first)
+            self.assertEqual([f['name'] for f in first['files']], ['deploy.sh', 'manifest.py', 'verify-image.sh'])
+            lines = ''.join('%s:%s\n' % (f['name'], f['sha256']) for f in first['files'])
+            self.assertEqual(first['aggregate_sha256'], hashlib.sha256(lines.encode()).hexdigest())
+            write(ops / 'manifest.py', b'print(2)\n')
+            changed = json.loads(manifest('ops-package', ops).stdout)
+        self.assertNotEqual(changed['aggregate_sha256'], first['aggregate_sha256'])
+
+
 if __name__ == '__main__':
     unittest.main()
