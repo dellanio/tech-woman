@@ -903,6 +903,11 @@ def _restore_and_compare(paths, state, candidate, dump_path, now):
         live = recover.fingerprint(pg, paths['TW_PG_DB'])
     except (recover.hostops.HostError, ValueError) as error:
         raise _no_proof(paths, candidate, str(error))
+    try:  # the live schema goes through the same PostgreSQL round trip as the restored copy (no textual erasure)
+        live['schema'] = recover.canonical_schema(pg, paths['TW_PG_DB'], paths['TW_BACKUP_DIR'],
+                                                  '%s_%d' % (re.sub(r'[^0-9]', '', now), state.seq))
+    except (recover.hostops.HostError, ValueError, OSError) as error:
+        raise StateError(83, 'the live schema could not be canonicalised: %s' % error)
     report = recover.compare(live, other)
     report['restored_db'] = restored
     return report

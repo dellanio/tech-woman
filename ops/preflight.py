@@ -71,8 +71,9 @@ def restore_check(paths, pg, name):
         pg.create_database(restored)
         pg.restore(path, restored)
         copy = recover.fingerprint(pg, restored)
-        live_schema = pg.schema(paths['TW_PG_DB'])
-    except (recover.hostops.HostError, ValueError):
+        live_schema = recover.canonical_schema(pg, paths['TW_PG_DB'], paths['TW_BACKUP_DIR'],
+                                               re.sub(r'[^0-9]', '', cutover._now()))
+    except (recover.hostops.HostError, ValueError, OSError):
         return check('PF-RESTORE', 'fail', 'the dump did not restore in isolation')
     rows = sum(sum(v.values()) if hasattr(v, 'most_common') else len(v) for v in copy['rows'].values())
     if not copy['rows'] or rows == 0:

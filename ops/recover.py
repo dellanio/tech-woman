@@ -5,7 +5,7 @@ TW_PG_ADMIN_USER; SQL travels on stdin and is fixed text built here (identifiers
 quoted), never from a request. Reads use READ ONLY transactions. Public reports carry only table names, counts and
 pass/fail: no row content, e-mail, token or hash of personal data.
 """
-import collections, hashlib, json, re
+import collections, hashlib, json, pathlib, re
 
 import hostops
 
@@ -33,20 +33,24 @@ class Pg:
     def read_only(self, sql, db=None, error='read-only query failed'):
         return self.query('begin transaction read only;\n%s;\ncommit;\n' % sql.strip().rstrip(';'), db, error)
 
-    def dump(self, out_path, db=None):
-        self.runner.run(self.prefix + ['pg_dump', '-Fc', '-U', self.user, '-d', db or self.db], stdout_path=out_path,
-                        error='pg_dump failed')
+    def dump(self, out_path, db=None, schema_only=False):
+        self.runner.run(self.prefix + ['pg_dump', '-Fc'] + (['--schema-only'] if schema_only else []) +
+                        ['-U', self.user, '-d', db or self.db], stdout_path=out_path, error='pg_dump failed')
 
     def schema(self, db):
         text = self.runner.run(self.prefix + ['pg_dump', '--schema-only', '-U', self.user, '-d', db],
                                error='pg_dump --schema-only failed').stdout
-        # Comments and the per-run \restrict key of pg_dump >= 16.10 are not part of the schema. A dump/restore
-        # round trip re-parses CHECK expressions and flattens nested AND groups, so parentheses are not compared:
-        # this fingerprint proves that every object (table, column, constraint, index, function, trigger, policy,
-        # grant) came back, not that two expressions are written alike.
-        kept = [re.sub(r'\s+', ' ', line.replace('(', '').replace(')', '')).strip() for line in text.splitlines()
+        # Only comments and the per-run \restrict key of pg_dump >= 16.10 are dropped. Expressions are compared
+        # exactly as PostgreSQL deparses them (parentheses included): a AND (b OR c) never equals (a AND b) OR c.
+        kept = [line for line in text.splitlines()
                 if line.strip() and not line.startswith('--') and not line.startswith(('\\restrict', '\\unrestrict'))]
         return hashlib.sha256('\n'.join(kept).encode('utf-8')).hexdigest()
+
+    def drop_scratch_database(self, name):
+        """Only the canonicalisation scratch databases this tool created itself may be dropped."""
+        if not (NAME.match(name) and '_canon_' in name):
+            raise ValueError('refusing to drop a database that is not a canonicalisation scratch')
+        self.query('drop database if exists %s with (force)' % name, ADMIN_DB, error='cannot drop the scratch database')
 
     def create_database(self, name):
         if not NAME.match(name):
@@ -56,6 +60,27 @@ class Pg:
     def restore(self, dump_path, db):
         self.runner.run(self.prefix + ['pg_restore', '--exit-on-error', '--single-transaction', '-U', self.user,
                                        '-d', db], stdin_path=dump_path, error='pg_restore failed')
+
+
+def canonical_schema(pg, db, workdir, stamp):
+    """Schema fingerprint of `db` after ONE PostgreSQL dump/restore round trip (schema only, scratch database).
+
+    pg_restore re-parses CHECK expressions (e.g. it flattens nested ANDs), so a live database and its restored copy
+    are compared after the same round trip: PostgreSQL's own parser canonicalises both sides, nothing is erased
+    textually, and a regrouped AND/OR stays a difference. The scratch database and dump are removed afterwards."""
+    scratch = '%s_canon_%s' % (db, stamp)
+    path = pathlib.Path(workdir) / ('.canon-%s.dump' % scratch)
+    try:
+        pg.dump(path, db, schema_only=True)
+        pg.create_database(scratch)
+        try:
+            pg.restore(path, scratch)
+            return pg.schema(scratch)
+        finally:
+            pg.drop_scratch_database(scratch)
+    finally:
+        if path.exists():
+            path.unlink()
 
 
 def _json(text):
