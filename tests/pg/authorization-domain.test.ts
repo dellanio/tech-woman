@@ -6,6 +6,8 @@ import * as participants from '../../src/app/api/v1/admin/participants/route';
 import * as participantOne from '../../src/app/api/v1/admin/participants/[id]/route';
 import * as mentors from '../../src/app/api/v1/admin/mentors/route';
 import * as mentorOne from '../../src/app/api/v1/admin/mentors/[id]/route';
+import * as matches from '../../src/app/api/v1/admin/matches/route';
+import * as matchOne from '../../src/app/api/v1/admin/matches/[id]/route';
 import {runPrivilegedAccount} from '../../scripts/privileged-account';
 import {withDb,withClients,addParticipant,addMentor,linkFixture,mentorWithCohort,pidOf,waitLocked} from './agenda-harness';
 import {actorOf,as,code,etagOf,sameShape,snapshot,type Actor,type Reply} from './agenda-api-kit';
@@ -129,4 +131,53 @@ test('ator desativado enquanto espera o lock da própria conta: a escrita revali
   const r=await pending;assert.deepEqual([r.status,code(r)],[401,'AUTH_REQUIRED']);
  });
  assert.equal(await snapshot(db),before,'domínio intacto');
+}));
+
+test('admin matches: sugestão com score/razões do servidor (ranking legado), protegidos (participante OU mentora) ocultos, PATCH só sugestão current sem reserva, DELETE=cancelled preserva legado sem inventar turma, gerido por reserva 409, team só lê',()=>withDb(async({db})=>{
+ const admin=await actorOf(db,['admin']),team=await actorOf(db,['team']);const A=as(admin);const X='/api/v1/admin/matches';
+ const hidden=await protectedFixtures(db);
+ const p=await addParticipant(db,{goal:'growth',interests:['dados'],skills:['analise'],area:'dados'});const m=await addMentor(db,{specialties:['dados']});const m2=await addMentor(db,{specialties:['design']});
+ const legacy=(await db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,7,'[\"legado\"]','approved','legacy') returning id::text id",[p,m2])).rows[0].id;
+ const hiddenMatches=[(await db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,1,'[]','approved','legacy') returning id::text id",[hidden.participants[2],m])).rows[0].id,
+  (await db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,1,'[]','suggested','legacy') returning id::text id",[p,hidden.mentors[0]])).rows[0].id];
+ const key=randomUUID();
+ let r=await A.send(matches.POST,X,{body:{participantId:p,mentorId:m},key});
+ assert.equal(r.status,201);assert.deepEqual(Object.keys(r.json.data).sort(),['enrollmentId','id','mentorId','origin','participantId','reasons','score','status','version']);
+ const ranking=(await db.query('select (internal.agenda_ranking($1,$2)).*',[p,m])).rows[0];
+ assert.deepEqual([r.json.data.status,r.json.data.origin,r.json.data.enrollmentId,r.json.data.score,r.json.data.reasons],['suggested','current',null,ranking.o_score,ranking.o_reasons]);
+ assert.equal(r.json.data.score,9);const suggestion=r.json.data.id;
+ r=await A.send(matches.POST,X,{body:{mentorId:m,participantId:p},key});assert.deepEqual([r.status,r.json.data.id],[201,suggestion],'replay');
+ for(const bad of [{participantId:p,mentorId:m,score:99},{participantId:p,mentorId:m,status:'approved'},{participantId:p,mentorId:m,reasons:[]},{participantId:Number(p),mentorId:m},{participantId:p}]){
+  r=await A.send(matches.POST,X,{body:bad,key:randomUUID()});assert.deepEqual([JSON.stringify(Object.keys(bad)),r.status,code(r)],[JSON.stringify(Object.keys(bad)),422,'INVALID_INPUT']);
+ }
+ const before=await snapshot(db);
+ const refused=[await A.send(matches.POST,X,{body:{participantId:hidden.participants[0],mentorId:m},key:randomUUID()}),await A.send(matches.POST,X,{body:{participantId:'999999',mentorId:m},key:randomUUID()})];
+ for(const f of refused){assert.deepEqual([f.status,code(f),f.json.error.fields],[422,'INVALID_INPUT',['participantId']]);assert.equal(sameShape(f,refused[0]),true);}
+ r=await A.send(matches.POST,X,{body:{participantId:p,mentorId:hidden.mentors[1]},key:randomUUID()});assert.deepEqual([r.status,code(r),r.json.error.fields],[422,'INVALID_INPUT',['mentorId']]);
+ r=await as(team).send(matches.POST,X,{body:{participantId:p,mentorId:m},key:randomUUID()});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ for(const id of [...hiddenMatches,'999999']){for(const h of [await A.get(matchOne.GET,`${X}/${id}`,{id}),await A.send(matchOne.PATCH,`${X}/${id}`,{method:'PATCH',body:{status:'rejected'},params:{id},version:'1'}),await A.send(matchOne.DELETE,`${X}/${id}`,{method:'DELETE',params:{id},version:'1'})])assert.deepEqual([id,h.status,code(h)],[id,404,'NOT_FOUND']);}
+ assert.equal(await snapshot(db),before,'recusas sem mutação');
+ for(const who of [admin,team]){r=await as(who).get(matches.GET,X);assert.deepEqual(ids(r),[legacy,suggestion]);}
+ // PATCH: só sugestão current sem reserva
+ let v=etagOf(await A.get(matchOne.GET,`${X}/${suggestion}`,{id:suggestion}));
+ for(const bad of [{status:'approved'},{status:'selected'},{score:1},{mentorId:m2},{}]){r=await A.send(matchOne.PATCH,`${X}/${suggestion}`,{method:'PATCH',body:bad,params:{id:suggestion},version:v});assert.deepEqual([JSON.stringify(bad),r.status,code(r)],[JSON.stringify(bad),422,'INVALID_INPUT']);}
+ r=await A.send(matchOne.PATCH,`${X}/${suggestion}`,{method:'PATCH',body:{status:'rejected'},params:{id:suggestion}});assert.deepEqual([r.status,code(r)],[428,'PRECONDITION_REQUIRED']);
+ r=await A.send(matchOne.PATCH,`${X}/${suggestion}`,{method:'PATCH',body:{status:'rejected'},params:{id:suggestion},version:v});assert.deepEqual([r.status,r.json.data.status,r.json.data.score],[200,'rejected',9]);v=etagOf(r);
+ r=await A.send(matchOne.PATCH,`${X}/${suggestion}`,{method:'PATCH',body:{status:'suggested'},params:{id:suggestion},version:v});assert.deepEqual([r.status,r.json.data.status],[200,'suggested']);
+ const lv=etagOf(await A.get(matchOne.GET,`${X}/${legacy}`,{id:legacy}));
+ r=await A.send(matchOne.PATCH,`${X}/${legacy}`,{method:'PATCH',body:{status:'rejected'},params:{id:legacy},version:lv});assert.deepEqual([r.status,code(r),r.json.error.fields],[422,'INVALID_INPUT',['status']],'legado não é editável por status');
+ r=await as(team).send(matchOne.PATCH,`${X}/${legacy}`,{method:'PATCH',body:{status:'rejected'},params:{id:legacy},version:lv});assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
+ // match gerido por reserva: só pela inscrição
+ const agenda=await mentorWithCohort(db);await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[p,agenda.cohort]);
+ const managed=(await db.query('select id::text id,version::text v from match where enrollment_id is not null')).rows[0];
+ r=await A.send(matchOne.PATCH,`${X}/${managed.id}`,{method:'PATCH',body:{status:'rejected'},params:{id:managed.id},version:managed.v});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE']);
+ r=await A.send(matchOne.DELETE,`${X}/${managed.id}`,{method:'DELETE',params:{id:managed.id},version:managed.v});assert.deepEqual([r.status,code(r)],[409,'COHORT_IN_USE']);
+ // DELETE = cancelled: legado preservado e consultável, sem turma inventada
+ const enrollmentsBefore=(await db.query('select count(*)::int n from enrollment')).rows[0].n;
+ r=await A.send(matchOne.DELETE,`${X}/${legacy}`,{method:'DELETE',params:{id:legacy},version:lv});assert.deepEqual([r.status,r.json.data.status,r.json.data.origin,r.json.data.enrollmentId],[200,'cancelled','legacy',null]);
+ r=await A.send(matchOne.DELETE,`${X}/${legacy}`,{method:'DELETE',params:{id:legacy},version:r.json.data.version});assert.deepEqual([r.status,r.json.data.status],[200,'cancelled'],'idempotente');
+ assert.equal((await db.query('select count(*)::int n from enrollment')).rows[0].n,enrollmentsBefore);
+ assert.deepEqual((await db.query('select score,reasons from match where id=$1',[legacy])).rows[0],{score:7,reasons:['legado']},'score/razões intactos');
+ const audit=(await db.query("select actor_user_id,action,changed_fields from audit_event where entity_type='match' order by id")).rows;
+ assert.deepEqual(audit.map(a=>[a.actor_user_id,a.action]),[[admin.id,'match.create'],[admin.id,'match.update'],[admin.id,'match.update'],[admin.id,'match.cancel']]);
 }));
