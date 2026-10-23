@@ -21,7 +21,9 @@ source "$(dirname -- "$self")/paths.env"
 export PATH
 if [[ "${lines[1]:-}" == 'probe' && ${#lines[@]} -eq 2 ]]; then
   phase=$("$TW_PYTHON" -I "$(dirname -- "$self")/cutover.py" phase)
-  printf '{"protocol":2,"script_sha256":"%s","phase":"%s"}\n' "$(sha256sum -- "$self" | cut -d' ' -f1)" "$phase"
+  package=$("$TW_PYTHON" -I "$(dirname -- "$self")/manifest.py" ops-package-sha "$(dirname -- "$self")") || exit 65
+  printf '{"protocol":2,"script_sha256":"%s","package_sha256":"%s","phase":"%s"}\n' \
+    "$(sha256sum -- "$self" | cut -d' ' -f1)" "$package" "$phase"
   exit 0
 fi
 [[ "${lines[1]:-}" == 'deploy' && ${#lines[@]} -eq 8 ]] || reject

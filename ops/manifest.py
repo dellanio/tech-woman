@@ -284,6 +284,9 @@ def _run(cmd, args):
     if cmd == 'script-sha' and len(args) == 1:
         print(json.dumps(script_sha(args[0])))
         return 0
+    if cmd == 'ops-package-sha' and len(args) == 1:
+        print(ops_package(args[0])['aggregate_sha256'])
+        return 0
     if cmd == 'ops-package' and len(args) == 1:
         print(json.dumps(ops_package(args[0])))
         return 0

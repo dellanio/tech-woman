@@ -93,9 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           expected=$(sha256sum ops/deploy.sh | cut -d' ' -f1)
+          expected_package=$(python3 ops/manifest.py ops-package-sha ops)
           report=$(printf 'TWDEPLOY/2\nprobe\n' | ssh -T tech-woman-deploy)
           installed=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["script_sha256"])')
+          installed_package=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["package_sha256"])')
           [ "$installed" = "$expected" ] || { echo 'installed deploy command differs from this checkout' >&2; exit 1; }
+          [ "$installed_package" = "$expected_package" ] || { echo 'installed ops package (helpers) differs from this checkout' >&2; exit 1; }
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
