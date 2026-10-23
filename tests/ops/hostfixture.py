@@ -144,6 +144,26 @@ def _frozen(host, quiet_seconds=1):
     return candidate, state
 
 
+def _snapshotted(host):
+    """Frozen host whose database was snapshotted: A/B copies in private/, source files read-only."""
+    import os, stat
+    candidate, state = _frozen(host)
+    snap = harness.load_ops_module('snapshot')
+    private = host.state_dir / 'private'
+    private.mkdir()
+    first = snap.backup(host.ops.host / 'app/dados/tech-woman.db', private / '4-A.db')
+    second = snap.backup(host.ops.host / 'app/dados/tech-woman.db', private / '4-B.db')
+    for suffix in ('', '-wal', '-shm'):
+        path = host.ops.host / ('app/dados/tech-woman.db' + suffix)
+        if path.exists():
+            os.chmod(path, os.stat(path).st_mode & ~0o222)
+    state.transition('snapshotted', NOW_FIXED, snapshot={
+        'sha256': first['checksum'], 'a_digest': first['file_sha256'], 'b_digest': second['file_sha256'],
+        'counts_public': first['counts'], 'file_a': '4-A.db', 'file_b': '4-B.db', 'immutable': False, 'at': NOW_FIXED})
+    return candidate, state
+
+
+Host.snapshotted = _snapshotted
 Host.frozen = _frozen
 Host.cutover_log_text = _log_text
 Host.staged = _staged
