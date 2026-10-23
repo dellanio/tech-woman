@@ -8,6 +8,10 @@ import * as legacyParticipant from '../../src/app/api/participant/route';
 import * as legacyMentor from '../../src/app/api/mentor/route';
 import * as session from '../../src/app/api/v1/auth/session/route';
 import * as service from '../../src/lib/service';
+import * as legacyOverview from '../../src/app/api/admin/overview/route';
+import * as legacyDecide from '../../src/app/api/admin/decide/route';
+import * as legacyChange from '../../src/app/api/admin/change/route';
+import {actorOf,as,type Actor} from './agenda-api-kit';
 import * as email from '../../src/lib/email';
 import {withDb,addUser,sessionFor,synthetic,linkFixture} from './identity-harness.test';
 import {runPrivilegedAccount} from '../../scripts/privileged-account';
@@ -88,48 +92,54 @@ test('adapters /api/participant e /api/mentor: 202 neutro sem token/protocolo, c
  void admin;
 }));
 
-test('service legado: overview/decide/change/remove-demo excluem linhas de domínio protegidas (multi-perfil, NULL privilegiado, vínculo); authenticate vira identidade revogável',async()=>withDb(async({db,url})=>{
+// Contrato final (CONTRATOS §7, linhas 112–113): os caminhos antigos passam pelos adapters HTTP com sessão admin+CSRF; approve sem turma → 422.
+const adminPost=(a:Actor,handler:Parameters<typeof call>[0],path:string,body:unknown)=>as(a).send(handler,path,{body});
+test('adapters legados: overview/decide/change/remove-demo excluem linhas de domínio protegidas (multi-perfil, NULL privilegiado, vínculo); authenticate vira identidade revogável',async()=>withDb(async({db})=>{
  const pw=synthetic();const {link}=await linkFixture(db);
- const admin=await addUser(db,{email:'dona@example.invalid',password:pw,roles:['admin','mentor','participant']});
+ const admin=await addUser(db,{email:'dona@example.invalid',password:pw,roles:['admin','mentor','participant']});const actor=await actorOf(db,['admin']);
  const insP=(id:number,addr:string,userId:string|null=null)=>db.query("insert into participant(id,email,goal,moment,interests,skills,area,token_hash,consent_version,user_id) values($1,$2,'growth','working','[\"dados\"]','[\"analise\"]','dados',$3,'v0',$4)",[id,addr,String(id).padStart(64,'a'),userId]);
  const insM=(id:number,addr:string,opts:{demo?:boolean;userId?:string|null}={})=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity,active,demo,demo_name,user_id) values($1,$2,'t','[\"dados\"]','a',3,true,$3,$4,$5)",[id,addr,opts.demo??false,opts.demo?`Demo ${id}`:null,opts.userId??null]);
  await insP(1,'plain.p@example.invalid');await insM(2,'plain.m@example.invalid');await insM(3,'demo.livre@example.invalid',{demo:true});
  await insP(10,'dona@example.invalid',admin.id);await insM(20,'dona@example.invalid',{userId:admin.id});await insM(4,'Dona@example.invalid',{demo:true});
  await insP(30,'  DONA@example.invalid');await insM(31,'cand.m@example.invalid');await link('mentor','31',null,'privileged_candidate');await insP(32,'cand.p@example.invalid');await link('participant','32',null,'privileged_candidate');
- await useOwnerPool(url);
- const overview=await service.adminOverview();
- assert.deepEqual(overview.participants.map(p=>p.id),['1'],'só participante comum');assert.deepEqual(overview.mentors.map(m=>m.id).sort(),['2','3']);
- assert.deepEqual(overview.participants[0].choices.map(c=>c.mentorId).sort(),['2','3'],'sugestões nunca incluem mentora protegida');
- const rejects=async(p:Promise<unknown>)=>p.then(()=>'resolved',e=>e instanceof service.Invalid?`${e.status}`:'UNEXPECTED');
- assert.equal(await rejects(service.decide(1,20,'approve')),'404');assert.equal(await rejects(service.decide(1,4,'approve')),'404');assert.equal(await rejects(service.decide(1,31,'approve')),'404');
- for(const pid of [10,30,32])assert.equal(await rejects(service.decide(pid,2,'approve')),'404');
- assert.equal(await rejects(service.adminChange(10,null,'cancel')),'404');assert.equal(await rejects(service.adminChange(1,20,'reassign')),'404');assert.equal(await rejects(service.adminChange(30,2,'reassign')),'404');
- for(const mid of [20,4,31])assert.equal(await rejects(service.setMentorActive(mid,false)),'404');
+ const overview=(await as(actor).get(legacyOverview.GET,'/api/admin/overview')).json;
+ assert.deepEqual(overview.participants.map((p:{id:string})=>p.id),['1'],'só participante comum');assert.deepEqual(overview.mentors.map((m:{id:string})=>m.id).sort(),['2','3']);
+ assert.deepEqual(overview.participants[0].choices.map((c:{mentorId:string})=>c.mentorId).sort(),['2','3'],'sugestões nunca incluem mentora protegida');
+ const status=async(r:Promise<Reply>)=>String((await r).status);
+ const decideAs=(participantId:number,mentorId:number,action:string)=>status(adminPost(actor,legacyDecide.POST,'/api/admin/decide',{participantId,mentorId,action}));
+ const changeAs=(body:Record<string,unknown>)=>status(adminPost(actor,legacyChange.POST,'/api/admin/change',body));
+ assert.equal(await decideAs(1,20,'approve'),'404');assert.equal(await decideAs(1,4,'approve'),'404');assert.equal(await decideAs(1,31,'approve'),'404');
+ for(const pid of [10,30,32])assert.equal(await decideAs(pid,2,'approve'),'404');
+ assert.equal(await changeAs({participantId:10,action:'cancel'}),'404');assert.equal(await changeAs({participantId:1,mentorId:20,action:'reassign'}),'404');assert.equal(await changeAs({participantId:30,mentorId:2,action:'reassign'}),'404');
+ for(const mid of [20,4,31])assert.equal(await changeAs({mentorId:mid,action:'deactivate'}),'404');
  assert.equal((await db.query('select count(*)::int n from mentor where id in (20,4,31) and active')).rows[0].n,3);
  assert.equal((await db.query('select count(*)::int n from match')).rows[0].n,0,'nenhum par criado/alterado');
- assert.deepEqual(await service.removeDemoMentors(),{status:'1 mentoras de demonstração desativadas.'});
+ assert.deepEqual((await adminPost(actor,legacyChange.POST,'/api/admin/change',{action:'remove-demo'})).json,{status:'1 mentoras de demonstração desativadas.'});
  assert.deepEqual((await db.query('select id::int,active from mentor where demo order by id')).rows,[{id:3,active:false},{id:4,active:true}],'demo vinculada a admin fica intacta');
- assert.deepEqual(await service.decide(1,2,'approve'),{status:'Par aprovado'},'fluxo comum continua funcionando');
+ assert.equal(await decideAs(1,2,'approve'),'422','fluxo comum: aprovação sem turma foi substituída pela reserva v1 (CONTRATOS §7)');
+ assert.equal((await db.query('select count(*)::int n from match')).rows[0].n,0);
  // authenticate: wrapper de identidade, sem sessão sem estado nem sessão viva
+ const alive=(await db.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n;
  assert.deepEqual(await service.authenticate(admin.email,pw),{email:'dona@example.invalid',role:'owner'});
  assert.equal(await service.authenticate(admin.email,pw+'x'),null);
  const common=await addUser(db,{email:'comum@example.invalid',password:pw});assert.equal(await service.authenticate(common.email,pw),null);
- assert.equal((await db.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n,0,'authenticate não deixa sessão viva');
- void email;void sessionFor;void tokenDigest;void (null as unknown as Pool);
+ assert.equal((await db.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n,alive,'authenticate não deixa sessão viva');
+ void email;void sessionFor;void tokenDigest;void (null as unknown as Pool);void useOwnerPool;
 }));
 
-test('service legado: elevação offline segura o lock de app_user; setMentorActive/decide/adminChange/removeDemoMentors esperam e viram 404 sem mutação',async()=>withDb(async({db,url})=>{
- const u=await addUser(db,{email:'elev@example.invalid',password:synthetic(),roles:['participant','mentor']});
+test('adapters legados: elevação offline segura o lock de app_user; deactivate/decide/change/remove-demo esperam e viram 404 sem mutação',async()=>withDb(async({db,url})=>{
+ const u=await addUser(db,{email:'elev@example.invalid',password:synthetic(),roles:['participant','mentor']});const actor=await actorOf(db,['admin']);
  const insP=(id:number,addr:string,userId:string|null=null)=>db.query("insert into participant(id,email,goal,moment,interests,skills,area,token_hash,consent_version,user_id) values($1,$2,'growth','working','[\"dados\"]','[\"analise\"]','dados',$3,'v0',$4)",[id,addr,String(id).padStart(64,'b'),userId]);
  const insM=(id:number,addr:string,opts:{demo?:boolean;userId?:string|null}={})=>db.query("insert into mentor(id,email,trajectory,specialties,availability,capacity,active,demo,demo_name,user_id) values($1,$2,'t','[\"dados\"]','a',3,true,$3,$4,$5)",[id,addr,opts.demo??false,opts.demo?`Demo ${id}`:null,opts.userId??null]);
  await insP(1,'p1@example.invalid');await insP(2,'p2@example.invalid');await insP(10,u.email,u.id);
  await insM(20,u.email,{userId:u.id});await insM(21,'Elev@Example.invalid',{demo:true});await insM(22,' ELEV@example.invalid ');await insM(23,'demo.livre@example.invalid',{demo:true});
- await useOwnerPool(url);
- const rejects=async(p:Promise<unknown>)=>p.then(()=>'resolved',e=>e instanceof service.Invalid?`${e.status}`:'UNEXPECTED');
+ const status=async(r:Promise<Reply>)=>{const x=await r;return x.status===200?x.json:String(x.status);};
+ const change=(body:Record<string,unknown>)=>status(adminPost(actor,legacyChange.POST,'/api/admin/change',body));
  const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
  let pending:Promise<unknown[]>=Promise.resolve([]);
  const elevated=await runPrivilegedAccount(['grant-admin','--user-id',u.id,'--confirm'],{MIGRATION_DATABASE_URL:url},{afterLock:async()=>{
-  pending=Promise.all([rejects(service.setMentorActive(20,false)),rejects(service.setMentorActive(22,false)),rejects(service.decide(1,20,'approve')),rejects(service.adminChange(2,20,'reassign')),rejects(service.adminChange(10,null,'cancel')),service.removeDemoMentors()]);
+  pending=Promise.all([change({mentorId:20,action:'deactivate'}),change({mentorId:22,action:'deactivate'}),status(adminPost(actor,legacyDecide.POST,'/api/admin/decide',{participantId:1,mentorId:20,action:'reject'})),
+   change({participantId:2,mentorId:20,action:'reassign'}),change({participantId:10,action:'cancel'}),change({action:'remove-demo'})]);
   await sleep(600);
  }});
  assert.deepEqual(elevated,{code:'ok'});

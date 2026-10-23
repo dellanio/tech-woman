@@ -1,4 +1,9 @@
-import { currentAdmin, unauthorized, adminCanWrite, sameOrigin } from '@/lib/auth';
-import { decide, Invalid } from '@/lib/service';
+import { handle, readJson, requireSession } from '@/lib/auth';
+import { legacyJson } from '@/lib/agenda-http';
+import { decide } from '@/lib/service';
 export const runtime = 'nodejs';
-export async function POST(request: Request) { if (!sameOrigin(request)) return Response.json({error:'Origem não autorizada.'},{status:403}); if (!adminCanWrite(await currentAdmin())) return unauthorized(); try { const body: unknown = await request.json(); if (!body || typeof body !== 'object' || !('participantId' in body) || !('mentorId' in body) || !('action' in body)) throw new Invalid('Decisão inválida.'); return Response.json(await decide(String(body.participantId),String(body.mentorId),String(body.action))); } catch(e) { return Response.json({error:e instanceof Invalid ? e.message : 'Não foi possível registrar a decisão.'},{status:e instanceof Invalid ? e.status : 400}); } }
+/** Não é bypass: approve sem turma → 422 com instrução do fluxo v1; reject só sugestão current; protegido/inexistente 404 antes da ação. */
+export const POST = handle(async (request: Request) => {
+  const { token } = await requireSession(request, { mutation: true, roles: ['admin'] });
+  return legacyJson(await decide(token, await readJson(request)));
+});
