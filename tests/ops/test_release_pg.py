@@ -1,6 +1,6 @@
 import json, os, re, unittest
 
-from tests.ops.hostfixture import DIGEST, Host, OLD_PG_IMAGE, ORIGINAL_IP, SECRET
+from tests.ops.hostfixture import DIGEST, Host, OLD_PG_DIGEST, OLD_PG_IMAGE, ORIGINAL_IP, SECRET
 
 NEW_IMAGE = 'ghcr.io/dellanio/tech-woman@' + DIGEST
 SQLITE_NAMES = ('tech-woman-sqlite-original',)
@@ -107,9 +107,91 @@ class ReleaseDenialTests(ReleaseTestCase):
                 self.assert_denied_before_effect(self.release(), 76)
 
 
+class MailerDrainTests(ReleaseTestCase):
+    """Review: the mailer must be PROVEN stopped before the web is swapped; no failure is ignored."""
+
+    def test_a_mailer_that_is_not_proven_stopped_stops_the_release_before_the_web_is_touched(self):
+        cases = {'stop fails': ('stop.tech-woman-mailer.rc', b'1'),
+                 'still running after stop': ('inspect.tech-woman-mailer', b'true'),
+                 'state unknown': ('inspect.tech-woman-mailer.rc', b'1')}
+        for name, (file, content) in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                (self.host.ops.fake / file).write_bytes(content)
+                result = self.release()
+                self.assertEqual(result.returncode, 77, result.stderr)
+                self.assertIn('mailer', result.stderr)
+                calls = docker(result)
+                self.assertEqual([a for a in calls if a[0] in ('rename', 'rm') or a == ['stop', 'tech-woman']
+                                  or (a[0] == 'run' and '-d' in a)], [])
+                self.assertEqual(result.stdout, '')
+
+    def test_a_mailer_that_cannot_be_set_aside_after_the_release_is_reported(self):
+        (self.host.ops.fake / 'rename.tech-woman-mailer.rc').write_bytes(b'1')
+        result = self.release()
+        self.assertEqual(result.returncode, 77, result.stderr)
+        self.assertIn('mailer', result.stderr)
+        self.assertEqual([a for a in docker(result) if a[0] == 'run' and '-d' in a and 'tech-woman-mailer' in a], [])
+
+
+class LastGoodIdentityTests(ReleaseTestCase):
+    def test_a_known_pg_web_that_is_not_the_last_good_one_is_76_before_any_effect(self):
+        other = 'sha256:' + 'c' * 64
+        self.host = Host(self)
+        self.host.pg_open(known=(OLD_PG_DIGEST, other))
+        self.host.good_image()
+        (self.host.ops.fake / 'container-inspect').write_bytes(
+            ('ghcr.io/dellanio/tech-woman@%s|%s' % (other, ORIGINAL_IP) + chr(10)).encode())
+        self.assert_denied_before_effect(self.release(), 76)
+
+
 class ReleaseRollbackTests(ReleaseTestCase):
+    def new_web_fails_restored_passes(self):
+        fake = self.host.ops.fake
+        for n in (1, 2):  # TW_SMOKE_ATTEMPTS=2 for the new web
+            (fake / ('exec-tech-woman.rc.%d' % n)).write_bytes(b'1')
+        (fake / 'exec-tech-woman.rc.3').write_bytes(b'0')
+
+    def test_rollback_is_verified_before_it_is_reported(self):
+        self.new_web_fails_restored_passes()
+        result = self.release()
+        self.assertEqual(result.returncode, 77, result.stderr)
+        calls = docker(result)
+        after = calls[index_of(calls, lambda a: a[:3] == ['rm', '-f', 'tech-woman']):]
+        steps = [a[:2] if a[0] == 'exec' else a for a in after]
+        self.assertEqual(steps[0], ['rm', '-f', 'tech-woman'])
+        self.assertEqual(steps[2:5], [['start', 'tech-woman'], ['exec', 'tech-woman'], ['start', 'tech-woman-mailer']])
+        self.assertIn('answers', result.stderr)
+
+    def test_a_rollback_that_does_not_come_back_keeps_maintenance_and_says_not_restored_84(self):
+        cases = {'restored web fails its smoke': ('exec.rc', b'1'),
+                 'previous container cannot take the name': ('rename.rc.2', b'1'),
+                 'previous container does not start': ('start.tech-woman.rc', b'1')}
+        for name, (file, content) in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                self.new_web_fails_restored_passes()  # the new web always fails; the case decides the rollback
+                if file == 'exec.rc':
+                    (self.host.ops.fake / 'exec-tech-woman.rc.3').unlink()
+                (self.host.ops.fake / file).write_bytes(content)
+                result = self.release()
+                self.assertEqual(result.returncode, 84, result.stderr)
+                self.assertIn('NOT restored', result.stderr)
+                calls = docker(result)
+                after = calls[index_of(calls, lambda a: a[:3] == ['rm', '-f', 'tech-woman']):]
+                self.assertTrue(any(a[0] == 'run' and '-d' in a and option(a, '--name') == 'tech-woman'
+                                    and '503' in a[a.index('-e') + 1] for a in after), name)
+                self.assertEqual([x for a in calls for x in a if x in SQLITE_NAMES], [])
+
+    def test_a_mailer_that_does_not_restart_after_a_rollback_is_not_hidden(self):
+        self.new_web_fails_restored_passes()
+        (self.host.ops.fake / 'start.tech-woman-mailer.rc').write_bytes(b'1')
+        result = self.release()
+        self.assertEqual(result.returncode, 84, result.stderr)
+        self.assertIn('mailer', result.stderr)
+
     def test_smoke_failure_restarts_only_the_last_good_pg_container_and_exits_77(self):
-        (self.host.ops.fake / 'exec.rc').write_bytes(b'1')
+        self.new_web_fails_restored_passes()
         result = self.release()
         self.assertEqual(result.returncode, 77, result.stderr)
         self.assertEqual(result.stdout, '')
