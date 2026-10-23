@@ -17,12 +17,16 @@ case "$sub" in
     [[ "${1:-}" == inspect ]] || exit 0
     [[ -f "$d/inspect.rc" ]] && exit "$(cat "$d/inspect.rc")"
     cat "$d/inspect" ;;
+  inspect) [[ -f "$d/container-inspect" ]] && cat "$d/container-inspect"; exit "$(rc_of inspect-container.rc 0)" ;;
+  ps) [[ -f "$d/ps" ]] && cat "$d/ps"; exit 0 ;;
+  stop|rename|rm|start) exit "$(rc_of "$sub.rc" 0)" ;;
   run)
-    ep=''
+    ep='' detached=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --rm|-d|-i) shift ;;
-        --network|--entrypoint|--name|--memory|--cpus|--env-file|--ip|--network-alias|--mount|--log-opt|--restart)
+        --rm|-i) shift ;;
+        -d) detached=true; shift ;;
+        --network|--entrypoint|--name|--memory|--cpus|--env-file|--ip|--network-alias|--mount|--log-opt|--restart|--workdir|-e|--user)
           [[ "$1" == --entrypoint ]] && ep=$2
           shift 2 ;;
         -*) shift ;;
@@ -30,6 +34,7 @@ case "$sub" in
       esac
     done
     shift  # image reference
+    if [[ "$detached" == true ]]; then exit "$(rc_of run-d.rc 0)"; fi
     case "$ep" in
       test)
         if [[ "$1" == '!' ]]; then exists "$3" && exit 1 || exit 0; fi
@@ -37,7 +42,12 @@ case "$sub" in
         exit 2 ;;
       tar) cat "$d/drizzle.tar" ;;
       grep) exit "$(rc_of grep.rc 1)" ;;
+      node)
+        n=$(cat "$d/node.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/node.count"
+        [[ -f "$d/node.out.$n" ]] && cat "$d/node.out.$n"
+        exit "$(rc_of "node.rc.$n" 0)" ;;
     esac ;;
+  exec) exit "$(rc_of exec.rc 0)" ;;
   login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
   pull) exit "$(rc_of pull.rc 0)" ;;
 esac

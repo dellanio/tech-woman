@@ -8,7 +8,7 @@ OPS_SNAPSHOT = ROOT / 'ops/snapshot.py'
 
 
 def synthetic_db(path, wal=False):
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, check_same_thread=False)
     if wal:
         db.execute('PRAGMA journal_mode=WAL')
     db.executescript("""
