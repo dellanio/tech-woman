@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Frame, loginHref, newIdempotencyKey, request } from '../shared';
 import { ProfileArt } from '../components';
@@ -9,16 +9,27 @@ type Field = MentorField | 'email' | 'consent';
 const IDS: Record<Field, string> = { ...MENTOR_IDS, email: 'mentor-email', consent: 'mentor-consent' };
 const MESSAGES: Record<Field, string> = { ...MENTOR_MESSAGES, email: 'Informe um e-mail válido.', consent: 'Confirme o consentimento para continuar.' };
 const validEmail = (value: string) => { const v = value.trim(); return v.length >= 3 && v.length <= 254 && v.split('@').length === 2 && /^[\x21-\x7e]+@[^@\s]+\.[^@\s]+$/.test(v); };
+type Deadline = 'checking' | 'open' | 'closed' | 'error';
+/** Prazo publicado pelo servidor. Só `{open:boolean}` decide; rede ou resposta fora do formato é erro com retry, nunca "encerrado". */
+async function readDeadline(): Promise<Deadline> {
+  try {
+    const response = await fetch('/api/mentor', { cache: 'no-store', headers: { Accept: 'application/json' } });
+    if (!response.ok) return 'error';
+    const value: unknown = await response.json();
+    return value && typeof value === 'object' && 'open' in value && typeof value.open === 'boolean' ? (value.open ? 'open' : 'closed') : 'error';
+  } catch { return 'error'; }
+}
 const mentorOnly = (fields: Field[]) => fields.filter((f): f is MentorField => f in MENTOR_IDS);
 
 /** Cadastro de PERFIL de mentora (não é agendamento nem cria turmas). `simulated`: ambiente sem SES. */
 export function MentorSignup({ simulated }: { simulated: boolean }) {
-  const [open, setOpen] = useState<boolean | null>(null);
+  const [deadline, setDeadline] = useState<Deadline>('checking');
   const [draft, setDraft] = useState<MentorDraft>(emptyMentor), [email, setEmail] = useState(''), [consent, setConsent] = useState(false);
   const [invalid, setInvalid] = useState<Field[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState(false), [done, setDone] = useState(false);
   const attempt = useRef<{ body: string; key: string } | null>(null);
   const keyFor = (body: object) => { const s = JSON.stringify(body); if (attempt.current?.body !== s) attempt.current = { body: s, key: newIdempotencyKey() }; return attempt.current.key; };
-  useEffect(() => { fetch('/api/mentor', { cache: 'no-store' }).then(r => r.json()).then((v: { open: boolean }) => setOpen(v.open)).catch(() => setOpen(false)); }, []);
+  const checkDeadline = useCallback(async () => { setDeadline('checking'); setDeadline(await readDeadline()); }, []);
+  useEffect(() => { void checkDeadline(); }, [checkDeadline]);
 
   function show(fields: Field[], message?: string) {
     setInvalid(fields); setError(message ?? (fields.length ? MESSAGES[fields[0]] : ''));
@@ -35,7 +46,7 @@ export function MentorSignup({ simulated }: { simulated: boolean }) {
     const result = await request<{ status: 'received' }>('/api/v1/registrations/mentors', { method: 'POST', body, csrf: false, idempotencyKey: keyFor(body) });
     setBusy(false);
     if (result.ok) { setDone(true); return; }
-    if (result.code === 'FORBIDDEN') { setOpen(false); return; }
+    if (result.code === 'FORBIDDEN') { setDeadline('closed'); return; }
     const known = result.fields.filter((f): f is Field => f in IDS);
     if (result.code === 'INVALID_INPUT' && known.length) { show(known); return; }
     show([], result.message);
@@ -58,7 +69,9 @@ export function MentorSignup({ simulated }: { simulated: boolean }) {
       </div>
       <p className="field-hint signup-next">Com a senha temporária, entre e defina sua senha definitiva para acompanhar seu perfil em Sua conta.</p>
       <Link className="button-primary" href={loginHref('/conta')}>Entrar na conta ↗</Link>
-    </div> : open === null ? <div className="form-panel" role="status">Verificando prazo de inscrição…</div> : !open ? <div className="form-panel success-panel" role="status"><p className="eyebrow">PRAZO ENCERRADO</p><h2>Cadastro encerrado.</h2><p>O cadastro de mentoras terminou em 30 de outubro, às 23h59 (Brasília).</p></div> :
+    </div> : deadline === 'checking' ? <div className="form-panel" aria-busy="true"><p role="status" className="auth-loading">Verificando prazo de inscrição…</p></div> :
+      deadline === 'error' ? <div className="form-panel"><p className="eyebrow">PRAZO NÃO CONFIRMADO</p><p role="alert" className="visible-error">Não foi possível verificar o prazo de cadastro agora. Confira sua conexão e tente novamente.</p><button type="button" className="button-primary form-main-action" onClick={() => void checkDeadline()}>Tentar novamente</button></div> :
+      deadline === 'closed' ? <div className="form-panel success-panel" role="status"><p className="eyebrow">PRAZO ENCERRADO</p><h2>Cadastro encerrado.</h2><p>O cadastro de mentoras terminou em 30 de outubro, às 23h59 (Brasília).</p></div> :
       <form className="form-panel mentor-panel" onSubmit={submit} noValidate aria-busy={busy}>
         <p className="eyebrow">01 / SUA TRAJETÓRIA</p><h2>Apresente sua experiência.</h2>
         <MentorFields draft={draft} onChange={setDraft} invalid={mentorOnly(invalid)} email={<>
