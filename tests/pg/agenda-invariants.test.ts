@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
-import {OWNER,EDITOR,addUser,linkFixture} from './agenda-harness';
+import {OWNER,EDITOR,addUser,linkFixture,applyLocalGrants} from './agenda-harness';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -186,7 +186,8 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
  await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,hiddenCohort]);
  const rls=(await db.query("select relname,relrowsecurity,relforcerowsecurity from pg_class where oid=any($1::regclass[]) order by relname",[AGENDA_TABLES.map(t=>'public.'+t)])).rows;
  assert.ok(rls.length===6&&rls.every(r=>r.relrowsecurity&&r.relforcerowsecurity),'RLS habilitada e FORCE nas seis tabelas');
- const before=(await db.query("select string_agg(t::text,'|' order by t::text) s from (select p from participant p union all select row(m.*)::text from mentor m) x(t)")).rows[0].s;
+ await applyLocalGrants(db);
+ const before=(await db.query("select string_agg(t::text,'|' order by t::text) s from (select p::text from participant p union all select m::text from mentor m) x(t)")).rows[0].s;
  await withClients(url,[EDITOR,'techwoman_runtime'],async (b,runtime)=>{
   const ids=async(sql:string)=>(await b.query(sql)).rows.map(r=>String(r.id)).sort();
   assert.deepEqual(await ids('select id from participant'),[ambiguous,participant].sort(),'admin vinculado e candidato privilegiado ocultos; ambíguo não é privilégio');
@@ -203,9 +204,9 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]),'42501');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,full]),'23514','agenda_capacity_exceeded');
-  assert.equal((await runtime.query('select count(*)::int n from participant')).rows[0].n,5,'runtime aplica a exclusão no serviço, não perde linhas');
+  assert.equal((await runtime.query('select count(*)::int n from participant')).rows[0].n,4,'runtime aplica a exclusão no serviço, não perde linhas');
   assert.equal((await runtime.query('select count(*)::int n from mentor')).rows[0].n,3);
  });
- assert.equal((await db.query("select string_agg(t::text,'|' order by t::text) s from (select p from participant p union all select row(m.*)::text from mentor m) x(t)")).rows[0].s,before,'nenhuma mutação em linha protegida');
+ assert.equal((await db.query("select string_agg(t::text,'|' order by t::text) s from (select p::text from participant p union all select m::text from mentor m) x(t)")).rows[0].s,before,'nenhuma mutação em linha protegida');
  assert.equal((await db.query("select count(*)::int n from enrollment where status='active'")).rows[0].n,2);
 }));

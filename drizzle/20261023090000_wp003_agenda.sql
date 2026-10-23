@@ -161,3 +161,55 @@ GRANT SELECT (id, display_name, trajectory, specialties, availability, capacity,
 GRANT SELECT, UPDATE (goal, moment, interests, skills, area, active) ON public.participant_editor TO techwoman_beatriz;
 GRANT SELECT, UPDATE (display_name, trajectory, specialties, availability, capacity, active) ON public.mentor_editor TO techwoman_beatriz;
 GRANT USAGE ON SEQUENCE public.topic_id_seq, public.mentor_topic_id_seq, public.cohort_id_seq, public.enrollment_id_seq TO techwoman_beatriz;
+--> statement-breakpoint
+-- R3: visibilidade da editora reutiliza o predicado entregue internal.domain_protected (admin/team vinculado, e-mail de admin/team,
+-- candidato privilegiado/colisão/pendência privilegiada, inclusive com user_id NULL), sem inferir posse nem conceder papel.
+-- Retorna só boolean; executa como owner para enxergar vínculos ocultos.
+GRANT EXECUTE ON FUNCTION internal.domain_protected(text, bigint) TO techwoman_owner;
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION internal.agenda_editor_visible(p_kind text, p_id bigint) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE v_mentor bigint;
+BEGIN
+ IF p_kind = 'participant' THEN RETURN NOT internal.domain_protected('participant', p_id);
+ ELSIF p_kind = 'mentor' THEN v_mentor := p_id;
+ ELSIF p_kind = 'mentor_topic' THEN SELECT mt.mentor_id INTO v_mentor FROM public.mentor_topic mt WHERE mt.id = p_id;
+ ELSIF p_kind = 'cohort' THEN SELECT mt.mentor_id INTO v_mentor FROM public.cohort c JOIN public.mentor_topic mt ON mt.id = c.mentor_topic_id WHERE c.id = p_id;
+ ELSE RETURN false; END IF;
+ RETURN v_mentor IS NULL OR NOT internal.domain_protected('mentor', v_mentor);
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION internal.agenda_editor_visible(text, bigint) FROM PUBLIC;
+GRANT CREATE ON SCHEMA internal TO techwoman_owner;
+ALTER FUNCTION internal.agenda_editor_visible(text, bigint) OWNER TO techwoman_owner;
+REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
+GRANT USAGE ON SCHEMA internal TO techwoman_beatriz;
+GRANT EXECUTE ON FUNCTION internal.agenda_editor_visible(text, bigint) TO techwoman_beatriz;
+--> statement-breakpoint
+-- FORCE RLS nas seis tabelas, políticas explícitas (ninguém tem BYPASSRLS):
+-- dono da tabela (migradora; funções WP-002) e runtime leem tudo (o backend aplica a exclusão antes de listar/alterar);
+-- owner das funções de Agenda lê o conjunto integral para validar; editora só o domínio não protegido.
+DO $$ DECLARE t text; v_table_owner text; BEGIN
+ FOREACH t IN ARRAY ARRAY['topic','mentor_topic','cohort','enrollment','mentor','participant'] LOOP
+  SELECT pg_catalog.pg_get_userbyid(c.relowner) INTO v_table_owner FROM pg_catalog.pg_class c WHERE c.oid = ('public.' || t)::regclass;
+  EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY', t);
+  EXECUTE format('CREATE POLICY agenda_table_owner ON public.%I FOR ALL TO %I USING (true) WITH CHECK (true)', t, v_table_owner);
+  EXECUTE format('CREATE POLICY agenda_function_owner ON public.%I FOR SELECT TO techwoman_owner USING (true)', t);
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_runtime') THEN
+   EXECUTE format('CREATE POLICY agenda_runtime ON public.%I FOR ALL TO techwoman_runtime USING (true) WITH CHECK (true)', t);
+  END IF;
+ END LOOP;
+END $$;
+--> statement-breakpoint
+CREATE POLICY agenda_editor ON public.topic FOR ALL TO techwoman_beatriz USING (true) WITH CHECK (true);
+CREATE POLICY agenda_editor ON public.participant FOR ALL TO techwoman_beatriz
+ USING (internal.agenda_editor_visible('participant', id)) WITH CHECK (internal.agenda_editor_visible('participant', id));
+CREATE POLICY agenda_editor ON public.mentor FOR ALL TO techwoman_beatriz
+ USING (internal.agenda_editor_visible('mentor', id)) WITH CHECK (internal.agenda_editor_visible('mentor', id));
+CREATE POLICY agenda_editor ON public.mentor_topic FOR ALL TO techwoman_beatriz
+ USING (internal.agenda_editor_visible('mentor', mentor_id)) WITH CHECK (internal.agenda_editor_visible('mentor', mentor_id));
+CREATE POLICY agenda_editor ON public.cohort FOR ALL TO techwoman_beatriz
+ USING (internal.agenda_editor_visible('mentor_topic', mentor_topic_id)) WITH CHECK (internal.agenda_editor_visible('mentor_topic', mentor_topic_id));
+CREATE POLICY agenda_editor ON public.enrollment FOR ALL TO techwoman_beatriz
+ USING (internal.agenda_editor_visible('participant', participant_id) AND internal.agenda_editor_visible('cohort', cohort_id))
+ WITH CHECK (internal.agenda_editor_visible('participant', participant_id) AND internal.agenda_editor_visible('cohort', cohort_id));

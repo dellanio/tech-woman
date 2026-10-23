@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {Client,type Pool} from 'pg';
 import {randomBytes} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {roleUrl} from './identity-harness.test';
 
 export {withDb,addUser,linkFixture} from './identity-harness.test';
@@ -57,3 +58,5 @@ export async function startedCohort(url:string,mentorTopicId:string,o:{hoursAgo?
   await c.query('commit');return id;
  });
 }
+/** Mesmo grants-local.sql que LOCAL_ROLE_SETUP aplica depois das migrations (grants do runtime local). */
+export const applyLocalGrants=(db:Q)=>db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));
