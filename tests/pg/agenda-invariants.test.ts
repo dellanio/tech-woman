@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
-import {OWNER,EDITOR,connect} from './agenda-harness';
+import {OWNER,EDITOR,addUser,linkFixture} from './agenda-harness';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -169,4 +169,43 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
  const viewCols=(await db.query("select table_name,string_agg(column_name,',' order by column_name) cols from information_schema.columns where table_name in ('participant_editor','mentor_editor') group by table_name order by table_name")).rows;
  for(const v of viewCols)assert.doesNotMatch(v.cols,/email|token|user_id|consent|hash/,`${v.table_name} sem colunas sensíveis`);
  assert.equal(viewCols.length,2);
+}));
+
+const AGENDA_TABLES=['topic','mentor_topic','cohort','enrollment','mentor','participant'];
+test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado nem candidato privilegiado sem user_id; validador e runtime veem o conjunto integral', ()=>withDb(async ({db,url})=>{
+ const admin=await addUser(db,{roles:['admin','mentor','participant']});const team=await addUser(db,{roles:['team']});
+ const adminMentor=await addMentor(db,{userId:admin.id}),adminParticipant=await addParticipant(db,{userId:admin.id});
+ const sameEmailMentor=await addMentor(db,{email:` ${team.email.toUpperCase()} `});
+ const candidateEmail='candidata@example.invalid',ambiguousEmail='ambigua@example.invalid';const links=await linkFixture(db);
+ await links.link('admin_user',candidateEmail,null,'privileged_candidate');await links.link('participant','999999',null,'ambiguous_domain');
+ const candidate=await addParticipant(db,{email:candidateEmail}),ambiguous=await addParticipant(db,{email:ambiguousEmail});
+ const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
+ const hiddenMt=await addMentorTopic(db,adminMentor,topic),hiddenCohort=await addCohort(db,hiddenMt,{from:0,capacity:3});
+ const mt=await addMentorTopic(db,mentor,topic),full=await addCohort(db,mt,{from:2,capacity:1});
+ await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[adminParticipant,full]);
+ await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,hiddenCohort]);
+ const rls=(await db.query("select relname,relrowsecurity,relforcerowsecurity from pg_class where oid=any($1::regclass[]) order by relname",[AGENDA_TABLES.map(t=>'public.'+t)])).rows;
+ assert.ok(rls.length===6&&rls.every(r=>r.relrowsecurity&&r.relforcerowsecurity),'RLS habilitada e FORCE nas seis tabelas');
+ const before=(await db.query("select string_agg(t::text,'|' order by t::text) s from (select p from participant p union all select row(m.*)::text from mentor m) x(t)")).rows[0].s;
+ await withClients(url,[EDITOR,'techwoman_runtime'],async (b,runtime)=>{
+  const ids=async(sql:string)=>(await b.query(sql)).rows.map(r=>String(r.id)).sort();
+  assert.deepEqual(await ids('select id from participant'),[ambiguous,participant].sort(),'admin vinculado e candidato privilegiado ocultos; ambíguo não é privilégio');
+  assert.deepEqual(await ids('select id from participant_editor'),[ambiguous,participant].sort());
+  assert.deepEqual(await ids('select id from mentor'),[mentor]);assert.deepEqual(await ids('select id from mentor_editor'),[mentor]);
+  assert.deepEqual(await ids('select id from mentor_topic'),[mt]);assert.deepEqual(await ids('select id from cohort'),[full]);
+  assert.deepEqual(await ids('select id from enrollment'),[],'reservas com participante ou mentora protegida ocultas');
+  assert.equal((await b.query('select count(*)::int n from topic')).rows[0].n,1);
+  for(const [sql,args] of [["update participant set goal='leadership' where id=any($1)",[[adminParticipant,candidate]]],["update mentor set trajectory='x' where id=any($1)",[[adminMentor,sameEmailMentor]]],
+   ["update cohort set capacity=2 where id=$1",[hiddenCohort]],["delete from mentor_topic where id=$1",[hiddenMt]],["update enrollment set status='cancelled' where cohort_id=$1",[hiddenCohort]]] as const)
+   assert.equal((await b.query(sql,[...args])).rowCount,0,sql);
+  await pgFails(b.query('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2)',[adminMentor,topic]),'42501');
+  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(5),at(6)]),'42501');
+  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]),'42501');
+  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]),'42501');
+  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,full]),'23514','agenda_capacity_exceeded');
+  assert.equal((await runtime.query('select count(*)::int n from participant')).rows[0].n,5,'runtime aplica a exclusão no serviço, não perde linhas');
+  assert.equal((await runtime.query('select count(*)::int n from mentor')).rows[0].n,3);
+ });
+ assert.equal((await db.query("select string_agg(t::text,'|' order by t::text) s from (select p from participant p union all select row(m.*)::text from mentor m) x(t)")).rows[0].s,before,'nenhuma mutação em linha protegida');
+ assert.equal((await db.query("select count(*)::int n from enrollment where status='active'")).rows[0].n,2);
 }));

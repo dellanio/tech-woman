@@ -4,7 +4,7 @@ import {Client,type Pool} from 'pg';
 import {randomBytes} from 'node:crypto';
 import {roleUrl} from './identity-harness.test';
 
-export {withDb} from './identity-harness.test';
+export {withDb,addUser,linkFixture} from './identity-harness.test';
 export const EDITOR='techwoman_beatriz';
 export const OWNER='techwoman_owner';
 
