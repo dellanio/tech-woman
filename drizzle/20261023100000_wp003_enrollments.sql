@@ -21,12 +21,32 @@ BEGIN
   ]) WITH ORDINALITY x(r, n) WHERE r IS NOT NULL ORDER BY n));
 END $$;
 --> statement-breakpoint
+-- Inscrição nova/reativada: turma open com início futuro, participante/mentora/tema ativos e identidade reconciliada ativa.
+CREATE OR REPLACE FUNCTION internal.enrollment_check_eligible(p_participant bigint, p_cohort bigint) RETURNS void
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
+DECLARE c record;
+BEGIN
+ SELECT co.status, co.starts_at, m.active AS mentor_active, t.active AS topic_active INTO c
+  FROM public.cohort co JOIN public.mentor_topic mt ON mt.id = co.mentor_topic_id JOIN public.mentor m ON m.id = mt.mentor_id JOIN public.topic t ON t.id = mt.topic_id
+  WHERE co.id = p_cohort;
+ IF c.status <> 'open' THEN PERFORM internal.agenda_reject('agenda_cohort_not_open'); END IF;
+ IF c.starts_at <= now() THEN PERFORM internal.agenda_reject('agenda_not_future'); END IF;
+ IF NOT (c.mentor_active AND c.topic_active) OR NOT EXISTS (SELECT 1 FROM public.participant p WHERE p.id = p_participant AND p.active) THEN
+  PERFORM internal.agenda_reject('agenda_inactive');
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM public.participant p JOIN public.app_user u ON u.id = p.user_id WHERE p.id = p_participant AND u.status = 'active') THEN
+  PERFORM internal.agenda_reject('agenda_identity_required');
+ END IF;
+END $$;
+--> statement-breakpoint
 -- Efeitos AFTER ROW (depois do WITH CHECK da RLS): match current, intenção de e-mail sem payload e auditoria só com nomes de campos.
 CREATE OR REPLACE FUNCTION internal.enrollment_effects() RETURNS trigger
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE v_mentor bigint; v_user uuid; r record;
 BEGIN
  IF TG_OP = 'INSERT' THEN
+  IF NEW.status <> 'active' THEN PERFORM internal.agenda_reject('agenda_invalid_transition'); END IF;
+  PERFORM internal.enrollment_check_eligible(NEW.participant_id, NEW.cohort_id);
   SELECT mt.mentor_id INTO v_mentor FROM public.cohort c JOIN public.mentor_topic mt ON mt.id = c.mentor_topic_id WHERE c.id = NEW.cohort_id;
   SELECT p.user_id INTO v_user FROM public.participant p WHERE p.id = NEW.participant_id;
   SELECT * INTO r FROM internal.agenda_ranking(NEW.participant_id, v_mentor);
@@ -40,7 +60,45 @@ BEGIN
  RETURN NULL;
 END $$;
 --> statement-breakpoint
-REVOKE ALL ON FUNCTION internal.agenda_ranking(bigint, bigint), internal.enrollment_effects() FROM PUBLIC;
+-- Validador integral (substitui a versão da Task 1, mesmas regras) + nenhuma participante com inscrições active sobrepostas, entre quaisquer mentoras.
+CREATE OR REPLACE FUNCTION internal.validate_agenda_state() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+ -- Máximo dois vínculos no total, inclusive com mentor_topic_position_unique adiado na troca de posições.
+ IF EXISTS (SELECT 1 FROM public.mentor_topic GROUP BY mentor_id HAVING count(*) > 2) THEN
+  RAISE EXCEPTION 'agenda_topic_limit' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_topic_limit';
+ END IF;
+ IF EXISTS (
+  SELECT 1 FROM public.cohort a JOIN public.mentor_topic ma ON ma.id = a.mentor_topic_id
+   JOIN public.mentor_topic mb ON mb.mentor_id = ma.mentor_id
+   JOIN public.cohort b ON b.mentor_topic_id = mb.id AND b.id <> a.id
+  WHERE a.status <> 'cancelled' AND b.status <> 'cancelled' AND a.starts_at < b.ends_at AND b.starts_at < a.ends_at) THEN
+  RAISE EXCEPTION 'agenda_mentor_overlap' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_mentor_overlap';
+ END IF;
+ IF EXISTS (
+  SELECT 1 FROM public.enrollment ea JOIN public.cohort a ON a.id = ea.cohort_id
+   JOIN public.enrollment eb ON eb.participant_id = ea.participant_id AND eb.id <> ea.id AND eb.status = 'active'
+   JOIN public.cohort b ON b.id = eb.cohort_id
+  WHERE ea.status = 'active' AND a.starts_at < b.ends_at AND b.starts_at < a.ends_at) THEN
+  RAISE EXCEPTION 'agenda_participant_overlap' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_participant_overlap';
+ END IF;
+ -- Ocupação = inscrições active (match não é fonte de vagas); closed retém, cancelled exige zero.
+ IF EXISTS (SELECT 1 FROM public.cohort c JOIN public.enrollment e ON e.cohort_id = c.id AND e.status = 'active' GROUP BY c.id, c.capacity HAVING count(*) > c.capacity) THEN
+  RAISE EXCEPTION 'agenda_capacity_exceeded' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_capacity_exceeded';
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.cohort c JOIN public.enrollment e ON e.cohort_id = c.id AND e.status = 'active' WHERE c.status = 'cancelled') THEN
+  RAISE EXCEPTION 'agenda_cohort_in_use' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_cohort_in_use';
+ END IF;
+ -- Desativar participante, mentora ou tema com reserva active exige cancelamento explícito antes.
+ IF EXISTS (SELECT 1 FROM public.enrollment e JOIN public.participant p ON p.id = e.participant_id JOIN public.cohort c ON c.id = e.cohort_id
+   JOIN public.mentor_topic mt ON mt.id = c.mentor_topic_id JOIN public.mentor m ON m.id = mt.mentor_id JOIN public.topic t ON t.id = mt.topic_id
+  WHERE e.status = 'active' AND NOT (p.active AND m.active AND t.active)) THEN
+  RAISE EXCEPTION 'agenda_active_enrollment' USING ERRCODE = 'check_violation', CONSTRAINT = 'agenda_active_enrollment';
+ END IF;
+ RETURN NULL;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION internal.agenda_ranking(bigint, bigint), internal.enrollment_check_eligible(bigint, bigint), internal.enrollment_effects() FROM PUBLIC;
 --> statement-breakpoint
 GRANT SELECT (id, status) ON public.app_user TO techwoman_owner;
 GRANT SELECT, INSERT, UPDATE (status) ON public.match TO techwoman_owner;
@@ -50,6 +108,7 @@ GRANT USAGE ON SEQUENCE public.match_id_seq, public.audit_event_id_seq TO techwo
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA internal TO techwoman_owner;
 ALTER FUNCTION internal.agenda_ranking(bigint, bigint) OWNER TO techwoman_owner;
+ALTER FUNCTION internal.enrollment_check_eligible(bigint, bigint) OWNER TO techwoman_owner;
 ALTER FUNCTION internal.enrollment_effects() OWNER TO techwoman_owner;
 REVOKE CREATE ON SCHEMA internal FROM techwoman_owner;
 --> statement-breakpoint
