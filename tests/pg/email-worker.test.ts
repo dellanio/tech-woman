@@ -14,6 +14,8 @@ const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
 const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role} -c jit=off`);return u.toString();};
 
 /** App roda como techwoman_runtime, worker como techwoman_mailer (SET ROLE na conexão), fixtures como dono. */
+/** Espera os backends encerrarem antes do DROP: derrubar socket ainda fechando gera erro assíncrono após o teste. */
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<60;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  assert.ok(base,'MIGRATION_DATABASE_URL');const control=new Pool({connectionString:base});const name='tw_mail_'+randomUUID().replace(/-/g,'');
  const created:string[]=[];
@@ -23,7 +25,7 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  const saved={d:process.env.DATABASE_URL,m:process.env.MAILER_DATABASE_URL};
  try{ await migrate(url);await closeDb();await email.closeEmailPool();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');process.env.MAILER_DATABASE_URL=roleUrl(url,'techwoman_mailer');await fn({db,url,mailer}); }
  finally{ await closeDb();await email.closeEmailPool();for(const [k,v] of [['DATABASE_URL',saved.d],['MAILER_DATABASE_URL',saved.m]] as const){if(v===undefined)delete process.env[k];else process.env[k]=v;}
-  await mailer.end();await db.end();await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
+  await mailer.end();await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
 const dto=(addr:string)=>({email:addr,goal:'growth',moment:'working',interests:['dados'],skills:['codigo'],area:'dados',consent:true});
 const register=(addr:string)=>registration.registerParticipant(dto(addr));

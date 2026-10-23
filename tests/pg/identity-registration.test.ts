@@ -14,6 +14,8 @@ const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
 const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role} -c jit=off`);return u.toString();};
 
 /** Banco isolado; o app roda de verdade como techwoman_runtime (SET ROLE na conexão), as fixtures como dono. */
+/** Espera os backends encerrarem antes do DROP: derrubar socket ainda fechando gera erro assíncrono após o teste. */
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<60;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  assert.ok(base,'MIGRATION_DATABASE_URL');const control=new Pool({connectionString:base});const name='tw_reg_'+randomUUID().replace(/-/g,'');
  const created:string[]=[];
@@ -22,7 +24,7 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  const db=new Pool({connectionString:url,max:6,options:'-c jit=off'});const previous=process.env.DATABASE_URL;const deadline=process.env.MENTOR_DEADLINE;
  try{ await migrate(url);await closeDb();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');await fn({db,url}); }
  finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;if(deadline===undefined)delete process.env.MENTOR_DEADLINE;else process.env.MENTOR_DEADLINE=deadline;
-  await db.end();await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
+  await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
 const participantDto=(email:string,extra:Record<string,unknown>={})=>({email,goal:'transition',moment:'starting',interests:['dados','design'],skills:['analise'],area:'outra',otherArea:'Educação',consent:true,...extra});
 const mentorDto=(email:string,extra:Record<string,unknown>={})=>({email,displayName:'Mentora Fictícia',trajectory:'Trajetória de teste',specialties:['produto'],availability:'Quartas à tarde',legacyCapacity:3,consent:true,...extra});

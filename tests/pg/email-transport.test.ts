@@ -17,6 +17,8 @@ const code=async(p:Promise<unknown>)=>{try{await p;return null}catch(e){return e
 const stub=(behavior:(n:number)=>Promise<{MessageId?:string}>)=>{const calls:{command:unknown;options?:{abortSignal?:AbortSignal}}[]=[];const client:email.SesLikeClient={async send(command,options){calls.push({command,options});return behavior(calls.length);}};return {calls,client};};
 const signal=()=>new AbortController().signal;
 
+/** Espera os backends encerrarem antes do DROP: derrubar socket ainda fechando gera erro assíncrono após o teste. */
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<60;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 async function withDb(fn:(ctx:{db:Pool;url:string})=>Promise<void>){
  assert.ok(base,'MIGRATION_DATABASE_URL');const control=new Pool({connectionString:base});const name='tw_tr_'+randomUUID().replace(/-/g,'');const created:string[]=[];
  for(const role of ['techwoman_runtime','techwoman_mailer']){ if(!(await control.query('select 1 from pg_roles where rolname=$1',[role])).rowCount){await control.query(`create role ${role} nologin`);created.push(role);} }
@@ -24,7 +26,7 @@ async function withDb(fn:(ctx:{db:Pool;url:string})=>Promise<void>){
  const saved={d:process.env.DATABASE_URL,m:process.env.MAILER_DATABASE_URL};
  try{ await migrate(url);await closeDb();await email.closeEmailPool();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');process.env.MAILER_DATABASE_URL=roleUrl(url,'techwoman_mailer');await fn({db,url}); }
  finally{ await closeDb();await email.closeEmailPool();for(const [k,v] of [['DATABASE_URL',saved.d],['MAILER_DATABASE_URL',saved.m]] as const){if(v===undefined)delete process.env[k];else process.env[k]=v;}
-  await db.end();await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
+  await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
 
 test('SES: exige flags estritas atuais e allowlist de destinatários aprovada pelo operador antes de qualquer envio',async()=>{
