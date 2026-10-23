@@ -22,7 +22,7 @@ class CreateAndLoadTests(StateTestCase):
     def test_create_writes_prepared_state_and_a_matching_journal_line(self):
         state = self.create()
         self.assertEqual((state.phase, state.seq, state.candidate_sha256), ('prepared', 1, CANDIDATE_SHA))
-        loaded = cutover.State.load(self.dir)
+        loaded = cutover.State.load(self.dir, cutover.UNCHECKED)
         self.assertEqual((loaded.phase, loaded.seq, loaded.candidate_sha256), ('prepared', 1, CANDIDATE_SHA))
         journal = [json.loads(l) for l in (self.dir / 'journal.jsonl').read_text().splitlines()]
         self.assertEqual([(j['seq'], j['phase'], j['from']) for j in journal], [(1, 'prepared', None)])
@@ -76,13 +76,13 @@ class TransitionTests(StateTestCase):
                     if (a, b) in ALLOWED:
                         state.transition(b, NOW)
                         self.assertEqual((state.phase, state.seq), (b, seq + 1))
-                        self.assertEqual(cutover.State.load(self.dir).phase, b)
+                        self.assertEqual(cutover.State.load(self.dir, cutover.UNCHECKED).phase, b)
                     else:
                         with self.assertRaises(cutover.StateError) as caught:
                             state.transition(b, NOW)
                         self.assertEqual(caught.exception.code, 75)
                         self.assertEqual((state.phase, state.seq), (a, seq))
-                        self.assertEqual(cutover.State.load(self.dir).seq, seq)
+                        self.assertEqual(cutover.State.load(self.dir, cutover.UNCHECKED).seq, seq)
 
     def test_unknown_target_phase_is_refused(self):
         state = self.create()
@@ -145,10 +145,10 @@ class LoadIntegrityTests(StateTestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 self.dir = pathlib.Path(tmp)
                 self.prepared_twice()
-                self.assertEqual(cutover.State.load(self.dir).phase, 'snapshotted')
+                self.assertEqual(cutover.State.load(self.dir, cutover.UNCHECKED).phase, 'snapshotted')
                 damage()
                 with self.assertRaises(cutover.StateError) as caught:
-                    cutover.State.load(self.dir)
+                    cutover.State.load(self.dir, cutover.UNCHECKED)
                 self.assertEqual(caught.exception.code, 70, name)
 
 
@@ -175,7 +175,7 @@ class DurabilityTests(StateTestCase):
         self.assertEqual((self.dir / 'state.json').read_bytes(), before)
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['journal.jsonl', 'state.json', 'state.lock'])
         with self.assertRaises(cutover.StateError) as caught:
-            cutover.State.load(self.dir)
+            cutover.State.load(self.dir, cutover.UNCHECKED)
         self.assertEqual(caught.exception.code, 70)
 
     def test_a_second_writer_is_refused_while_the_lock_is_held(self):
@@ -185,7 +185,7 @@ class DurabilityTests(StateTestCase):
                 state.transition('frozen', NOW)
         self.assertEqual(caught.exception.code, 66)
         state.transition('frozen', NOW)
-        self.assertEqual(cutover.State.load(self.dir).phase, 'frozen')
+        self.assertEqual(cutover.State.load(self.dir, cutover.UNCHECKED).phase, 'frozen')
 
 
 class OwnershipPolicyTests(StateTestCase):

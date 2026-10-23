@@ -5,7 +5,7 @@ The state file is root-owned and written only by this tool. The journal is a con
 (sequence + links between entries) that detects torn or mismatched writes; it is NOT a cryptographic
 protection against root and must not be described as one.
 """
-import contextlib, hashlib, json, os, pathlib, re, sys
+import contextlib, hashlib, json, os, pathlib, re, stat, sys
 
 
 class StateError(Exception):
@@ -69,6 +69,40 @@ TRANSITIONS = {
     ('pg_write_open', 'recovering'): 'operator recover',
     ('pg_write_open', 'pg_write_open'): 'release by deploy.sh',
 }
+
+
+class Policy:
+    """Who must own the marker files and how private they must be.
+
+    Production (the deploy gate and the operator CLI) always uses the real lstat and STRICT; the injected
+    lstat exists only for the Python API used by tests. UNCHECKED is for unit tests of the state machine.
+    """
+
+    def __init__(self, owner_uid=0, check_mode=True, lstat=os.lstat):
+        self.owner_uid = owner_uid
+        self.check_mode = check_mode
+        self.lstat = lstat
+
+
+STRICT = Policy()
+UNCHECKED = Policy(owner_uid=None, check_mode=False)
+
+
+def _check_ownership(directory, policy):
+    for path, directory_like in ((directory, True), (directory / 'state.json', False),
+                                 (directory / 'journal.jsonl', False)):
+        try:
+            info = policy.lstat(path)
+        except OSError:
+            raise StateError(70, 'state marker or journal missing or unreadable')
+        wanted = stat.S_ISDIR if directory_like else stat.S_ISREG
+        if not wanted(info.st_mode):
+            raise StateError(70, '%s is not a plain %s' % (path.name or 'state dir', 'directory' if directory_like else 'file'))
+        if policy.owner_uid is not None and info.st_uid != policy.owner_uid:
+            raise StateError(70, '%s has the wrong owner' % path.name)
+        forbidden = 0o077 if directory_like else 0o177
+        if policy.check_mode and info.st_mode & forbidden:
+            raise StateError(70, '%s has a permissive mode' % path.name)
 
 
 PHASES = {phase for pair in TRANSITIONS for phase in pair}
@@ -146,12 +180,14 @@ class State:
                 journal.write((json.dumps(entry, sort_keys=True) + '\n').encode('utf-8'))
                 journal.flush()
                 os.fsync(journal.fileno())
+                os.chmod(self.dir / 'journal.jsonl', 0o600)
             temporary = self.dir / ('.state.%d.tmp' % os.getpid())
             try:
                 with open(temporary, 'wb') as handle:
                     handle.write(state_bytes)
                     handle.flush()
                     os.fsync(handle.fileno())
+                os.chmod(temporary, 0o600)
                 os.replace(temporary, self.dir / 'state.json')
             finally:
                 if temporary.exists():
@@ -170,9 +206,10 @@ class State:
         return state
 
     @classmethod
-    def load(cls, directory):
-        """Read the marker; any unreadable, malformed or inconsistent state is exit 70 (fail closed)."""
+    def load(cls, directory, policy=STRICT):
+        """Read the marker; any unreadable, malformed, inconsistent or badly owned state is exit 70."""
         directory = pathlib.Path(directory)
+        _check_ownership(directory, policy)
         try:
             state_bytes = (directory / 'state.json').read_bytes()
             data = json.loads(state_bytes.decode('utf-8'))
