@@ -44,8 +44,8 @@ test('login legado: hash saltHex:digest preservado, sessão opaca só com digest
  assert.ok(ok);assert.equal(ok.state,'authenticated');assert.equal(identity.isSessionToken(ok.token),true);
  const s=await identity.identitySession(ok.token);assert.ok(s);
  assert.equal(s.scope,'full');assert.equal(s.userId,user.id);assert.deepEqual([...s.roles].sort(),['admin','mentor']);assert.equal(s.state,'authenticated');
- const row=(await db.query('select token_hash,scope,expires_at-created_at as ttl from auth_session')).rows[0];
- assert.equal(row.token_hash===ok.token,false);assert.equal(row.token_hash,tokenDigest(ok.token));assert.equal(row.ttl.hours,24);
+ const row=(await db.query('select token_hash,scope,extract(epoch from expires_at-created_at)::int as ttl from auth_session')).rows[0];
+ assert.equal(row.token_hash===ok.token,false);assert.equal(row.token_hash,tokenDigest(ok.token));assert.equal(row.ttl,86400);
  assert.equal((await db.query('select password_hash=$2 as same from app_user where id=$1',[user.id,legacy])).rows[0].same,true,'login não faz rehash');
  assert.equal(await identity.login(user.email,pw+'x'),null);
  assert.equal(await identity.login('ninguem@example.invalid',pw),null);
@@ -115,7 +115,7 @@ test('duas trocas concorrentes com a mesma sessão: só uma vence',async()=>with
 
 test('login, consumo do temporário e troca cancelam jobs obsoletos e avançam geração (R4)',async()=>withDb(async({db})=>{
  const user=await addUser(db,{status:'pending_activation'});const other=await addUser(db);
- const job=async(uid:string,kind:string,status:string,gen:number)=>{const id=randomUUID();await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1,$2,$3,$4,$5,$1::text)",[id,uid,kind,gen,status]);return id;};
+ const job=async(uid:string,kind:string,status:string,gen:number)=>{const id=randomUUID();await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1::uuid,$2,$3,$4,$5,$1::uuid::text)",[id,uid,kind,gen,status]);return id;};
  const temp=await issueTemporary(db,user.id);
  const gen0=(await db.query('select credential_generation g from app_user where id=$1',[user.id])).rows[0].g;
  const j1=await job(user.id,'temporary_password','queued',1),j2=await job(user.id,'registration','unconfirmed',1),j3=await job(user.id,'password_reset','sending',1),j4=await job(user.id,'reservation','queued',1),j5=await job(user.id,'temporary_password','accepted',1),j6=await job(other.id,'temporary_password','queued',1);
@@ -133,13 +133,13 @@ test('reset: uso único, 30min, revoga sessões/temporários/tokens e cancela jo
  const pw=synthetic();const user=await addUser(db,{password:pw});const s1=await identity.login(user.email,pw);assert.ok(s1);
  const t1=await issueReset(db,user.id),t2=await issueReset(db,user.id);
  assert.equal(await code(identity.confirmPasswordReset(t1,synthetic())),'INVALID_RESET','novo token invalida o anterior do mesmo propósito');
- const jid=randomUUID();await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1,$2,'password_reset',9,'queued',$1::text)",[jid,user.id]);
+ const jid=randomUUID();await db.query("insert into email_job(id,user_id,kind,generation,status,dedupe_key) values($1::uuid,$2,'password_reset',9,'queued',$1::uuid::text)",[jid,user.id]);
  assert.equal(await code(identity.confirmPasswordReset(t2,'curta')),'INVALID_INPUT');
  assert.equal((await db.query('select used_at is null u from password_reset_token where token_hash=$1',[tokenDigest(t2)])).rows[0].u,true,'senha inválida não consome');
  assert.equal(await code(identity.confirmPasswordReset('invalido',synthetic())),'INVALID_RESET');
- const fresh=synthetic();const conc=await Promise.all([code(identity.confirmPasswordReset(t2,fresh)),code(identity.confirmPasswordReset(t2,synthetic()))]);
- assert.deepEqual(conc.slice().sort(),[null,'INVALID_RESET']);
- assert.equal(await identity.identitySession(s1.token),null);assert.equal(await identity.login(user.email,pw),null);assert.ok(await identity.login(user.email,fresh));
+ const fresh=synthetic(),rival=synthetic();const conc=await Promise.all([code(identity.confirmPasswordReset(t2,fresh)),code(identity.confirmPasswordReset(t2,rival))]);const winnerPw=conc[0]===null?fresh:rival;
+ assert.equal(conc.filter(r=>r===null).length,1);assert.equal(conc.filter(r=>r==='INVALID_RESET').length,1);
+ assert.equal(await identity.identitySession(s1.token),null);assert.equal(await identity.login(user.email,pw),null);assert.ok(await identity.login(user.email,winnerPw));
  assert.equal((await db.query('select status from email_job where id=$1',[jid])).rows[0].status,'cancelled');
  assert.equal(await code(identity.confirmPasswordReset(t2,synthetic())),'INVALID_RESET','usado');
  const tmpUser=await addUser(db,{password:pw});const temp=await issueTemporary(db,tmpUser.id);const t3=await issueReset(db,tmpUser.id);await identity.confirmPasswordReset(t3,synthetic());
