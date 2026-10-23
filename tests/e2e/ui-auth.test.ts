@@ -58,7 +58,8 @@ test('login: erro genérico; temporária → sessão limitada → troca obrigat�
   await alertText(page,/Senha atual ou temporária não confere/);
   assert.equal(await sessionState(page),'password_change_required');
   await current.fill(temp);await save.click();
-  await page.waitForURL(u=>u.pathname==='/login');
+  // destino padrão pós-login é a página da conta (/conta), não mais o painel em /login
+  await page.waitForURL(u=>u.pathname==='/conta');
   await page.getByRole('heading',{name:/Sua conta/}).waitFor();
   assert.ok((await page.getByRole('main').innerText()).includes(email));
   assert.equal(await sessionState(page),'authenticated');
@@ -84,21 +85,22 @@ test('sessão limitada sempre volta à troca; destino só local; logout 204 ence
   await page.goto(ui.origin+'/troca-senha?next='+encodeURIComponent('//evil.example/roubo'));
   await page.getByLabel('Senha atual ou temporária').fill(temp);await page.getByLabel('Nova senha',{exact:true}).fill(definitive);await page.getByLabel('Confirme a nova senha').fill(definitive);
   await page.getByRole('button',{name:/Salvar nova senha/}).click();
-  await page.waitForURL(u=>u.pathname==='/login');assert.equal(new URL(page.url()).origin,ui.origin);
+  await page.waitForURL(u=>u.pathname==='/conta');assert.equal(new URL(page.url()).origin,ui.origin);
   await page.getByRole('main').getByRole('status').filter({hasText:/Senha definida/}).waitFor();
-  // logout: 204 sem corpo, sessão encerrada e formulário de volta
+  // logout: 204 sem corpo, sessão encerrada e formulário de acesso de volta
   const [logout]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/auth/logout')),page.getByRole('button',{name:/Sair/}).click()]);
   assert.equal(logout.status(),204);
   await page.getByRole('main').getByRole('status').filter({hasText:/Você saiu/}).waitFor();
   await page.getByRole('button',{name:'Entrar',exact:true}).waitFor();
+  assert.equal(path(page),'/login');
   assert.equal(await sessionState(page),'http-401');
   // login full com destino local permitido; destino externo cai no padrão
   await page.goto(ui.origin+'/login?next=%2Finscricao');await signIn(definitive);
   await page.waitForURL(u=>u.pathname==='/inscricao');
   for(const evil of ['https://evil.example/x','//evil.example','/\\evil.example','/api/v1/auth/session']){
    await page.goto(ui.origin+'/login?next='+encodeURIComponent(evil));
-   await page.getByRole('heading',{name:/Sua conta/}).waitFor();
-   assert.equal(new URL(page.url()).origin,ui.origin);assert.equal(path(page),'/login');
+   await page.waitForURL(u=>u.pathname==='/conta');await page.getByRole('heading',{name:/Sua conta/}).waitFor();
+   assert.equal(new URL(page.url()).origin,ui.origin);assert.equal(path(page),'/conta');
   }
   ui.assertNoLeak();
  }finally{await context.close();}
@@ -209,7 +211,7 @@ test('Frame: Conta e tema alcançáveis em 390×844 nos dois temas; falha de red
    await page.goto(ui.origin+route);
    const header=page.locator('header.site-header');
    const account=header.getByRole('link',{name:'Conta',exact:true});await account.waitFor();
-   assert.equal(await account.getAttribute('href'),'/login');
+   assert.equal(await account.getAttribute('href'),'/conta');
    const toggle=header.getByRole('button',{name:/Ativar tema/});await toggle.waitFor();
    for(const target of [account,toggle]){const box=await target.boundingBox();assert.ok(box&&box.x>=0&&box.x+box.width<=390&&box.height>=24,`${route}: alvo dentro da tela`);}
    for(const theme of ['light','dark']){
