@@ -44,7 +44,7 @@ async function duringElevation(db:Pool,url:string,target:Actor,n:number,requests
  assert.deepEqual(elevated,{code:'ok'});
  return {replies:await pending,waited};
 }
-const outcome=(r:Reply)=>[r.status,code(r),r.json?.error?.fields??null];
+const outcome=(r:Reply)=>[r.status,code(r),r.json?.error?.fields??[]];
 const domainState=(s:string)=>{const v=JSON.parse(s);return {participants:v.participants,mentors:v.mentors,links:v.links,cohorts:v.cohorts,enrollments:v.enrollments,matches:v.matches,jobs:v.jobs,idem:v.idem};};
 
 test('I1 elevação × CRUD de participante/mentora com candidato NULL de mesmo e-mail: PATCH/DELETE esperam o lock da conta e viram 404 sem mutação',()=>withDb(async({db,url})=>{
@@ -55,7 +55,7 @@ test('I1 elevação × CRUD de participante/mentora com candidato NULL de mesmo 
   A.send(participantOne.PATCH,`${P}/${c.participant}`,{method:'PATCH',body:{goal:'leadership'},params:{id:c.participant},version:pv}),
   A.send(mentorOne.PATCH,`${M}/${c.mentor}`,{method:'PATCH',body:{displayName:'Outra'},params:{id:c.mentor},version:mv}),
   A.send(mentorOne.DELETE,`${M}/${c.mentor}`,{method:'DELETE',params:{id:c.mentor},version:mv})]);
- assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',null],[404,'NOT_FOUND',null],[404,'NOT_FOUND',null]]);
+ assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',[]],[404,'NOT_FOUND',[]],[404,'NOT_FOUND',[]]]);
  assert.equal(waited,true,'as escritas esperaram o lock da conta de mesmo e-mail');
  const after=await snapshot(db);assert.deepEqual(domainState(after),domainState(before),'nenhuma mutação de domínio');
  assert.equal(JSON.parse(after).audits,JSON.parse(before).audits+1,'só a auditoria da elevação');
@@ -72,7 +72,7 @@ test('I1 elevação × temas/turmas da mentora e matches com candidato NULL: esc
   A.send(cohortOne.PATCH,`/api/v1/cohorts/${c.cohort}`,{method:'PATCH',body:{capacity:6},params:{id:c.cohort},version:cv}),
   A.send(matches.POST,X,{body:{participantId:common,mentorId:c.mentor},key:randomUUID()}),
   A.send(matchOne.PATCH,`${X}/${pair}`,{method:'PATCH',body:{status:'rejected'},params:{id:pair},version:xv})]);
- assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',null],[404,'NOT_FOUND',null],[422,'INVALID_INPUT',['mentorId']],[404,'NOT_FOUND',null]]);
+ assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',[]],[404,'NOT_FOUND',[]],[422,'INVALID_INPUT',['mentorId']],[404,'NOT_FOUND',[]]]);
  assert.equal(waited,true,'as escritas esperaram o lock da conta de mesmo e-mail');
  const after=await snapshot(db);assert.deepEqual(domainState(after),domainState(before),'nenhuma mutação de agenda/match');
  assert.equal(JSON.parse(after).audits,JSON.parse(before).audits+1);
@@ -91,10 +91,10 @@ test('I1/M1 elevação × inscrições: cancelar reserva em turma da mentora can
  const {replies,waited}=await duringElevation(db,url,c.target,2,()=>[
   A.send(adminEnrollment.DELETE,`${E}/${inCandidate}`,{method:'DELETE',params:{id:inCandidate},version:ev}),
   A.send(reassign.POST,`${E}/${toMove}/reassign`,{body:{cohortId:c.cohort,confirm:true},params:{id:toMove},key:randomUUID()})]);
- assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',null],[422,'INVALID_INPUT',['cohortId']]]);
+ assert.deepEqual(replies.map(outcome),[[404,'NOT_FOUND',[]],[422,'INVALID_INPUT',['cohortId']]]);
  assert.equal(waited,true,'as escritas esperaram o lock da conta da mentora da turma');
  r=await A.send(reassign.POST,`${E}/${moved}/reassign`,{body,params:{id:moved},key});
- assert.deepEqual(outcome(r),[404,'NOT_FOUND',null],`replay não devolve a inscrição ${destination} cuja mentora de destino virou protegida`);
+ assert.deepEqual(outcome(r),[404,'NOT_FOUND',[]],`replay não devolve a inscrição ${destination} cuja mentora de destino virou protegida`);
  const after=await snapshot(db);assert.deepEqual(domainState(after),domainState(before),'nenhuma mutação de inscrição/match/job');
  assert.equal(JSON.parse(after).audits,JSON.parse(before).audits+1);
 }));
