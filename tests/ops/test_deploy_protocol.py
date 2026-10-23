@@ -1,4 +1,4 @@
-import hashlib, json, pathlib, subprocess, tempfile, unittest
+import hashlib, json, pathlib, subprocess, sys, tempfile, unittest
 
 from tests.ops import harness
 
@@ -107,6 +107,13 @@ class ProbeTests(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertEqual(report['protocol'], 2)
         self.assertEqual(report['script_sha256'], hashlib.sha256(ops.script.read_bytes()).hexdigest())
+        package = json.loads(subprocess.run([sys.executable, '-I', str(ops.ops / 'manifest.py'), 'ops-package', str(ops.ops)],
+                                            capture_output=True, text=True).stdout)
+        self.assertEqual(report['package_sha256'], package['aggregate_sha256'])  # every helper, not only deploy.sh
+        (ops.ops / 'cutover.py').write_bytes((ops.ops / 'cutover.py').read_bytes() + b'# drift' + bytes([10]))
+        drifted = json.loads(ops.run(request('TWDEPLOY/2', 'probe')).stdout)
+        self.assertNotEqual(drifted['package_sha256'], report['package_sha256'])
+        self.assertEqual(drifted['script_sha256'], report['script_sha256'])
         self.assertEqual(result.stderr, '')
         self.assertEqual(result.calls(), [])
 

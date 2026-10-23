@@ -41,6 +41,8 @@ class StepOrderAndProbeTests(unittest.TestCase):
         self.assertIn('probe', probe)
         self.assertIn('sha256sum ops/deploy.sh', probe)
         self.assertIn('script_sha256', probe)
+        self.assertIn('python3 ops/manifest.py ops-package-sha ops', probe)
+        self.assertIn('package_sha256', probe)
         self.assertNotIn('build-push', probe)
 
     def test_remote_request_speaks_protocol_v2_first_and_carries_the_release_identity(self):

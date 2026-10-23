@@ -134,6 +134,17 @@ class OpsPackageTests(unittest.TestCase):
             changed = json.loads(manifest('ops-package', ops).stdout)
         self.assertNotEqual(changed['aggregate_sha256'], first['aggregate_sha256'])
 
+    def test_ops_package_sha_prints_only_the_aggregate_and_refuses_cr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            ops = self.make_ops(tmp)
+            aggregate = json.loads(manifest('ops-package', ops).stdout)['aggregate_sha256']
+            done = manifest('ops-package-sha', ops)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.strip(), aggregate)
+            write(ops / 'manifest.py', b'print(1)' + bytes([13, 10]))
+            self.assertEqual(manifest('ops-package-sha', ops).returncode, 65)
+
     def test_ops_package_and_seal_refuse_crlf_files_instead_of_normalizing_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
