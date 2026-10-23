@@ -35,8 +35,11 @@ async function login<T>(url: string, role: string, fn: (c: Client) => Promise<T>
   const c = new Client({connectionString: loginUrl(url, role)}); await c.connect();
   try {return await fn(c);} finally {await c.end().catch(() => undefined);}
 }
-const show = async (c: Client) => Object.fromEntries(await Promise.all(['lock_timeout', 'statement_timeout', 'idle_in_transaction_session_timeout']
-  .map(async k => [k, (await c.query(`show ${k}`)).rows[0][k]])));
+async function show(c: Client) {
+  const out: Record<string, string> = {};
+  for (const k of ['lock_timeout', 'statement_timeout', 'idle_in_transaction_session_timeout']) out[k] = (await c.query(`show ${k}`)).rows[0][k];
+  return out;
+}
 /** Disposable cluster only: the product roles need LOGIN for login-time settings to be observable. */
 async function canLogin(db: Pool) {for (const r of ROLES) await db.query(`alter role ${r} login`);}
 
