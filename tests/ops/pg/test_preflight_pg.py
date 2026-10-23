@@ -18,7 +18,7 @@ HOST_IDS = ['PF-PG-PORT', 'PF-PGADMIN-TLS', 'PF-PGADMIN-COOKIE', 'PF-PGADMIN-RAT
 # operator remediation the preflight demands (PUBLIC keeps no USAGE on public; the roles get it explicitly)
 REMEDIATION = """
 revoke usage on schema public from public;
-grant usage on schema public to techwoman_runtime, techwoman_mailer, techwoman_migrator;
+grant usage on schema public to techwoman_runtime, techwoman_mailer, techwoman_migrator, techwoman_owner, techwoman_beatriz;
 """
 SNAPSHOT = """
 select json_build_object(
@@ -123,18 +123,23 @@ class SqlChecksTests(PreflightWorld):
         ]
         for check, bad, undo in cases:
             with self.subTest(check=check, bad=bad):
+                # roles are global to the cluster: the undo always runs, even when an assertion fails
                 self.cluster.psql(self.db if 'database postgres' not in bad else 'postgres', bad)
-                done = self.preflight()
-                self.assertEqual(done.returncode, 87, done.stderr)
-                report = self.report(done)
-                self.assertEqual(report[check]['status'], 'fail', report[check])
-                self.assertEqual([i for i in SQL_IDS if report[i]['status'] == 'fail'], [check])
-                self.assertEqual(json.loads(done.stdout)['overall'], 'fail')
-                if undo:
-                    self.cluster.psql(self.db if 'database postgres' not in undo else 'postgres', undo)
-                else:
-                    subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', self.db, '-f', 'ops/sql/role-limits.sql'],
-                                   cwd=ROOT, env=self.cluster.env(), check=True, capture_output=True)
+                try:
+                    done = self.preflight()
+                    self.assertEqual(done.returncode, 87, done.stderr)
+                    report = self.report(done)
+                    self.assertEqual(report[check]['status'], 'fail', report[check])
+                    # the grants matrix (PF-COLGRANT) independently catches several of these too; nothing else may fail
+                    self.assertEqual({i for i in SQL_IDS if report[i]['status'] == 'fail'} - {check, 'PF-COLGRANT'}, set())
+                    self.assertEqual(json.loads(done.stdout)['overall'], 'fail')
+                finally:
+                    if undo:
+                        self.cluster.psql(self.db if 'database postgres' not in undo else 'postgres', undo)
+                    else:
+                        subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', self.db, '-f',
+                                        'ops/sql/role-limits.sql'], cwd=ROOT, env=self.cluster.env(), check=True,
+                                       capture_output=True)
         self.assertEqual(self.preflight().returncode, 88)
 
     def test_trust_or_password_authentication_for_the_roles_fails_pf_hba(self):
