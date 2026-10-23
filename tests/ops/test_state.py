@@ -90,5 +90,66 @@ class TransitionTests(StateTestCase):
         self.assertEqual(caught.exception.code, 75)
 
 
+class LoadIntegrityTests(StateTestCase):
+    def prepared_twice(self):
+        state = self.create()
+        state.transition('frozen', NOW)
+        state.transition('snapshotted', NOW)
+        return state
+
+    def edit_state(self, **changes):
+        path = self.dir / 'state.json'
+        data = json.loads(path.read_text())
+        data.update(changes)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+    def edit_journal(self, function):
+        path = self.dir / 'journal.jsonl'
+        entries = [json.loads(l) for l in path.read_text().splitlines()]
+        function(entries)
+        path.write_text(''.join(json.dumps(e, sort_keys=True) + '\n' for e in entries))
+
+    def test_load_fails_closed_with_70_on_any_inconsistency(self):
+        def unlink(name):
+            return lambda: (self.dir / name).unlink()
+
+        def write(name, text):
+            return lambda: (self.dir / name).write_text(text)
+
+        def entry(index, **changes):
+            return lambda: self.edit_journal(lambda entries: entries[index].update(changes))
+
+        cases = {
+            'state missing': unlink('state.json'),
+            'journal missing': unlink('journal.jsonl'),
+            'state not json': write('state.json', '{'),
+            'state not an object': write('state.json', '[]'),
+            'journal empty': write('journal.jsonl', ''),
+            'journal garbage': write('journal.jsonl', 'not json\n'),
+            'unknown phase': lambda: self.edit_state(phase='bogus'),
+            'seq is bool': lambda: self.edit_state(seq=True),
+            'schema is 2': lambda: self.edit_state(schema=2),
+            'unknown field': lambda: self.edit_state(surprise=1),
+            'candidate sha malformed': lambda: self.edit_state(candidate_sha256='abc'),
+            'state phase edited without journal': lambda: self.edit_state(phase='imported'),
+            'state seq edited without journal': lambda: self.edit_state(seq=9),
+            'state prev link edited': lambda: self.edit_state(prev_sha256='1' * 64),
+            'journal tail dropped': lambda: self.edit_journal(lambda entries: entries.pop()),
+            'journal middle entry altered': entry(1, at='2030-01-01T00:00:00Z'),
+            'journal sequence gap': entry(1, seq=5),
+            'journal impossible transition': entry(1, phase='activated'),
+            'journal first entry has a source': entry(0, **{'from': 'prepared'}),
+        }
+        for name, damage in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                self.dir = pathlib.Path(tmp)
+                self.prepared_twice()
+                self.assertEqual(cutover.State.load(self.dir).phase, 'snapshotted')
+                damage()
+                with self.assertRaises(cutover.StateError) as caught:
+                    cutover.State.load(self.dir)
+                self.assertEqual(caught.exception.code, 70, name)
+
+
 if __name__ == '__main__':
     unittest.main()
