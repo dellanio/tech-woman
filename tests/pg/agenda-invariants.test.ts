@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
-import {OWNER} from './agenda-harness';
+import {OWNER,EDITOR,connect} from './agenda-harness';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db);
@@ -133,4 +133,38 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
   if(f.proname!=='agenda_reject')assert.equal(f.prosecdef,true,`${f.proname} SECURITY DEFINER`);
  }
  assert.equal((await db.query("select count(*)::int n from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) and prosrc ~* 'execute\\s'",[AGENDA_FUNCTIONS])).rows[0].n,0,'sem SQL dinâmico');
+}));
+
+test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negados hashes, identidade, auditoria, guard, DELETE destrutivo, TRUNCATE, DDL, DISABLE TRIGGER e owner', ()=>withDb(async ({db,url})=>{
+ const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db),spare=await addTopic(db);
+ await withClients(url,[EDITOR],async b=>{
+  const ok=(sql:string,args:unknown[]=[])=>b.query(sql,args);
+  const denied=(sql:string,args:unknown[]=[])=>pgFails(b.query(sql,args),'42501');
+  await ok("insert into topic(slug,name,description) values('editora','Editora','d')");await ok("update topic set name='E2',active=true where slug='editora'");
+  const mt=(await ok("insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1) returning id",[mentor,topic])).rows[0].id;
+  const tmp=(await ok("insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2) returning id",[mentor,spare])).rows[0].id;
+  await ok('update mentor_topic set position=2 where id=$1',[tmp]);await ok('delete from mentor_topic where id=$1',[tmp]);
+  const c=(await ok("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,20,'draft') returning id",[mt,at(0),at(1)])).rows[0].id;
+  await ok("update cohort set capacity=10,status='open' where id=$1",[c]);
+  const e=(await ok("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id",[participant,c])).rows[0].id;
+  await ok("update enrollment set status='cancelled' where id=$1",[e]);
+  await ok("update participant set goal='leadership',moment='returning',interests='[\"dados\"]',skills='[\"gestao\"]',area='dados',active=true where id=$1",[participant]);
+  await ok("update mentor set display_name='Nova',trajectory='t2',specialties='[]',availability='a2',capacity=3,active=true where id=$1",[mentor]);
+  assert.equal((await ok('select id,goal,moment,interests,skills,area,active,version from participant_editor where id=$1',[participant])).rowCount,1);
+  assert.equal((await ok('select id,display_name,trajectory,specialties,availability,capacity,active,demo,version from mentor_editor where id=$1',[mentor])).rowCount,1);
+  await ok('select id,goal,active from participant');await ok('select id,display_name,active from mentor');
+  for(const sql of ['select * from participant','select email from participant','select token_hash from participant','select user_id from participant','select * from mentor','select email from mentor','select user_id from mentor',
+   'select * from app_user','select 1 from user_role','select 1 from auth_session','select 1 from password_reset_token','select 1 from email_job','select 1 from email_delivery_attempt',
+   'select 1 from audit_event','select 1 from match','select 1 from migration_identity_link','select 1 from migration_issue','select 1 from api_idempotency','select 1 from internal.agenda_guard','select 1 from legacy_snapshot.source_row',
+   "insert into audit_event(action,entity_type,entity_id,changed_fields,result,request_id) values('x','x','x','[]','ok',gen_random_uuid())",'update internal.agenda_guard set revision=0'])await denied(sql);
+  for(const sql of ["update participant set email='x@example.invalid' where id=$1","update participant set token_hash='x' where id=$1","update participant set user_id=null where id=$1","update participant set consent_version='x' where id=$1",
+   "update mentor set email='x@example.invalid' where id=$1","update mentor set user_id=null where id=$1","update mentor set demo=true where id=$1","update mentor set consent_at=now() where id=$1"])await denied(sql,[participant]);
+  for(const t of ['participant','mentor','enrollment','cohort','topic','match'])await denied(`delete from ${t} where id=0`);
+  await denied("update enrollment set cohort_id=cohort_id where id=$1",[e]);await denied("insert into topic(id,slug,name) values(999,'forcado','F')");
+  for(const sql of ['truncate topic','alter table topic disable trigger all','alter table cohort disable trigger agenda_validate','create table public.editora_x(id int)','drop trigger agenda_guard on topic',
+   'set role techwoman_owner',"select setval('topic_id_seq',100)",'select internal.domain_protected(\'participant\',1)'])await denied(sql);
+ });
+ const viewCols=(await db.query("select table_name,string_agg(column_name,',' order by column_name) cols from information_schema.columns where table_name in ('participant_editor','mentor_editor') group by table_name order by table_name")).rows;
+ for(const v of viewCols)assert.doesNotMatch(v.cols,/email|token|user_id|consent|hash/,`${v.table_name} sem colunas sensíveis`);
+ assert.equal(viewCols.length,2);
 }));
