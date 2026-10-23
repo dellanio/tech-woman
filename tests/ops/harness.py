@@ -17,8 +17,8 @@ def _posix(path):
 class Result:
     def __init__(self, completed, log_path):
         self.returncode = completed.returncode
-        self.stdout = completed.stdout
-        self.stderr = completed.stderr
+        self.stdout = completed.stdout.decode('utf-8', 'replace')
+        self.stderr = completed.stderr.decode('utf-8', 'replace')
         text = pathlib.Path(log_path).read_text(encoding='utf-8')
         self._calls = [json.loads(line) for line in text.splitlines() if line]
 
@@ -55,7 +55,7 @@ def run_script(path, stdin, extra_env=None):
         # Git Bash prepends /usr/bin at startup; reset PATH inside so only the fakes shadow host tools.
         launcher = 'PATH="$TW_PATH"; exec bash "$1"'
         completed = subprocess.run([BASH, '--noprofile', '--norc', '-c', launcher, 'tw-launcher',
-                                    pathlib.Path(path).as_posix()], input=stdin, text=True,
+                                    pathlib.Path(path).as_posix()], input=stdin.encode('utf-8'),
                                    capture_output=True, env=env)
         return Result(completed, log_path)
 
