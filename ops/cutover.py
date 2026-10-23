@@ -577,6 +577,59 @@ def cmd_import_verify(paths, flags):
     print(json.dumps({'phase': 'imported', 'run_id': first['runId']}))
 
 
+WEB_LIMITS = ['--memory', '384m', '--cpus', '0.5', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3']
+SMOKE_SCRIPT = ("fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))")
+
+
+def _staged_image(state):
+    return 'ghcr.io/dellanio/tech-woman@' + state.data['staged']['digest']
+
+
+def _migrator_argv(paths, image):
+    return ['docker', 'run', '--rm', '--network', paths['TW_NETWORK'], '--env-file',
+            str(pathlib.Path(paths['TW_ENV_DIR']) / 'migrator.env'), '--workdir', '/tools', '--memory', '512m',
+            '--cpus', '1', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--entrypoint', 'node', image,
+            '--import', 'tsx', 'scripts/migration/migrate.ts']
+
+
+def cmd_activate(paths, flags):
+    """imported -> activated: migrator (idempotent), then the web beside the maintenance page. Public stays 503."""
+    manifest = _manifest()
+    state, candidate = _sealed_state(paths, manifest, 'imported')
+    hostops = _sibling('hostops')
+    runner = hostops.Runner(paths)
+    now = _now()
+    window = candidate['window']
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    image = _staged_image(state)
+    try:
+        runner.run(_migrator_argv(paths, image), error='migrations could not be applied')
+        runner.run(['docker', 'run', '-d', '--name', 'tech-woman-web-pg', '--restart', 'unless-stopped',
+                    '--network', paths['TW_NETWORK'], '--env-file', str(pathlib.Path(paths['TW_ENV_DIR']) / 'web.env'),
+                    *WEB_LIMITS, image], error='the web container could not start')
+    except hostops.HostError as error:
+        _abort(paths, state, 'activation-failed', now)
+        raise StateError(77, 'activation failed before any PostgreSQL write: %s' % error)
+    state.transition('activated', now, activation={'digest': state.data['staged']['digest'],
+                                                   'container': 'tech-woman-web-pg', 'at': now})
+    print(json.dumps({'phase': 'activated', 'container': 'tech-woman-web-pg'}))
+
+
+def cmd_smoke(paths, flags):
+    """activated -> smoke_ok with one GET inside the web container; a failure never returns to SQLite."""
+    manifest = _manifest()
+    state, _ = _sealed_state(paths, manifest, 'activated')
+    hostops = _sibling('hostops')
+    try:
+        hostops.Runner(paths).run(['docker', 'exec', state.data['activation']['container'], 'node', '-e',
+                                   SMOKE_SCRIPT], error='internal smoke failed')
+    except hostops.HostError as error:
+        raise StateError(77, str(error))
+    state.transition('smoke_ok', _now())
+    print(json.dumps({'phase': 'smoke_ok'}))
+
+
 COMMANDS = {
     'prepare': lambda paths, flags: cmd_prepare(paths),
     'status': lambda paths, flags: cmd_status(paths),
@@ -586,6 +639,8 @@ COMMANDS = {
     'snapshot': lambda paths, flags: cmd_snapshot(paths, flags),
     'import-verify': cmd_import_verify,
     'abort': cmd_abort,
+    'activate': cmd_activate,
+    'smoke': cmd_smoke,
 }
 FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason']}
 
