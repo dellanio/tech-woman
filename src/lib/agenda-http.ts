@@ -36,3 +36,7 @@ export async function deleting(request: Request) {
   const token = await writer(request);
   return { token, version: ifMatch(request) };
 }
+/** Rotas com token legado no caminho: além do no-store, o caminho nunca vaza por Referer (inclusive nas respostas de erro). */
+export const noReferrer = (response: Response) => { response.headers.set('Referrer-Policy', 'no-referrer'); return response; };
+/** Formato antigo (sem envelope) para as telas legadas, sempre com no-store. */
+export const legacyJson = (data: unknown) => Response.json(data, { headers: { 'Cache-Control': 'no-store' } });

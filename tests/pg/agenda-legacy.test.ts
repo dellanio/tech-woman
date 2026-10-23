@@ -12,7 +12,7 @@ import {stateFor} from '../../src/lib/service';
 import {randomBytes} from 'node:crypto';
 import {tokenDigest} from '../../src/lib/db';
 import {sessionFor} from './identity-harness.test';
-import {withDb,addParticipant,addMentor,linkFixture,mentorWithCohort} from './agenda-harness';
+import {withDb,addParticipant,addMentor,linkFixture,mentorWithCohort,applyLocalGrants} from './agenda-harness';
 import {actorOf,as,call,code,snapshot,type Actor,type Reply} from './agenda-api-kit';
 import {captureOutput} from './identity-http-kit.test';
 
@@ -50,7 +50,7 @@ test('overview: sessão full admin/team revalidada no banco, protegidos (vincula
  }
  let r=await as(plain).get(overview.GET,O);assert.deepEqual([r.status,code(r)],[403,'FORBIDDEN']);
  r=await call(overview.GET,O);assert.deepEqual([r.status,code(r)],[401,'AUTH_REQUIRED']);
- const limited=await sessionFor(db,admin.id,'password_change');r=await call(overview.GET,O,{cookie:limited});assert.deepEqual([r.status,code(r)],[403,'PASSWORD_CHANGE_REQUIRED']);
+ const pending=await actorOf(db,['admin']);await db.query('update app_user set must_change_password=true where id=$1',[pending.id]);const limited=await sessionFor(db,pending.id,'password_change');r=await call(overview.GET,O,{cookie:limited});assert.deepEqual([r.status,code(r)],[403,'PASSWORD_CHANGE_REQUIRED']);
  await db.query("update app_user set status='disabled' where id=$1",[team.id]);
  r=await as(team).get(overview.GET,O);assert.deepEqual([r.status,code(r)],[401,'AUTH_REQUIRED'],'ator desativado perde acesso no ato');
 }));
@@ -136,6 +136,7 @@ test('change: cancel preserva histórico legado (cancelled + auditoria); reassig
 }));
 
 test('event: GET admin/team com sessão full, PUT só admin com CSRF, DTO fechado de seis textos e auditoria; anônimo 401',()=>withDb(async({db})=>{
+ await applyLocalGrants(db);// leitura do conteúdo público (home) pelo runtime é a concessão local existente; a escrita passa só pela operação SQL
  const admin=await actorOf(db,['admin']),team=await actorOf(db,['team']);
  let r=await as(team).get(event.GET,E);assert.equal(r.status,200);assert.equal(r.headers.get('cache-control'),'no-store');
  assert.deepEqual(Object.keys(r.json).sort(),['agenda','date','description','duration','speakers','venue']);
