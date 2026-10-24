@@ -3,6 +3,7 @@ import hashlib, pathlib, re, subprocess, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BASE = 'aadb3cbe3ae3e1fde2d569abbf71af60f2d711f0'
+WP005_HEAD = '0f6d309abd81640bb0bd1469271b6c35a76adf75'  # WP-005 delivery head (handoff)
 # LF sha256 of the files at the WP-005 base commit (fixed here, not recomputed from git)
 FROZEN = {'.github/workflows/approved-merge.yml': '28c6f631de74f9986835b9e6df86b068c0fe3b1c92918b20e2a0c124b748cead',
           '.github/CODEOWNERS': '7596ee90b231e4f58321c9255a324c568dc551174e5dc0c2348501fa375ccf13'}
@@ -24,9 +25,13 @@ class PolicyPreservedTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(lf(path)).hexdigest(), digest, path)
 
     def test_every_changed_file_is_inside_the_wp005_ownership(self):
-        changed = [p for p in git('diff', '--name-only', BASE, 'HEAD').splitlines() if p]
+        # On the WP-005 branch: BASE..HEAD. Once integrated (the delivered WP-005 head is an ancestor of HEAD), the phase also
+        # carries the other WPs and INT shared changes, so the ownership is checked on exactly what WP-005 delivered.
+        integrated = subprocess.run(['git', 'merge-base', '--is-ancestor', WP005_HEAD, 'HEAD'], cwd=ROOT).returncode == 0
+        changed = [p for p in git('diff', '--name-only', BASE, WP005_HEAD if integrated else 'HEAD').splitlines() if p]
         # untracked new files too (not `git status`: a Linux git reading this Windows CRLF checkout sees every file as modified)
-        changed += [p for p in git('ls-files', '--others', '--exclude-standard').splitlines() if p]
+        if not integrated:
+            changed += [p for p in git('ls-files', '--others', '--exclude-standard').splitlines() if p]
         self.assertTrue(changed)
         self.assertEqual(sorted({p for p in changed if not OWNED.match(p)}), [])
 
