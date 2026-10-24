@@ -25,6 +25,8 @@ export type Ui={
  newPage(options?:{viewport?:{width:number;height:number}}):Promise<{context:BrowserContext;page:Page;console:string[]}>;
  /** Nenhum segredo conhecido no log do app nem nas mensagens de console capturadas. */
  assertNoLeak(extra?:string[]):void;
+ /** Reinicia somente o web próprio com prazo sintético real; nunca toca no PG. */
+ setMentorDeadline(deadline?:string):Promise<void>;
  stop():Promise<void>;
 };
 
@@ -43,19 +45,29 @@ export async function startUi(name:string):Promise<Ui>{
  const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:process.env.TEST_STANDALONE==='1'?'production':'development',PORT:String(PORT),HOSTNAME:'127.0.0.1',DATABASE_URL:roleUrl(url,'techwoman_runtime'),APP_ORIGIN:ORIGIN,SESSION_SECRET:randomBytes(48).toString('hex'),EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',ALLOW_LOCAL_HTTP:'1',NEXT_TELEMETRY_DISABLED:'1'};
  assert.ok(!('MIGRATION_DATABASE_URL' in env)&&!('MAILER_DATABASE_URL' in env),'web nunca recebe credencial de migração nem do mailer');
  const args=process.env.TEST_STANDALONE==='1'?[resolve('.next/standalone/server.js')]:[resolve('node_modules/next/dist/bin/next'),'dev','-H','127.0.0.1','-p',String(PORT)];
- const app:ChildProcess=spawn(process.execPath,args,{env,stdio:['ignore','pipe','pipe']});
- app.stdout?.pipe(out);app.stderr?.pipe(out);
- let ready=false;
- for(let i=0;i<480&&!ready;i++){
-  if(app.exitCode!==null)throw new Error(`Next dev encerrou (exit ${app.exitCode}); veja ${appLog}`);
-  try{ready=(await fetch(ORIGIN+'/api/v1/auth/session')).status===401;}catch{await sleep(500);}
- }
- assert.ok(ready,'Next dev não respondeu');
+ const launch=()=>{const child:ChildProcess=spawn(process.execPath,args,{env,stdio:['ignore','pipe','pipe']});child.stdout?.pipe(out,{end:false});child.stderr?.pipe(out,{end:false});return child;};
+ let app=launch();
+ const waitReady=async()=>{
+  let ready=false;
+  for(let i=0;i<480&&!ready;i++){
+   if(app.exitCode!==null||app.signalCode!==null)throw new Error(`Next encerrou; veja ${appLog}`);
+   try{ready=(await fetch(ORIGIN+'/api/v1/auth/session')).status===401;}catch{await sleep(500);}
+  }
+  assert.ok(ready,'Next não respondeu');
+ };
+ const stopWeb=async()=>{
+  if(app.exitCode!==null||app.signalCode!==null)return;
+  const exited=new Promise<void>(r=>app.once('exit',()=>r()));app.kill('SIGTERM');
+  await Promise.race([exited,sleep(10000)]);
+  if(app.exitCode===null&&app.signalCode===null){app.kill('SIGKILL');await exited;}
+ };
+ await waitReady();
  const browser=await chromium.launch({headless:true});
  const secrets=new Set<string>();const consoleLines:string[]=[];
  const drain=async()=>{const messages:EmailMessage[]=[];await runEmailWorkerOnce(createMemoryTransport(m=>{messages.push(m);}));for(const m of messages)if(m.secret)secrets.add(m.secret);return messages;};
  return {
   origin:ORIGIN,db,browser,evidence,appLog,secrets,drain,
+  async setMentorDeadline(deadline){await stopWeb();if(deadline)env.MENTOR_DEADLINE=deadline;else delete env.MENTOR_DEADLINE;app=launch();await waitReady();},
   async temporaryPassword(email){
    const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
    const res=await fetch(ORIGIN+'/api/v1/registrations/participants',{method:'POST',headers:{'Content-Type':'application/json',Origin:ORIGIN,'Sec-Fetch-Site':'same-origin','Idempotency-Key':randomUUID()},body:JSON.stringify({email,...profile})});
@@ -77,7 +89,7 @@ export async function startUi(name:string):Promise<Ui>{
   },
   async stop(){
    await browser.close().catch(()=>undefined);
-   if(app.exitCode===null){app.kill('SIGTERM');await Promise.race([new Promise<void>(r=>app.once('exit',()=>r())),sleep(10000)]);if(app.exitCode===null)app.kill('SIGKILL');}
+   await stopWeb();
    out.end();await closeEmailPool();await db.end();
    for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[database])).rowCount)break;await sleep(50);}
    await control.query(`drop database ${database} with (force)`);await control.end();

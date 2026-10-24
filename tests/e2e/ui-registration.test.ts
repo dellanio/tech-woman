@@ -213,16 +213,18 @@ test('prazo da mentora: falha de rede não finge encerramento e permite tentar d
   assert.equal(real.status(),200);assert.equal(((await real.json()) as {open:boolean}).open,true);
   await page.getByLabel('Nome de exibição').waitFor();
   assert.equal(await main(page).getByRole('alert').count(),0);
-  // resposta de prazo encerrado (publicada pelo servidor; simulada só aqui): estado próprio, sem retry nem formulário
+  // Prazo real no processo web próprio; conserva o mesmo PG sintético e todas as asserções.
   const closed=await ui.newPage();
   try{
-   await closed.page.route('**/api/mentor',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({open:false,deadline:'2026-10-31T02:59:59.999Z'})}));
+   await ui.setMentorDeadline('2000-01-01T00:00:00.000Z');
+   const response=closed.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/mentor');
    await closed.page.goto(ui.origin+'/mentora');
+   const published=await response;assert.equal(published.status(),200);assert.equal(((await published.json()) as {open:boolean}).open,false);
    await main(closed.page).getByRole('status').filter({hasText:/Cadastro encerrado/}).waitFor();
    assert.equal(await closed.page.getByRole('button',{name:/Tentar novamente/}).count(),0);
    assert.equal(await closed.page.getByLabel('Nome de exibição').count(),0);
    assert.doesNotMatch(await main(closed.page).innerText(),/Não foi possível verificar/);
-  }finally{await closed.context.close();}
+  }finally{await closed.context.close();await ui.setMentorDeadline();}
   // resposta fora do contrato também é erro com retry, não encerramento
   await page.route('**/api/mentor',r=>r.fulfill({status:503,contentType:'text/html',body:'<h1>indisponível</h1>'}));
   await page.reload();
