@@ -109,3 +109,118 @@ test('painel: anônima vai ao acesso, limitada à troca, participante sem acesso
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+// ---- Agenda mínima no PG real (só para criar uma reserva ativa; o painel não cadastra Agenda) ----
+const addTopic=(name:string)=>one("insert into topic(slug,name,active) values($1,$2,true) returning id",['t-'+randomBytes(4).toString('hex'),name]);
+const addMentor=(name:string,specialties:string[]=['dados'])=>one("insert into mentor(email,trajectory,specialties,availability,capacity,active,display_name) values($1,$2,$3,'No evento.',2,true,$4) returning id",[`m-${randomBytes(4).toString('hex')}@example.invalid`,`Trajetória de ${name}.`,JSON.stringify(specialties),name]);
+async function activeEnrollment(participantId:string){
+ // Reservas exigem identidade ativa vinculada, inclusive em fixtures SQL.
+ await ui.db.query("with u as (insert into app_user(id,email,status) select gen_random_uuid(),email,'active' from participant where id=$1 and user_id is null returning id) update participant set user_id=(select id from u) where id=$1 and user_id is null",[participantId]);
+ const mentorId=await addMentor('Mentora Reserva '+randomBytes(2).toString('hex'));const topicId=await addTopic('Tema Reserva');
+ const mt=await one('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1) returning id',[mentorId,topicId]);
+ const start=new Date();start.setUTCDate(start.getUTCDate()+20);start.setUTCHours(12,0,0,0);
+ const cohort=await one("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,3,'open') returning id",[mt,start.toISOString(),new Date(start.getTime()+3600e3).toISOString()]);
+ await ui.db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participantId,cohort]);
+}
+/** Cartão pelo título: carrega mais páginas até ele aparecer. */
+async function card(page:Page,list:string,title:string){
+ const items=main(page).getByRole('list',{name:list});
+ await main(page).getByRole('list',{name:list}).or(main(page).locator('.admin-empty')).first().waitFor();
+ const target=()=>items.getByRole('listitem').filter({has:page.getByRole('heading',{name:title,exact:true})});
+ for(let i=0;i<20&&!(await target().count());i++){
+  const more=main(page).getByRole('button',{name:new RegExp(`^Carregar mais`)});
+  assert.ok(await more.count(),`cartão ${title} não encontrado em ${list}`);
+  const before=await items.getByRole('listitem').count();
+  await more.click();
+  await page.waitForFunction(([l,n])=>document.querySelectorAll(`main [aria-label="${l}"] > li`).length>Number(n),[list,String(before)]);
+ }
+ return target();
+}
+type Seen={method:string;url:string;headers:Record<string,string>;body:string|null};
+const watch=(page:Page,fragment:string)=>{const seen:Seen[]=[];page.on('request',r=>{if(r.url().includes(fragment))seen.push({method:r.method(),url:r.url(),headers:r.headers(),body:r.postData()});});return seen;};
+
+test('participantes: cadastrar (validação, foco, um POST idempotente), ler por ID antes de editar com If-Match, desativar com aviso, 409 de reserva ativa, reativar e 404 protegido',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();
+ try{
+  await staff(page,'admin');
+  const calls=watch(page,'/api/v1/admin/participants');
+  await main(page).getByRole('button',{name:'Cadastrar participante'}).click();
+  const form=main(page).getByRole('form',{name:'Nova participante'});await form.waitFor();
+  assert.equal(await page.evaluate(()=>document.activeElement?.id),'participant-email','foco no primeiro campo');
+  // vazio → erros na ordem da tela e foco no primeiro inválido; nada enviado
+  await form.getByRole('button',{name:'Salvar cadastro'}).click();
+  await form.getByRole('alert').filter({hasText:/Informe um e-mail válido/}).waitFor();
+  assert.equal(await page.evaluate(()=>document.activeElement?.id),'participant-email');
+  assert.equal(calls.filter(c=>c.method==='POST').length,0);
+  const email=unique('created');
+  await form.getByLabel('E-mail da participante').fill(email);
+  await form.getByText('Transição de carreira').click();await form.getByText('Começando',{exact:true}).click();
+  await form.locator('#interest-options').getByText('Produto',{exact:true}).click();await form.getByText('Gestão',{exact:true}).click();
+  await form.getByLabel('Sua área de atuação').selectOption('outra');await form.getByLabel('Qual área?').fill('Saúde digital');
+  // duplo clique: uma intenção (mesma Idempotency-Key) e um único cadastro
+  await form.getByRole('button',{name:'Salvar cadastro'}).dblclick();
+  await main(page).getByRole('status').filter({hasText:/Participante cadastrada/}).waitFor();
+  const posts=calls.filter(c=>c.method==='POST');
+  assert.ok(posts.length>=1);assert.equal(new Set(posts.map(p=>p.headers['idempotency-key'])).size,1,'mesma chave em toda tentativa');
+  assert.deepEqual(Object.keys(JSON.parse(posts[0].body??'{}')).sort(),['area','consent','email','goal','interests','moment','otherArea','skills']);
+  const row=(await ui.db.query("select p.id::text,p.area,p.user_id is not null as linked,u.status from participant p join app_user u on u.id=p.user_id where p.email=$1",[email])).rows;
+  assert.equal(row.length,1);assert.equal(row[0].area,'outra: Saúde digital');assert.equal(row[0].status,'pending_activation');
+  const id=row[0].id as string;
+  assert.doesNotMatch(await main(page).innerText(),/senha temporária:|Recife-|jobId/i);
+  const created=await card(page,'Participantes',email);
+  assert.match(await created.innerText(),/Transição de carreira/);assert.match(await created.innerText(),/Outra: Saúde digital/);
+
+  // editar: GET por ID (ETag) antes; PATCH só campos do diagnóstico com If-Match = ETag lido
+  calls.length=0;
+  await created.getByRole('button',{name:`Editar ${email}`}).click();
+  const edit=main(page).getByRole('form',{name:'Editar participante'});await edit.waitFor();
+  assert.equal(await edit.getByLabel(/E-mail/).count(),0,'e-mail não é editável aqui');
+  assert.match(await edit.innerText(),/e-mail só muda em Usuários/i);
+  const get=calls.find(c=>c.method==='GET'&&c.url.endsWith(`/participants/${id}`));assert.ok(get,'leitura individual antes de editar');
+  await edit.getByText('Liderança',{exact:true}).click();
+  await edit.getByRole('button',{name:'Salvar alterações'}).click();
+  await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  const patch=calls.find(c=>c.method==='PATCH');assert.ok(patch);
+  assert.equal(patch.headers['if-match'],'"1"');
+  const patchBody=JSON.parse(patch.body??'{}');
+  for(const k of ['email','consent','userId','token','id','version'])assert.equal(k in patchBody,false,`PATCH sem ${k}`);
+  assert.equal(patchBody.goal,'leadership');
+  assert.match(await (await card(page,'Participantes',email)).innerText(),/Liderança/);
+
+  // desativar: GET + confirmação com aviso de histórico → DELETE If-Match → Desativada; reativar volta a Ativa
+  calls.length=0;
+  await (await card(page,'Participantes',email)).getByRole('button',{name:`Desativar ${email}`}).click();
+  const confirm=main(page).getByRole('alertdialog',{name:/Desativar participante/});await confirm.waitFor();
+  assert.match(await confirm.innerText(),/histórico/i);
+  await confirm.getByRole('button',{name:'Confirmar desativação'}).click();
+  await main(page).getByRole('status').filter({hasText:/Participante desativada/}).waitFor();
+  const del=calls.find(c=>c.method==='DELETE');assert.ok(del);assert.equal(del.headers['if-match'],'"2"');
+  assert.ok(calls.findIndex(c=>c.method==='GET'&&c.url.endsWith(`/participants/${id}`))<calls.indexOf(del));
+  assert.match(await (await card(page,'Participantes',email)).innerText(),/Desativada/);
+  await (await card(page,'Participantes',email)).getByRole('button',{name:`Reativar ${email}`}).click();
+  await main(page).getByRole('status').filter({hasText:/Participante reativada/}).waitFor();
+  assert.match(await (await card(page,'Participantes',email)).innerText(),/Ativa/);
+  assert.equal((await ui.db.query('select active from participant where id=$1',[id])).rows[0].active,true);
+
+  // reserva ativa → 409 orienta cancelar explicitamente; nada muda
+  const busyEmail=unique('reserved');const busyId=await addParticipant(busyEmail);await activeEnrollment(busyId);
+  await main(page).getByRole('button',{name:'Atualizar lista'}).click();
+  await (await card(page,'Participantes',busyEmail)).getByRole('button',{name:`Desativar ${busyEmail}`}).click();
+  await main(page).getByRole('alertdialog',{name:/Desativar participante/}).getByRole('button',{name:'Confirmar desativação'}).click();
+  await alertIn(page,/reservas ativas/i).waitFor();
+  assert.match(await alertIn(page,/reservas ativas/i).innerText(),/cancel/i);
+  assert.equal((await ui.db.query('select active from participant where id=$1',[busyId])).rows[0].active,true);
+  await main(page).getByRole('button',{name:'Voltar'}).click();
+
+  // protegido depois de listado (e-mail passou a ser de admin) → 404 indistinto, sem dados anteriores
+  const hiddenEmail=unique('hidden');await addParticipant(hiddenEmail,{goal:'transition'});
+  await main(page).getByRole('button',{name:'Atualizar lista'}).click();
+  const hiddenCard=await card(page,'Participantes',hiddenEmail);
+  await ui.db.query("with u as (insert into app_user(id,email,status) values(gen_random_uuid(),$1,'active') returning id) insert into user_role(user_id,role) select id,'admin' from u",[hiddenEmail]);
+  await hiddenCard.getByRole('button',{name:`Editar ${hiddenEmail}`}).click();
+  await alertIn(page,/Não encontramos este registro/).waitFor();
+  assert.equal(await main(page).getByRole('form',{name:'Editar participante'}).count(),0,'404 não abre formulário com dados antigos');
+  await capture(page,'admin-participante-404');
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
