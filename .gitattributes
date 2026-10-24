@@ -6,3 +6,6 @@
 *.yaml text eol=lf
 *.conf text eol=lf
 *.env  text eol=lf
+# Fakes executáveis sem extensão (shebang) e pacote ops/ inteiro: LF em qualquer checkout (bash quebra os testes).
+ops/**          text eol=lf
+tests/ops/fakes/* text eol=lf
