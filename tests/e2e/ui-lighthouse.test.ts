@@ -25,6 +25,9 @@ async function activate(page:Page,admin=false){
 test('Lighthouse quatro telas principais mobile/desktop com privacidade preservada',{timeout:1200000},async()=>{
  const chrome=await chromium.launch({headless:true,args:['--remote-debugging-port=55305','--no-sandbox']});
  const {page,context}=await ui.newPage();
+ const worker=spawn(process.execPath,[root+'/run59-task5-lighthouse.mjs'],{stdio:['pipe','pipe','pipe']});
+ let stderr='';worker.stderr.on('data',b=>stderr+=b);
+ const workerExit=new Promise<void>(resolve=>worker.once('exit',()=>resolve()));
  try{
  for(const screen of ['login','inscricao','conta','admin']){
   await context.clearCookies();
@@ -33,16 +36,16 @@ test('Lighthouse quatro telas principais mobile/desktop com privacidade preserva
   for(const formFactor of ['mobile','desktop']){
    const name=label+'-'+screen+'-'+formFactor;
    const output=await new Promise<string>((resolve,reject)=>{
-    const p=spawn(process.execPath,[root+'/run59-task5-lighthouse.mjs'],{stdio:['pipe','pipe','pipe']});let out='',err='';
-    p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);
-    p.on('exit',code=>code===0?resolve(out):reject(new Error('Lighthouse exit '+code+': '+err)));
-    p.stdin.end(JSON.stringify({url:ui.origin+'/'+screen,cookie,port:55305,name,formFactor,root}));
+    const failed=(code:number|null)=>{worker.stdout.off('data',got);reject(new Error('Lighthouse exit '+code+': '+stderr));};
+    let out='';const got=(b:Buffer)=>{out+=b.toString();if(out.includes('\n')){worker.stdout.off('data',got);worker.off('exit',failed);resolve(out.trim());}};
+    worker.stdout.on('data',got);worker.once('exit',failed);
+    worker.stdin.write(JSON.stringify({url:ui.origin+'/'+screen,cookie,port:55305,name,formFactor,root})+'\n');
    });
-   const result=JSON.parse(output) as {scores:Record<string,number>};results.push(result);
+   const result=JSON.parse(output) as {scores:Record<string,number>};results.push({...result,screen,applicableCategories:screen==='inscricao'?['performance','accessibility','best-practices','seo']:['performance','accessibility','best-practices'],seoCaveat:screen==='inscricao'?null:'Página privada de conta: robots noindex intencional.'});
   }
  }
  ui.assertNoLeak();
- const failed=results.filter(r=>Object.entries((r as {scores:Record<string,number>}).scores).some(([k,v])=>k!=='seo'&&v<85));
+ const failed=results.filter(r=>{const item=r as {scores:Record<string,number>;applicableCategories:string[]};return item.applicableCategories.some(k=>item.scores[k]<85);});
  assert.equal(failed.length,0,JSON.stringify(failed));
- }finally{await context.close();await chrome.close();}
+ }finally{worker.stdin.end();await workerExit;await context.close();await chrome.close();}
 });
