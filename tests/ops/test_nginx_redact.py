@@ -125,11 +125,16 @@ class ScopeAndSyntaxTests(unittest.TestCase):
                 '  server {\n    listen 8080;\n    server_name tech-woman.dellanio.com;\n'
                 '    include /etc/tw/server.conf;\n    location / { return 204; }\n  }\n}\n')
             if runner == ['nginx']:
-                text = (tmp / 'nginx.conf').read_text().replace('/etc/tw/', tmp.as_posix() + '/')
-                (tmp / 'nginx.conf').write_text(text)
-                server = (tmp / 'server.conf').read_text().replace('/etc/nginx/snippets/', tmp.as_posix() + '/')
-                (tmp / 'server.conf').write_text(server)
-                command = ['nginx', '-t', '-c', str(tmp / 'nginx.conf')]
+                # INT-006 (R-004): an unprivileged runner (CI) cannot open /var/log/nginx nor create /var/lib/nginx temp
+                # dirs; nginx -t opens both. Only paths move into tmp; directives and formats under test stay the same.
+                t = tmp.as_posix()
+                text = (tmp / 'nginx.conf').read_text().replace('/etc/tw/', t + '/')
+                text = text.replace('http {\n', 'http {\n' + ''.join(
+                    '  %s_temp_path %s/%s;\n' % (k, t, k) for k in ('client_body', 'proxy', 'fastcgi', 'uwsgi', 'scgi')), 1)
+                (tmp / 'nginx.conf').write_text('error_log %s/error.log;\n' % t + text)
+                server = (tmp / 'server.conf').read_text().replace('/etc/nginx/snippets/', t + '/')
+                (tmp / 'server.conf').write_text(server.replace('/var/log/nginx/', t + '/'))
+                command = ['nginx', '-t', '-e', t + '/error.log', '-c', str(tmp / 'nginx.conf')]
             else:
                 server = (tmp / 'server.conf').read_text().replace('/etc/nginx/snippets/', '/etc/tw/')
                 (tmp / 'server.conf').write_text(server)
