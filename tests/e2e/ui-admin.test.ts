@@ -308,3 +308,47 @@ test('cruzamentos: seletores autorizados, criação com score calculado, suggest
   assert.equal(await main(page).getByRole('button',{name:/Aprovar|Alocar|Nova turma|Novo tema/}).count(),0);ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+async function fillParticipant(form:ReturnType<Page['getByRole']>){
+ await form.getByText('Crescimento',{exact:true}).click();await form.getByText('Em atividade',{exact:true}).click();
+ await form.locator('#interest-options').getByText('Dados',{exact:true}).click();await form.locator('#skill-options').getByText('Análise',{exact:true}).click();await form.getByLabel('Sua área de atuação').selectOption('dados');
+}
+test('usuários: criar dois domínios atomicamente, retry idempotente após resposta perdida, editar email/papéis/status com ETag, desativar revoga sessões e admin protegido não aparece',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();try{
+  const adminEmail=await staff(page,'admin');await tab(page,'Usuários').click();
+  await main(page).getByRole('button',{name:'Cadastrar usuário',exact:true}).click();
+  const form=main(page).getByRole('form',{name:'Novo usuário'});await form.waitFor();
+  assert.equal(await form.getByLabel(/admin|team|administrador|equipe/i).count(),0,'papéis privilegiados nunca são opções');
+  const email=unique('dual'),name='Perfil duplo '+randomBytes(3).toString('hex');
+  await form.getByLabel('E-mail da conta').fill(email);await form.getByLabel('Perfil de mentora',{exact:true}).check();await fillParticipant(form);await fillMentor(form,name);
+  const calls=watch(page,'/api/v1/admin/users');let dropped=false;
+  // O servidor grava de verdade; só a resposta é perdida. Retry precisa recuperar a mesma intenção.
+  await page.route('**/api/v1/admin/users',async route=>{if(route.request().method()==='POST'&&!dropped){dropped=true;await route.fetch();await route.abort('internetdisconnected');}else await route.continue();});
+  await form.getByRole('button',{name:'Salvar cadastro'}).click();await form.getByRole('alert').filter({hasText:/Sem conexão/}).waitFor();
+  assert.equal(await form.getByLabel('E-mail da conta').inputValue(),email);assert.equal(await form.getByLabel('Nome de exibição').inputValue(),name);
+  await form.getByRole('button',{name:'Tentar salvar novamente'}).click();await main(page).getByRole('status').filter({hasText:/Usuário cadastrado/}).waitFor();await page.unroute('**/api/v1/admin/users');
+  const posts=calls.filter(c=>c.method==='POST');assert.equal(posts.length,2);assert.equal(new Set(posts.map(c=>c.headers['idempotency-key'])).size,1);
+  const body=JSON.parse(posts[0].body??'{}');assert.deepEqual(body.roles,['participant','mentor']);assert.ok(body.participant);assert.ok(body.mentor);assert.equal('email' in body.participant,false);assert.equal('email' in body.mentor,false);
+  const row=(await ui.db.query('select id::text,status from app_user where email=$1',[email])).rows;assert.equal(row.length,1);const id=row[0].id as string;assert.equal(row[0].status,'pending_activation');
+  for(const table of ['participant','mentor'])assert.equal((await ui.db.query(`select count(*)::int as n from ${table} where user_id=$1`,[id])).rows[0].n,1);
+  assert.equal((await ui.db.query('select count(*)::int as n from user_role where user_id=$1',[id])).rows[0].n,2);
+  const changed=unique('email-changed');calls.length=0;
+  await (await card(page,'Usuários',email)).getByRole('button',{name:`Editar ${email}`}).click();
+  const edit=main(page).getByRole('form',{name:'Editar usuário'});await edit.waitFor();assert.match(await edit.innerText(),/e-mail.*invalida|e-mail.*revoga/i);
+  await edit.getByLabel('E-mail da conta').fill(changed);await edit.getByLabel('Perfil de mentora',{exact:true}).uncheck();await edit.getByRole('button',{name:'Salvar alterações'}).click();
+  await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  const patch=calls.find(c=>c.method==='PATCH');assert.ok(patch);assert.equal(patch.headers['if-match'],'"1"');assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+id)));assert.deepEqual(Object.keys(JSON.parse(patch.body??'{}')).sort(),['email','roles']);
+  const updated=(await ui.db.query('select email,status,session_version from app_user where id=$1',[id])).rows[0];assert.equal(updated.email,changed);assert.equal(updated.status,'pending_activation');assert.ok(Number(updated.session_version)>0);
+  assert.deepEqual((await ui.db.query('select role from user_role where user_id=$1',[id])).rows.map(r=>r.role),['participant']);
+  await (await card(page,'Usuários',changed)).getByRole('button',{name:`Editar ${changed}`}).click();await edit.waitFor();
+  assert.equal(await edit.getByLabel('Perfil de mentora',{exact:true}).count(),0,'não acrescenta papel removido por toggle sem verificar domínio');
+  await edit.getByLabel('Situação da conta').selectOption('active');await edit.getByRole('button',{name:'Salvar alterações'}).click();await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  await ui.db.query("insert into auth_session(id,user_id,token_hash,scope,session_version,expires_at) select gen_random_uuid(),id,$2,'full',session_version,now()+interval '1 hour' from app_user where id=$1",[id,randomBytes(32).toString('hex')]);
+  await (await card(page,'Usuários',changed)).getByRole('button',{name:`Desativar ${changed}`}).click();const confirm=main(page).getByRole('alertdialog',{name:'Desativar usuário'});await confirm.waitFor();assert.match(await confirm.innerText(),/sessões|sessão/);await confirm.getByRole('button',{name:'Confirmar desativação'}).click();await main(page).getByRole('status').filter({hasText:/Usuário desativado/}).waitFor();
+  assert.equal((await ui.db.query('select status from app_user where id=$1',[id])).rows[0].status,'disabled');assert.equal((await ui.db.query('select count(*)::int as n from auth_session where user_id=$1 and revoked_at is null',[id])).rows[0].n,0);
+  assert.equal((await main(page).innerText()).includes(adminEmail),false);
+  const adminId=(await ui.db.query('select id::text from app_user where email=$1',[adminEmail])).rows[0].id as string;
+  const protectedStatus=await page.evaluate(async id=>(await fetch('/api/v1/admin/users/'+id)).status,adminId);assert.equal(protectedStatus,404);
+  assert.equal((await main(page).innerText()).includes(adminId),false);ui.assertNoLeak();
+ }finally{await context.close();}
+});
