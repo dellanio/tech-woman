@@ -377,3 +377,32 @@ test('reenvio: diálogo modal nativo, Escape/cancelar sem job e foco devolvido, 
   const job=(await ui.db.query('select id::text,status from email_job where user_id=$1',[id])).rows[0];assert.equal(job.status,'queued');assert.equal((await main(page).innerText()).includes(job.id as string),false);assert.doesNotMatch(await main(page).innerText(),/jobId|senha temporária:|Recife-/i);ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+test('conflitos:412 preserva rascunho e bloqueia submit até leitura explícita, retry503 preserva dados,404 após proteção remove formulário;409 mentora/usuário preserva reservas',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();try{
+  await staff(page,'admin');const email=unique('concurrent'),id=await addParticipant(email);await main(page).getByRole('button',{name:'Atualizar lista'}).click();
+  const calls=watch(page,`/api/v1/admin/participants/${id}`);
+  await (await card(page,'Participantes',email)).getByRole('button',{name:`Editar ${email}`}).click();const form=main(page).getByRole('form',{name:'Editar participante'});await form.waitFor();
+  await form.getByText('Transição de carreira',{exact:true}).click();await ui.db.query("update participant set goal='leadership' where id=$1",[id]);
+  const reads=calls.filter(c=>c.method==='GET').length;
+  await form.getByRole('button',{name:'Salvar alterações'}).click();await form.getByRole('alert').filter({hasText:/rascunho foi mantido/}).waitFor();
+  assert.equal(await form.locator('input[value="transition"]').isChecked(),true);assert.equal(calls.filter(c=>c.method==='GET').length,reads,'nenhuma troca silenciosa de ETag');
+  assert.equal(await form.getByRole('button',{name:'Salvar alterações'}).isDisabled(),true,'412 exige carregar versão atual antes de novo submit');
+  let failRead=true;await page.route(`**/api/v1/admin/participants/${id}`,async route=>{if(route.request().method()==='GET'&&failRead){failRead=false;await route.abort('internetdisconnected');}else await route.continue();});
+  await form.getByRole('button',{name:'Carregar versão atual'}).click();await form.getByRole('alert').filter({hasText:/Não foi possível carregar a versão atual/}).waitFor();assert.equal(await form.locator('input[value="transition"]').isChecked(),true);
+  await form.getByRole('button',{name:'Carregar versão atual'}).click();await form.locator('input[value="leadership"]:checked').waitFor();await page.unroute(`**/api/v1/admin/participants/${id}`);
+  await form.getByText('Transição de carreira',{exact:true}).click();let unavailable=true;
+  await page.route(`**/api/v1/admin/participants/${id}`,async route=>{if(route.request().method()==='PATCH'&&unavailable){unavailable=false;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'DEPENDENCY_UNAVAILABLE',fields:[]}})});}else await route.continue();});
+  await form.getByRole('button',{name:'Salvar alterações'}).click();await form.getByRole('alert').filter({hasText:/Serviço indisponível/}).waitFor();assert.equal(await form.locator('input[value="transition"]').isChecked(),true);
+  await form.getByRole('button',{name:'Tentar salvar novamente'}).click();await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();await page.unroute(`**/api/v1/admin/participants/${id}`);
+  assert.equal(calls.filter(c=>c.method==='PATCH').at(-1)?.headers['if-match'],'"2"');assert.equal((await ui.db.query('select goal from participant where id=$1',[id])).rows[0].goal,'transition');
+  await (await card(page,'Participantes',email)).getByRole('button',{name:`Editar ${email}`}).click();await form.waitFor();
+  await ui.db.query("with u as (insert into app_user(id,email,status) values(gen_random_uuid(),$1,'active') returning id) insert into user_role(user_id,role) select id,'admin' from u",[email]);
+  await form.getByText('Retomando',{exact:true}).click();await form.getByRole('button',{name:'Salvar alterações'}).click();await alertIn(page,/Não encontramos este registro/).waitFor();assert.equal(await form.count(),0,'404 de escrita remove os dados anteriores do formulário');
+  // Reservas reais impedem desativar mentora e conta, sem cancelar nada implicitamente.
+  const busyEmail=unique('busy-account'),busyUser=await accountFixture(busyEmail);const busyP=(await ui.db.query('select id::text from participant where user_id=$1',[busyUser])).rows[0].id as string;await activeEnrollment(busyP);
+  const mentor=(await ui.db.query('select m.id::text,m.display_name from mentor m join mentor_topic mt on mt.mentor_id=m.id join cohort c on c.mentor_topic_id=mt.id join enrollment e on e.cohort_id=c.id where e.participant_id=$1',[busyP])).rows[0];
+  await tab(page,'Mentoras').click();await (await card(page,'Mentoras',mentor.display_name as string)).getByRole('button',{name:`Desativar ${mentor.display_name}`}).click();await main(page).getByRole('alertdialog',{name:'Desativar mentora'}).getByRole('button',{name:'Confirmar desativação'}).click();await alertIn(page,/reservas ativas/).waitFor();assert.equal((await ui.db.query('select active from mentor where id=$1',[mentor.id])).rows[0].active,true);
+  await tab(page,'Usuários').click();await (await card(page,'Usuários',busyEmail)).getByRole('button',{name:`Desativar ${busyEmail}`}).click();await main(page).getByRole('alertdialog',{name:'Desativar usuário'}).getByRole('button',{name:'Confirmar desativação'}).click();await alertIn(page,/reservas ativas/).waitFor();assert.equal((await ui.db.query('select status from app_user where id=$1',[busyUser])).rows[0].status,'active');assert.equal((await ui.db.query("select count(*)::int as n from enrollment where participant_id=$1 and status='active'",[busyP])).rows[0].n,1);ui.assertNoLeak();
+ }finally{await context.close();}
+});
