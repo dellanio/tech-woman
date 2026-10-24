@@ -12,7 +12,7 @@ const root='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
 const records:unknown[]=[];
 before(async()=>{ui=await startUi(label);await ui.db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));},{timeout:420000});
 after(async()=>{writeFileSync(resolve(root,'logs',label+'-audit.json'),JSON.stringify(records,null,2));await ui?.stop();});
-export async function activate(page:Page,admin=false){
+async function activate(page:Page,admin=false){
  const email=`audit-${randomBytes(6).toString('hex')}@example.invalid`;
  const temp=await ui.temporaryPassword(email);
  if(admin)await ui.db.query("insert into user_role(user_id,role) select id,'admin' from app_user where email=$1",[email]);
@@ -47,6 +47,20 @@ for(const width of [390,1440])for(const theme of ['light','dark'])test(`T14 ${wi
  await activate(page);await page.waitForLoadState('networkidle');await audit(page,'conta-vazio-'+suffix);
  await page.route('**/api/v1/me/recommendations**',async r=>{await new Promise(r=>setTimeout(r,1800));await r.continue();});await page.reload();await page.getByText('Carregando sugestões de mentoras…').waitFor();await audit(page,'conta-loading-'+suffix);await page.waitForLoadState('networkidle');await page.unroute('**/api/v1/me/recommendations**');
  await page.route('**/api/v1/me/recommendations**',r=>r.abort('internetdisconnected'));await page.reload();await page.getByRole('main').getByRole('alert').filter({hasText:/Sem conexão/}).waitFor();await audit(page,'conta-erro-'+suffix);await page.unroute('**/api/v1/me/recommendations**');
+ const mentor=String((await ui.db.query("insert into mentor(email,trajectory,specialties,availability,capacity,active,display_name) values($1,'Trajetória sintética para auditoria.','[\"dados\"]','No evento.',2,true,'Mentora Sintética') returning id",['audit-mentor-'+randomBytes(4).toString('hex')+'@example.invalid'])).rows[0].id);
+ const topic=String((await ui.db.query("insert into topic(slug,name,active) values($1,'Dados — exemplo sintético',true) returning id",['audit-'+randomBytes(4).toString('hex')])).rows[0].id);
+ const mt=String((await ui.db.query('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1) returning id',[mentor,topic])).rows[0].id);
+ const start=new Date(Date.now()+30*86400e3);start.setUTCHours(12,0,0,0);
+ const cohort=String((await ui.db.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,1,'open') returning id",[mt,start.toISOString(),new Date(start.getTime()+3600e3).toISOString()])).rows[0].id);
+ await page.reload();await page.getByRole('heading',{name:'Mentora Sintética',exact:true}).waitFor();await audit(page,'conta-normal-'+suffix);
+ await page.locator('article.choice-mentor').filter({has:page.getByRole('heading',{name:'Mentora Sintética',exact:true})}).getByRole('button').click();
+ await page.getByRole('radio').first().waitFor();await page.getByRole('radio').first().check();await audit(page,'reserva-selecao-'+suffix);await page.getByRole('button',{name:'Conferir resumo'}).click();
+ // Fechamento real concorrente após a seleção, antes do POST: a API responde 409.
+ await ui.db.query("update cohort set status='closed' where id=$1",[cohort]);
+ const response=page.waitForResponse(r=>r.url().endsWith('/api/v1/me/enrollments')&&r.request().method()==='POST');
+ await page.getByRole('button',{name:/Reservar vaga/}).click();assert.equal((await response).status(),409);
+ await page.getByRole('alert').filter({hasText:/A reserva não foi feita/}).waitFor();await audit(page,'reserva-conflito-'+suffix);
+ await ui.db.query('update mentor set active=false where id=$1',[mentor]);
  await context.clearCookies();await activate(page,true);await page.goto(ui.origin+'/admin');await page.getByRole('navigation',{name:'Recursos do painel'}).waitFor();await page.waitForLoadState('networkidle');await audit(page,'admin-'+suffix);
  await page.goto(ui.origin+'/admin/evento');await page.waitForLoadState('networkidle');await audit(page,'evento-'+suffix);
  assert.equal(messages.filter(m=>m.startsWith('pageerror:')).length,0,'nenhum pageerror');ui.assertNoLeak();
