@@ -224,3 +224,51 @@ test('participantes: cadastrar (validação, foco, um POST idempotente), ler por
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+async function fillMentor(form:ReturnType<Page['getByRole']>,name:string){
+ await form.getByLabel('Nome de exibição').fill(name);
+ await form.getByLabel('Trajetória',{exact:true}).fill('Experiência em produtos e dados para apoiar outras mulheres.');
+ await form.locator('#specialty-options').getByText('Dados',{exact:true}).click();
+ await form.getByLabel('Disponibilidade descritiva').fill('Durante o encontro, a combinar.');
+ await form.getByLabel('Capacidade legada (participantes)').fill('2');
+}
+test('mentoras: criar perfil e conta, validar capacidade histórica, ler e editar com ETag, desativar e reativar sem controles de Agenda',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();try{
+  await staff(page,'admin');await tab(page,'Mentoras').click();
+  await main(page).getByRole('button',{name:'Cadastrar mentora',exact:true}).click();
+  const form=main(page).getByRole('form',{name:'Nova mentora'});await form.waitFor();
+  const email=unique('mentor-created'),name='Mentora Teste '+randomBytes(3).toString('hex');
+  await fillMentor(form,name);await form.getByLabel('E-mail da mentora').fill(email);
+  await form.getByLabel('Capacidade legada (participantes)').fill('51');
+  const calls=watch(page,'/api/v1/admin/mentors');
+  await form.getByRole('button',{name:'Salvar cadastro'}).click();
+  await form.getByRole('alert').filter({hasText:/1 a 50/}).waitFor();
+  assert.equal(calls.filter(c=>c.method==='POST').length,0);
+  await form.getByLabel('Capacidade legada (participantes)').fill('2');
+  await form.getByRole('button',{name:'Salvar cadastro'}).click();
+  await main(page).getByRole('status').filter({hasText:/Mentora cadastrada/}).waitFor();
+  const post=calls.find(c=>c.method==='POST');assert.ok(post?.headers['idempotency-key']);
+  assert.deepEqual(Object.keys(JSON.parse(post.body??'{}')).sort(),['availability','consent','displayName','email','legacyCapacity','specialties','trajectory']);
+  const row=(await ui.db.query('select id::text,user_id,capacity from mentor where email=$1',[email])).rows[0];assert.ok(row.user_id);assert.equal(row.capacity,2);
+  calls.length=0;
+  await (await card(page,'Mentoras',name)).getByRole('button',{name:`Editar ${name}`}).click();
+  const edit=main(page).getByRole('form',{name:'Editar mentora'});await edit.waitFor();
+  assert.equal(await edit.getByLabel(/E-mail|demo|userId|senha/i).count(),0);
+  assert.match(await edit.innerText(),/não define vagas de turma/);
+  await edit.getByLabel('Trajetória',{exact:true}).fill('Trajetória revisada pela organização.');
+  await edit.getByRole('button',{name:'Salvar alterações'}).click();
+  await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  const patch=calls.find(c=>c.method==='PATCH');assert.ok(patch);assert.equal(patch.headers['if-match'],'"1"');
+  assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+row.id)));
+  for(const forbidden of ['email','consent','demo','userId','password'])assert.equal(forbidden in JSON.parse(patch.body??'{}'),false);
+  await (await card(page,'Mentoras',name)).getByRole('button',{name:`Desativar ${name}`}).click();
+  await main(page).getByRole('alertdialog',{name:'Desativar mentora'}).getByRole('button',{name:'Confirmar desativação'}).click();
+  await main(page).getByRole('status').filter({hasText:/Mentora desativada/}).waitFor();
+  assert.equal((await ui.db.query('select active from mentor where id=$1',[row.id])).rows[0].active,false);
+  await (await card(page,'Mentoras',name)).getByRole('button',{name:`Reativar ${name}`}).click();
+  await main(page).getByRole('status').filter({hasText:/Mentora reativada/}).waitFor();
+  assert.equal((await ui.db.query('select active from mentor where id=$1',[row.id])).rows[0].active,true);
+  assert.equal(await main(page).getByRole('button',{name:/Nova turma|Novo tema|Agenda/}).count(),0);
+  ui.assertNoLeak();
+ }finally{await context.close();}
+});
