@@ -202,7 +202,9 @@ sintético acima. `error_log ... crit` e `/dev/null` nas rotas sensíveis são l
 
 ## 10. O que NÃO está provado (declarado)
 
-Build/run ARM da imagem; CI remoto (o job `check` não rodou; `pnpm test:e2e` aponta para `tests/pg/legacy-e2e.ts`,
-obsoleto frente à API 202 — pedido INT-005 R-008, o passo fica vermelho até a integração); host OCI, pgAdmin, nginx
+INT-005 provou localmente (notebook, QEMU) a imagem final `linux/arm64`: `verify-image.sh --image-only` verde, migradora em
+base vazia, web só com a credencial runtime, mailer só com a sua, cadastro 202 → job → fake → login/troca → reinício de web e PG
+(`pnpm test:e2e` = `tests/pg/e2e-v1.ts`); o transporte fake NÃO atesta entrega SES. Continua NÃO provado: CI remoto no runner ARM (o job `check` não rodou: abrir PR dispara
+o fluxo de merge, fora do escopo da integração); host OCI, pgAdmin, nginx
 real, backup diário real, troca de tráfego pelo alias `app` no nginx compartilhado; importador contra o SQLite de
 produção; caminho positivo real da Beatriz. Preflight de host só passa com evidência real coletada pelo operador.
