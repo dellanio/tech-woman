@@ -5,6 +5,12 @@ import {startUi,type Ui} from './ui-harness';
 let ui:Ui;
 before(async()=>{ui=await startUi('ui-login-loading');},{timeout:420000});
 after(async()=>{await ui?.stop();});
+test('login descobre o stylesheet tipográfico no HTML, sem esperar CSS → import',{timeout:120000},async()=>{
+ const response=await fetch(ui.origin+'/login');assert.equal(response.status,200);
+ const html=await response.text();
+ assert.match(html,/<link(?=[^>]*rel="preload")(?=[^>]*as="style")(?=[^>]*href="\/fonts\/fonts-original\.css")[^>]*>/,'stylesheet tipográfico precisa ser descoberto no documento');
+});
+
 test('login mobile carrega somente estilos utilizados e preserva tema persistente',{timeout:120000},async()=>{
  const {page,context}=await ui.newPage({viewport:{width:390,height:844}});
  try{
