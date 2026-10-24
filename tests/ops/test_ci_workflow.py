@@ -56,6 +56,13 @@ class JobShapeTests(unittest.TestCase):
             self.assertIn(kept, text)
 
 
+    def test_checkout_keeps_full_history_for_the_policy_diffs_against_the_base(self):
+        # INT-006 (R-004): the policy tests run git show/diff against BASE; a shallow checkout (default depth 1) has no BASE.
+        text = ci()
+        checkout = steps(text)[position(text, "uses: actions/checkout@")]
+        self.assertIn("fetch-depth: 0", checkout)
+
+
 class StepOrderTests(unittest.TestCase):
     def test_password_hash_csrf_and_origin_unit_suite_is_not_lost_by_the_pg_glob(self):
         text = ci()
