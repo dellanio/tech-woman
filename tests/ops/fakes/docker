@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Fake docker: logs every call; behaviour comes from files in $TW_FAKE_DIR (never from the real host).
+source "$(dirname "$0")/_common.sh"
+tw_log docker false "$@"
+d=${TW_FAKE_DIR:-/nonexistent}
+if [[ "${1:-}" == --config ]]; then shift 2; fi
+sub=${1:-}; shift || true
+exists() {
+  local path=$1 line
+  [[ -f "$d/fs.txt" ]] || return 1
+  while IFS= read -r line; do [[ "$line" == "$path" || "$line" == "$path"/* ]] && return 0; done < "$d/fs.txt"
+  return 1
+}
+rc_of() { if [[ -f "$d/$1" ]]; then cat "$d/$1"; else echo "${2:-0}"; fi; }
+case "$sub" in
+  image)
+    [[ "${1:-}" == inspect ]] || exit 0
+    [[ -f "$d/inspect.rc" ]] && exit "$(cat "$d/inspect.rc")"
+    cat "$d/inspect" ;;
+  inspect)
+    # per-container answers win (inspect.<name>, inspect.<name>.rc); otherwise the shared container-inspect file
+    if [[ -f "$d/inspect.${1:-}" || -f "$d/inspect.${1:-}.rc" ]]; then
+      [[ -f "$d/inspect.$1" ]] && cat "$d/inspect.$1"
+      exit "$(rc_of "inspect.$1.rc" 0)"
+    fi
+    [[ -f "$d/container-inspect" ]] && cat "$d/container-inspect"; exit "$(rc_of inspect-container.rc 0)" ;;
+  ps) [[ -f "$d/ps" ]] && cat "$d/ps"; exit 0 ;;
+  stop|rename|rm|start)
+    n=$(cat "$d/$sub.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/$sub.count"
+    if [[ -f "$d/$sub.rc.$n" ]]; then exit "$(cat "$d/$sub.rc.$n")"; fi
+    target=${1:-}; [[ "$target" == -f ]] && target=${2:-}
+    if [[ -f "$d/$sub.$target.rc" ]]; then exit "$(cat "$d/$sub.$target.rc")"; fi
+    exit "$(rc_of "$sub.rc" 0)" ;;
+  run)
+    ep='' detached=false mount='' workdir=''
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --rm|-i) shift ;;
+        -d) detached=true; shift ;;
+        --network|--entrypoint|--name|--memory|--cpus|--env-file|--ip|--network-alias|--mount|--log-opt|--restart|--workdir|-e|--user)
+          [[ "$1" == --entrypoint ]] && ep=$2
+          [[ "$1" == --mount ]] && mount=$2
+          [[ "$1" == --workdir ]] && workdir=$2
+          shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
+    shift  # image reference
+    if [[ "$detached" == true ]]; then exit "$(rc_of run-d.rc 0)"; fi
+    # Rehearsal: one-shot node containers (migrator, importer, baseline) run the REAL scripts of this checkout
+    # ($TW_FAKE_REPO stands for /tools) against the test PostgreSQL; the snapshot bind mount is mapped back.
+    if [[ "$ep" == node && -f "$d/node-passthrough" && "$workdir" == /tools ]]; then
+      src='' dst=''
+      IFS=, read -ra parts <<< "$mount"
+      for part in "${parts[@]}"; do
+        [[ "$part" == src=* ]] && src=${part#src=}
+        [[ "$part" == dst=* ]] && dst=${part#dst=}
+      done
+      args=()
+      for arg in "$@"; do
+        if [[ -n "$dst" && "$arg" == "$dst"/* ]]; then args+=("$src${arg#"$dst"}"); else args+=("$arg"); fi
+      done
+      cd "$TW_FAKE_REPO" && exec node "${args[@]}"
+    fi
+    case "$ep" in
+      test)
+        if [[ "$1" == '!' ]]; then exists "$3" && exit 1 || exit 0; fi
+        [[ "$1" == -f ]] && { exists "$2" && exit 0 || exit 1; }
+        exit 2 ;;
+      tar) cat "$d/drizzle.tar" ;;
+      grep) exit "$(rc_of grep.rc 1)" ;;
+      node)
+        n=$(cat "$d/node.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/node.count"
+        [[ -f "$d/node.out.$n" ]] && cat "$d/node.out.$n"
+        exit "$(rc_of "node.rc.$n" 0)" ;;
+    esac ;;
+  exec)
+    # Recovery tests: the PostgreSQL client tools inside the PG container are the REAL PG16 tools of the test
+    # cluster (PGHOST/PGPORT come from the test); docker itself stays fake.
+    if [[ -f "$d/pg-passthrough" ]]; then
+      args=("$@"); [[ "${args[0]:-}" == -i ]] && args=("${args[@]:1}")
+      case "${args[1]:-}" in psql|pg_dump|pg_restore) exec "${args[1]}" "${args[@]:2}" ;; esac
+    fi
+    for arg in "$@"; do
+      if [[ "$arg" == pg_dump ]]; then
+        [[ -f "$d/dump.bytes" ]] && cat "$d/dump.bytes"
+        exit "$(rc_of pgdump.rc 0)"
+      fi
+    done
+    [[ -f "$d/exec.out" ]] && cat "$d/exec.out"
+    [[ -f "$d/exec.err" ]] && cat "$d/exec.err" >&2
+    # per-container sequence (exec-<name>.rc.N): e.g. a new web failing its smoke, then the restored one passing
+    target=${1:-}; [[ "$target" == -i ]] && target=${2:-}
+    m=$(cat "$d/exec-$target.count" 2>/dev/null || echo 0); m=$((m + 1)); echo "$m" > "$d/exec-$target.count"
+    if [[ -f "$d/exec-$target.rc.$m" ]]; then exit "$(cat "$d/exec-$target.rc.$m")"; fi
+    exit "$(rc_of exec.rc 0)" ;;
+  login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;
+  pull) exit "$(rc_of pull.rc 0)" ;;
+esac
+exit 0
