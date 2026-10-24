@@ -272,3 +272,39 @@ test('mentoras: criar perfil e conta, validar capacidade histórica, ler e edita
   ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+test('cruzamentos: seletores autorizados, criação com score calculado, suggested/rejected com ETag, cancelamento preserva histórico e legado consultável sem horário',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();try{
+  await staff(page,'admin');
+  const email=unique('match-participant'),participantId=await addParticipant(email),name='Mentora Cruzamento '+randomBytes(3).toString('hex'),mentorId=await addMentor(name);
+  const legacyId=await one("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,3,'[\"Histórico preservado\"]','approved','legacy') returning id",[participantId,mentorId]);
+  const calls=watch(page,'/api/v1/admin/matches');
+  await tab(page,'Cruzamentos').click();
+  await main(page).getByRole('button',{name:'Criar cruzamento',exact:true}).click();
+  const form=main(page).getByRole('form',{name:'Novo cruzamento'});await form.waitFor();
+  await form.getByLabel('Participante',{exact:true}).selectOption({label:email});
+  await form.getByLabel('Mentora',{exact:true}).selectOption({label:name});
+  assert.equal(await form.getByRole('textbox').count(),0,'sem IDs, score ou razões livres');
+  await form.getByRole('button',{name:'Salvar cadastro'}).click();
+  await main(page).getByRole('status').filter({hasText:/Cruzamento criado/}).waitFor();
+  const post=calls.find(c=>c.method==='POST');assert.ok(post?.headers['idempotency-key']);assert.deepEqual(JSON.parse(post.body??'{}'),{participantId,mentorId});
+  const current=(await ui.db.query("select id::text,score,reasons from match where participant_id=$1 and mentor_id=$2 and origin='current'",[participantId,mentorId])).rows[0];assert.ok(current.score>0);assert.ok(current.reasons.length>0);
+  const crossing=()=>main(page).getByRole('list',{name:'Cruzamentos'}).getByRole('listitem').filter({hasText:'Atual'}).filter({hasText:email});
+  await crossing().waitFor();assert.match(await crossing().innerText(),/Dados/);
+  calls.length=0;await crossing().getByRole('button',{name:'Editar cruzamento',exact:true}).click();
+  const edit=main(page).getByRole('form',{name:'Editar cruzamento'});await edit.waitFor();
+  await edit.getByLabel('Situação do cruzamento').selectOption('rejected');await edit.getByRole('button',{name:'Salvar alterações'}).click();
+  await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  const patch=calls.find(c=>c.method==='PATCH');assert.ok(patch);assert.equal(patch.headers['if-match'],'"1"');assert.deepEqual(JSON.parse(patch.body??'{}'),{status:'rejected'});assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+current.id)));
+  await crossing().getByRole('button',{name:'Editar cruzamento',exact:true}).click();await edit.waitFor();
+  await edit.getByLabel('Situação do cruzamento').selectOption('suggested');await edit.getByRole('button',{name:'Salvar alterações'}).click();await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();
+  await crossing().getByRole('button',{name:'Cancelar cruzamento',exact:true}).click();
+  const confirm=main(page).getByRole('alertdialog',{name:'Cancelar cruzamento'});await confirm.waitFor();assert.match(await confirm.innerText(),/histórico/i);await confirm.getByRole('button',{name:'Confirmar cancelamento'}).click();
+  await main(page).getByRole('status').filter({hasText:/Cruzamento cancelado/}).waitFor();
+  assert.equal((await ui.db.query('select status from match where id=$1',[current.id])).rows[0].status,'cancelled');
+  const legacy=main(page).getByRole('list',{name:'Cruzamentos'}).getByRole('listitem').filter({hasText:'Legado'}).filter({hasText:email});
+  assert.match(await legacy.innerText(),/Aprovado/);assert.match(await legacy.innerText(),/sem horário|sem turma/i);assert.equal(await legacy.getByRole('button',{name:'Editar cruzamento'}).count(),0);
+  assert.equal((await ui.db.query('select status from match where id=$1',[legacyId])).rows[0].status,'approved');
+  assert.equal(await main(page).getByRole('button',{name:/Aprovar|Alocar|Nova turma|Novo tema/}).count(),0);ui.assertNoLeak();
+ }finally{await context.close();}
+});
