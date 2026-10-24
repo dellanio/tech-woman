@@ -8,7 +8,8 @@ import type {Page} from 'playwright';
 import {chromium} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 let ui:Ui;
-const root='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
+const tools='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
+const root=process.env.AUDIT_ROOT??tools;
 const label=process.env.AUDIT_LABEL??'run59-task5-lh';
 const results:unknown[]=[];
 before(async()=>{ui=await startUi(label);await ui.db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));},{timeout:420000});
@@ -25,7 +26,7 @@ async function activate(page:Page,admin=false){
 test('Lighthouse quatro telas principais mobile/desktop com privacidade preservada',{timeout:1200000},async()=>{
  const chrome=await chromium.launch({headless:true,args:['--remote-debugging-port=55305','--no-sandbox']});
  const {page,context}=await ui.newPage();
- const worker=spawn(process.execPath,[root+'/run59-task5-lighthouse.mjs'],{stdio:['pipe','pipe','pipe']});
+ const worker=spawn(process.execPath,[tools+'/run59-task5-lighthouse.mjs'],{stdio:['pipe','pipe','pipe']});
  let stderr='';worker.stderr.on('data',b=>stderr+=b);
  const workerExit=new Promise<void>(resolve=>worker.once('exit',()=>resolve()));
  try{

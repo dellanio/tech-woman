@@ -8,7 +8,8 @@ import type {Page,Locator} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 let ui:Ui;
 const label=process.env.AUDIT_LABEL??'run59-task5-initial';
-const root='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
+const tools='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
+const root=process.env.AUDIT_ROOT??tools;
 const records:unknown[]=[];
 before(async()=>{ui=await startUi(label);await ui.db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));},{timeout:420000});
 after(async()=>{writeFileSync(resolve(root,'logs',label+'-audit.json'),JSON.stringify(records,null,2));await ui?.stop();});
@@ -31,7 +32,7 @@ async function audit(page:Page,name:string){
  for(const secret of ui.secrets)assert.equal((await page.locator('body').textContent())?.includes(secret),false,'captura sem segredo no texto');
  await page.screenshot({path:resolve(dir,name+'.png'),fullPage:true});
  const overflow=await page.evaluate(()=>({viewport:innerWidth,scroll:document.documentElement.scrollWidth}));
- await page.addScriptTag({path:resolve(root,'audit-tools/node_modules/axe-core/axe.min.js')});
+ await page.addScriptTag({path:resolve(tools,'audit-tools/node_modules/axe-core/axe.min.js')});
  const result=await page.evaluate(async()=>{
   const axe=(window as unknown as {axe:{run():Promise<{violations:{id:string;impact:string;nodes:{target:string[];failureSummary:string}[]}[];passes:{id:string}[];incomplete:{id:string}[]}>}}).axe;
   const r=await axe.run();return {violations:r.violations.map(v=>({id:v.id,impact:v.impact,nodes:v.nodes.map(n=>({target:n.target,failureSummary:n.failureSummary}))})),passes:r.passes.map(p=>p.id),incomplete:r.incomplete.map(p=>p.id)};

@@ -6,7 +6,7 @@ import {readFileSync,writeFileSync} from 'node:fs';
 import type {Page} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 let ui:Ui;
-const root='/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
+const root=process.env.AUDIT_ROOT??'/fabrica/tech-woman/40-verificacao/evolucao-postgres/WP-004';
 before(async()=>{ui=await startUi('run59-task5-layout-diagnosis');await ui.db.query(readFileSync('scripts/migration/grants-local.sql','utf8'));},{timeout:420000});
 after(async()=>{await ui?.stop();});
 async function activate(page:Page,admin=false){
