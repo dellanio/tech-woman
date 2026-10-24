@@ -271,7 +271,7 @@ test('lote da editora: um item inválido desfaz o statement inteiro (INSERT/UPDA
 
 test('limites finitos: guard com lock_timeout próprio; script do operador fixa timeouts da editora e é idempotente', ()=>withDb(async ({db,url})=>{
  const script=readFileSync('scripts/migration/agenda-privileges.sql','utf8');await db.query(script);await db.query(script);
- const cfg=(await db.query('select rolconfig from pg_roles where rolname=$1',[EDITOR])).rows[0].rolconfig as string[];
+ const cfg=(await db.query('select s.setconfig from pg_db_role_setting s where s.setrole=$1::regrole and s.setdatabase=(select oid from pg_database where datname=current_database())',[EDITOR])).rows[0].setconfig as string[];
  for(const key of ['lock_timeout','statement_timeout','idle_in_transaction_session_timeout']){
   const v=cfg.find(x=>x.startsWith(key+'='));assert.ok(v&&!/=0$/.test(v),`${key} finito para a editora: ${v}`);
  }

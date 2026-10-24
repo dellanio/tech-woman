@@ -30,7 +30,7 @@ O seed só existe no comando explícito; não roda no import/build/boot e não �
 - `TEST_STANDALONE=1 pnpm test:pg` reaproveita o build standalone para os mesmos contratos HTTP (executar build antes; static/public copiados como no e2e). Sem a flag, usa Next dev; prontidão pode levar até300s em mount Windows9p frio. Nenhuma assertion é removida.
 - `pnpm typecheck`; `pnpm test:unit` executa os testes Python existentes. Checkout Windows CRLF causa falha herdada em `ops/deploy.sh` quando Bash Linux lê os bytes; mesmos blobs Git LF passam4/4. Não se alterou ops/política fora de ownership. WP-005/INT deve tratar portabilidade/checkout sem desativar testes.
 - `DATABASE_URL=<endereço indisponível> NEXT_TELEMETRY_DISABLED=1 pnpm build` não consulta PG, não faz DDL nem seed.
-- `MIGRATION_DATABASE_URL=<PG sintético> EVIDENCE_DIR=<pasta durável> pnpm test:e2e` exercita standalone real com Playwright (instalar Chromium antes). Opcional WP001_PG_DATA aponta **somente cluster descartável do sandbox**, porta55431, para provar restartPG; nunca apontar a host/produção. Sem logs de tokens/credenciais. Capturas incluem home desktop/mobile claro/escuro e fluxo.
+- `MIGRATION_DATABASE_URL=<PG16 sintético> pnpm test:e2e` (depois de `pnpm build`, com `psql` no PATH) roda `tests/pg/e2e-v1.ts`: base vazia → bootstrap de roles → migradora em processo próprio → web standalone só com a credencial runtime → cadastro 202 → job → worker fake em memória → login com temporária → troca → reinício do web, mais o entrypoint `scripts/email-worker.ts --once`. Modo `E2E_EXTERNAL=1` reutiliza o fluxo contra a imagem final. Credenciais sintéticas geradas pelo próprio teste, nunca impressas; o fake não atesta entrega SES.
 
 ## Imagem e fronteiras
 
