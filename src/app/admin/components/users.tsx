@@ -1,7 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { UserDto } from '@/lib/contracts';
 import { InterestFields, TrajectoryFields, MentorFields, PARTICIPANT_IDS, MENTOR_IDS, emptyParticipant, emptyMentor, participantIssues, mentorIssues, participantDto, mentorDto, type ParticipantDraft, type MentorDraft, type ParticipantField, type MentorField, type Issue } from '../../diagnostic';
+import { ResendDialog } from './resend';
 import { CollectionView, useCollection } from './collection';
 import { CreateForm, DeactivateConfirm, EditForm, RecordFrame, useRecord, validEmail, EMAIL_MESSAGE, type AuthHandler } from './records';
 const PATH = '/api/v1/admin/users';
@@ -32,7 +33,10 @@ type EditField = 'email' | 'status' | 'roles';
 const EDIT_IDS = { email: 'user-edit-email', status: 'user-edit-status', roles: 'user-edit-roles' };
 export function UsersSection({ canWrite, onAuthError }: { canWrite: boolean; onAuthError: AuthHandler }) {
  const list = useCollection<UserDto>(PATH, onAuthError);
- const [panel, setPanel] = useState<{ kind: 'create' } | { kind: 'edit' | 'deactivate'; id: string } | null>(null), [notice, setNotice] = useState('');
+ const [panel, setPanel] = useState<{ kind: 'create' } | { kind: 'edit' | 'deactivate' | 'resend'; id: string } | null>(null), [notice, setNotice] = useState('');
+ const opener = useRef<HTMLButtonElement | null>(null), restoreFocus = useRef(false);
+ useEffect(() => { if (panel === null && restoreFocus.current) { restoreFocus.current = false; opener.current?.focus(); } }, [panel]);
+ function closeResend() { restoreFocus.current = true; setPanel(null); }
  function open(next: typeof panel) { setNotice(''); setPanel(next); }
  function done(message: string, item: UserDto) { list.replace(item); setPanel(null); setNotice(message); }
  return <section aria-labelledby="resource-title">
@@ -40,15 +44,15 @@ export function UsersSection({ canWrite, onAuthError }: { canWrite: boolean; onA
   <div className="admin-toolbar"><button type="button" className="button-quiet" onClick={list.reload}>Atualizar lista</button>{canWrite && panel?.kind !== 'create' && <button type="button" className="button-primary" onClick={() => open({ kind: 'create' })}>Cadastrar usuário</button>}</div>
   {notice && <p role="status" className="notice">{notice}</p>}
   {canWrite && panel?.kind === 'create' && <CreateUser onCreated={() => { setPanel(null); setNotice('Usuário cadastrado. Conta e perfis salvos; solicitação de acesso na fila, sem entrega comprovada.'); list.reload(); }} onCancel={() => setPanel(null)} onAuthError={onAuthError}/>}
-  {canWrite && panel && panel.kind !== 'create' && <UserRecord key={`${panel.kind}-${panel.id}`} id={panel.id} mode={panel.kind} onAuthError={onAuthError} onClose={() => setPanel(null)} onDone={done}/>}
+  {canWrite && panel && panel.kind !== 'create' && <UserRecord key={`${panel.kind}-${panel.id}`} id={panel.id} mode={panel.kind} onAuthError={onAuthError} onClose={panel.kind === 'resend' ? closeResend : () => setPanel(null)} onQueued={() => { closeResend(); setNotice('Solicitação na fila; nenhum envio/entrega comprovados.'); }} onDone={done}/>}
   <CollectionView collection={list} label="Usuários" noun="usuários" empty={<><p><strong>Nenhum usuário disponível.</strong></p><p>{canWrite ? 'Cadastre uma conta com os dados dos perfis de participante ou mentora.' : 'As contas aparecerão aqui para consulta.'}</p></>}>
-   {u => <article className="admin-card"><div className="admin-card-head"><h2>{u.email}</h2><span className="status-badge">{statusLabel[u.status]}</span></div><dl className="admin-details"><div><dt>Perfis</dt><dd>{u.roles.filter(managed).map(roleLabel).join(' · ') || 'Sem perfil habilitado'}</dd></div></dl>{canWrite && <div className="admin-actions"><button type="button" className="button-secondary" aria-label={`Editar ${u.email}`} onClick={() => open({ kind: 'edit', id: u.id })}>Editar</button>{u.status !== 'disabled' && <button type="button" className="button-quiet" aria-label={`Desativar ${u.email}`} onClick={() => open({ kind: 'deactivate', id: u.id })}>Desativar</button>}</div>}</article>}
+   {u => <article className="admin-card"><div className="admin-card-head"><h2>{u.email}</h2><span className="status-badge">{statusLabel[u.status]}</span></div><dl className="admin-details"><div><dt>Perfis</dt><dd>{u.roles.filter(managed).map(roleLabel).join(' · ') || 'Sem perfil habilitado'}</dd></div></dl>{canWrite && <div className="admin-actions"><button type="button" className="button-secondary" aria-label={`Editar ${u.email}`} onClick={() => open({ kind: 'edit', id: u.id })}>Editar</button>{u.status !== 'disabled' && <button type="button" className="button-quiet" aria-label={`Reenviar acesso de ${u.email}`} onClick={e => { opener.current = e.currentTarget; open({ kind: 'resend', id: u.id }); }}>Reenviar acesso</button>}{u.status !== 'disabled' && <button type="button" className="button-quiet" aria-label={`Desativar ${u.email}`} onClick={() => open({ kind: 'deactivate', id: u.id })}>Desativar</button>}</div>}</article>}
   </CollectionView>
  </section>;
 }
-function UserRecord({ id, mode, onAuthError, onClose, onDone }: { id: string; mode: 'edit' | 'deactivate'; onAuthError: AuthHandler; onClose: () => void; onDone: (message: string, item: UserDto) => void }) {
+function UserRecord({ id, mode, onAuthError, onClose, onDone, onQueued }: { id: string; mode: 'edit' | 'deactivate' | 'resend'; onAuthError: AuthHandler; onClose: () => void; onDone: (message: string, item: UserDto) => void; onQueued: () => void }) {
  const path = `${PATH}/${id}`, record = useRecord<UserDto>(path, onAuthError);
- return <RecordFrame state={record.state} reload={() => void record.load()} onClose={onClose} label="usuário">{loaded => mode === 'edit'
+ return <RecordFrame state={record.state} reload={() => void record.load()} onClose={onClose} label="usuário">{loaded => mode === 'resend' ? <ResendDialog loaded={loaded} onClose={onClose} onQueued={onQueued} onAuthError={onAuthError}/> : mode === 'edit'
   ? <EditForm<UserDto, EditDraft, EditField> title="Editar usuário" path={path} loaded={loaded} reload={record.reloadQuiet} toDraft={u => ({ email: u.email, status: u.status, roles: u.roles.filter(managed) })} issues={d => validEmail(d.email) ? [] : [{ field: 'email', message: EMAIL_MESSAGE }]} ids={EDIT_IDS}
    header={<p className="auth-note">Alterar o e-mail revoga sessões e acessos anteriores e solicita ativação no novo endereço. Remover um papel mantém o domínio e o histórico; não cria nem vincula outro perfil.</p>}
    toPatch={(d, u) => { const patch: { email?: string; status?: 'active' | 'disabled'; roles?: ManagedRole[] } = {}; if (d.email.trim() !== u.email) patch.email = d.email.trim(); if (d.status !== u.status && d.status !== 'pending_activation') patch.status = d.status; if (JSON.stringify(d.roles) !== JSON.stringify(u.roles.filter(managed))) patch.roles = d.roles; return Object.keys(patch).length ? patch : { email: d.email.trim() }; }}
