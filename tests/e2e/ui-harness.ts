@@ -40,14 +40,15 @@ export async function startUi(name:string):Promise<Ui>{
  process.env.MAILER_DATABASE_URL=roleUrl(url,'techwoman_mailer');
  const appLog=resolve(evidence,'logs',`${name}-app-${new Date().toISOString().replace(/[:.]/g,'-')}.log`);
  const out=createWriteStream(appLog);
- const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:'development',DATABASE_URL:roleUrl(url,'techwoman_runtime'),APP_ORIGIN:ORIGIN,SESSION_SECRET:randomBytes(48).toString('hex'),EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',ALLOW_LOCAL_HTTP:'1',NEXT_TELEMETRY_DISABLED:'1'};
+ const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:process.env.TEST_STANDALONE==='1'?'production':'development',PORT:String(PORT),HOSTNAME:'127.0.0.1',DATABASE_URL:roleUrl(url,'techwoman_runtime'),APP_ORIGIN:ORIGIN,SESSION_SECRET:randomBytes(48).toString('hex'),EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',ALLOW_LOCAL_HTTP:'1',NEXT_TELEMETRY_DISABLED:'1'};
  assert.ok(!('MIGRATION_DATABASE_URL' in env)&&!('MAILER_DATABASE_URL' in env),'web nunca recebe credencial de migração nem do mailer');
- const app:ChildProcess=spawn(process.execPath,[resolve('node_modules/next/dist/bin/next'),'dev','-H','127.0.0.1','-p',String(PORT)],{env,stdio:['ignore','pipe','pipe']});
+ const args=process.env.TEST_STANDALONE==='1'?[resolve('.next/standalone/server.js')]:[resolve('node_modules/next/dist/bin/next'),'dev','-H','127.0.0.1','-p',String(PORT)];
+ const app:ChildProcess=spawn(process.execPath,args,{env,stdio:['ignore','pipe','pipe']});
  app.stdout?.pipe(out);app.stderr?.pipe(out);
  let ready=false;
  for(let i=0;i<480&&!ready;i++){
   if(app.exitCode!==null)throw new Error(`Next dev encerrou (exit ${app.exitCode}); veja ${appLog}`);
-  try{ready=(await fetch(ORIGIN+'/api/v1/topics')).status<500;}catch{await sleep(500);}
+  try{ready=(await fetch(ORIGIN+'/api/v1/auth/session')).status===401;}catch{await sleep(500);}
  }
  assert.ok(ready,'Next dev não respondeu');
  const browser=await chromium.launch({headless:true});
