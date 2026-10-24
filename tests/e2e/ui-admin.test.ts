@@ -422,8 +422,8 @@ test('evento: seis campos legados, PUT com CSRF e leitura salva, falha de rede c
   await form.locator('#event-venue').fill('Local revisado');await form.getByRole('button',{name:/Salvar alterações/}).click();await alertIn(page,/Sem conexão/).waitFor();assert.equal(await form.locator('#event-venue').inputValue(),'Local revisado');
   await form.getByRole('button',{name:'Tentar salvar novamente'}).click();await main(page).getByRole('status').filter({hasText:/Alterações salvas/}).waitFor();await page.unroute('**/api/admin/event');
   assert.equal((await ui.db.query('select venue from event_content where id=1')).rows[0].venue,'Local revisado');
-  let failGet=true;await page.route('**/api/admin/event',async route=>{if(route.request().method()==='GET'&&failGet){failGet=false;await route.abort('internetdisconnected');}else await route.continue();});
-  await page.goto(ui.origin+'/admin/evento');await alertIn(page,/Sem conexão/).waitFor();assert.equal(await form.count(),0,'erro não apresenta conteúdo vazio');await main(page).getByRole('button',{name:'Tentar novamente'}).click();await form.waitFor();assert.equal(await form.locator('#event-date').inputValue(),'2026-11-14');await page.unroute('**/api/admin/event');ui.assertNoLeak();
+  let failGet=true;await page.route('**/api/admin/event',async route=>{if(route.request().method()==='GET'&&failGet){await route.abort('internetdisconnected');}else await route.continue();});
+  await page.goto(ui.origin+'/admin/evento');await alertIn(page,/Sem conexão/).waitFor();assert.equal(await form.count(),0,'erro não apresenta conteúdo vazio');failGet=false;await main(page).getByRole('button',{name:'Tentar novamente'}).click();await form.waitFor();assert.equal(await form.locator('#event-date').inputValue(),'2026-11-14');await page.unroute('**/api/admin/event');ui.assertNoLeak();
  }finally{await context.close();}
 });
 
@@ -433,17 +433,17 @@ test('permissões: equipe consulta quatro recursos sem escrita e evento readonly
   const hiddenName='Perfil reservado '+randomBytes(3).toString('hex'),hiddenMentor=await addMentor(hiddenName);await ui.db.query('update mentor set user_id=$1 where id=$2',[adminId,hiddenMentor]);
   const email=unique('visible'),visibleUser=await accountFixture(email),participant=(await ui.db.query('select id::text from participant where user_id=$1',[visibleUser])).rows[0].id as string,mentor=await addMentor('Mentora Visível '+randomBytes(3).toString('hex'));
   await ui.db.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,0,'[]','rejected','legacy')",[participant,mentor]);
-  await context.clearCookies();await staff(page,'team');const calls=watch(page,'/api/v1/admin/');
+  await context.clearCookies();const teamEmail=await staff(page,'team');const calls=watch(page,'/api/v1/admin/');
   for(const resource of ['Participantes','Mentoras','Cruzamentos','Usuários']){
    await tab(page,resource).click();await main(page).getByRole('heading',{name:resource,exact:true,level:1}).waitFor();
    await main(page).getByRole('list',{name:resource}).waitFor();await page.waitForLoadState('networkidle');
    assert.equal(await main(page).getByRole('button',{name:/Cadastrar|Criar cruzamento|Editar|Desativar|Reativar|Reenviar|Cancelar cruzamento/}).count(),0,resource+' não oferece escrita');assert.equal(await main(page).getByRole('form').count(),0);
-   const text=await main(page).innerText();assert.equal(text.includes(adminEmail),false);assert.equal(text.includes(adminId),false);assert.equal(text.includes(hiddenName),false);
+   const text=await main(page).innerText();assert.equal(text.includes(adminEmail),false);assert.equal(text.includes(teamEmail),false);assert.equal(text.includes(adminId),false);assert.equal(text.includes(hiddenName),false);
   }
   assert.equal(calls.filter(c=>c.method!=='GET').length,0);await panel(page).getByRole('link',{name:'Conteúdo do evento'}).click();
   const editor=main(page).locator('form.event-editor');await editor.waitFor();assert.equal(await editor.getByRole('button',{name:/Salvar/}).count(),0,'team não oferece salvar evento');
   for(const key of ['description','venue','agenda','speakers','date','duration'])assert.equal(await editor.locator(`#event-${key}`).isEditable(),false,key+' somente leitura');
-  await context.clearCookies();const mentorEmail=unique('mentor-denied');await activate(page,mentorEmail,await ui.temporaryPassword(mentorEmail));await ui.db.query("insert into user_role(user_id,role) select id,'mentor' from app_user where email=$1",[mentorEmail]);
+  await context.clearCookies();const mentorEmail=unique('mentor-denied');await activate(page,mentorEmail,await ui.temporaryPassword(mentorEmail));const deniedMentor=await addMentor('Mentora Sem Acesso');await ui.db.query('update mentor set user_id=(select id from app_user where email=$1) where id=$2',[mentorEmail,deniedMentor]);await ui.db.query("insert into user_role(user_id,role) select id,'mentor' from app_user where email=$1",[mentorEmail]);
   await page.goto(ui.origin+'/admin');await main(page).getByRole('heading',{name:/Painel restrito/}).waitFor();await page.goto(ui.origin+'/admin/evento');await main(page).getByRole('heading',{name:/Painel restrito/}).waitFor();assert.equal(await editor.count(),0);
   await context.clearCookies();await page.goto(ui.origin+'/admin/evento');await page.waitForURL(u=>u.pathname==='/login'&&u.searchParams.get('next')==='/admin/evento');
   const limitedEmail=unique('event-limited'),temp=await ui.temporaryPassword(limitedEmail);await ui.db.query("insert into user_role(user_id,role) select id,'admin' from app_user where email=$1",[limitedEmail]);
