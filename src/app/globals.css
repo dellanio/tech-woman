@@ -164,3 +164,6 @@
 .admin-panel .admin-actions .button-secondary{background:var(--canvas)}
 /* Reserva o espaço do painel de sessão até a leitura autenticada terminar (T14/CLS). */
 .account-home>.auth-panel[aria-busy="true"]{min-height:550px}
+/* Mantém a sessão parada durante a troca de fontes e a hidratação em mobile. */
+.account-home>.auth-panel[aria-busy="true"]{animation:none}
+@media(max-width:760px){.account-home>.account-intro{min-height:260px}}
