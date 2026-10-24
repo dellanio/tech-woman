@@ -28,9 +28,9 @@ export function AccountHome({ simulated }: { simulated: boolean }) {
   return <Frame eyebrow="SUA CONTA">
     <div className="account-home">
       <div className="auth-intro account-intro"><p className="eyebrow">TECH WOMAN EM RECIFE</p><h1>Bom ter você <em>por aqui.</em></h1><p className="hero-lead">Seus perfis, suas reservas e seus acessos neste encontro.</p></div>
-      {view.state === 'checking' ? <div className="form-panel auth-panel" aria-busy="true"><p className="auth-loading" role="status">Conferindo sua sessão…</p></div> :
+      {view.state === 'checking' ? <div key="session-checking" className="form-panel auth-panel" aria-busy="true"><p className="auth-loading" role="status">Conferindo sua sessão…</p></div> :
         view.state === 'failed' ? <div className="form-panel auth-panel"><p role="alert" className="visible-error">{view.message}</p><button type="button" className="button-secondary" onClick={() => void check()}>Tentar novamente</button></div> :
-        <div className="account-columns">
+        <div key="session-ready" className="account-columns">
           <AccountPanel user={view.user} expiresAt={view.expiresAt} notice={notice} onSignedOut={() => { setFlash('signed-out'); router.replace('/login'); }}/>
           <div className="account-roles">
             {staff && <section className="form-panel account-role" aria-labelledby="staff-title"><p className="eyebrow">ORGANIZAÇÃO</p><h2 id="staff-title">Painel da equipe</h2><p className="auth-note">Sua conta tem acesso de {roles.includes('admin') ? 'administração' : 'equipe'}.</p><Link className="button-primary form-main-action" href="/admin">Abrir painel da equipe ↗</Link></section>}
