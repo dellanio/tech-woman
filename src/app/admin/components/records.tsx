@@ -102,6 +102,10 @@ export function RecordFrame<T extends Versioned>({ state, reload, onClose, label
 }
 
 /** Edição com If-Match = ETag lido. 412 mantém o rascunho e só troca a versão quando a pessoa pede "Carregar versão atual". */
+function MissingRecord({ onClose }: { onClose: () => void }) {
+  return <div className="form-panel admin-form"><p role="alert" className="visible-error">{NOT_FOUND_MESSAGE}</p><button type="button" className="button-quiet" onClick={onClose}>Fechar</button></div>;
+}
+
 export function EditForm<T extends Versioned, D, F extends string>({ title, path, loaded, reload, toDraft, issues, toPatch, ids, fields, header, onSaved, onClose, onAuthError, conflicts, fieldOf }: {
   title: string; path: string; loaded: Loaded<T>; reload: () => Promise<Loaded<T> | null>;
   toDraft: (item: T) => D; issues: (draft: D) => Issue<F>[]; toPatch: (draft: D, item: T) => unknown; ids: Record<F, string>;
@@ -112,10 +116,11 @@ export function EditForm<T extends Versioned, D, F extends string>({ title, path
   const [draft, setDraft] = useState<D>(() => toDraft(loaded.item)), [base, setBase] = useState(loaded);
   const [invalid, setInvalid] = useState<F[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState(false), [conflict, setConflict] = useState(false), [retry, setRetry] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null), inFlight = useRef(false);
+  const [missing, setMissing] = useState(false);
   useEffect(() => { titleRef.current?.focus(); }, []);
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (inFlight.current) return;
+    if (inFlight.current || conflict || missing) return;
     const found = issues(draft);
     setInvalid(found.map(i => i.field)); setError(found.map(i => i.message).join(' ')); setRetry(false);
     if (found.length) { focusField(ids[found[0].field]); return; }
@@ -124,6 +129,7 @@ export function EditForm<T extends Versioned, D, F extends string>({ title, path
     inFlight.current = false; setBusy(false);
     if (result.ok) { setConflict(false); setError(''); onSaved(result.data); return; }
     if (onAuthError(result.code)) return;
+    if (result.code === 'NOT_FOUND') { setMissing(true); return; }
     setConflict(result.code === 'VERSION_MISMATCH');
     setRetry(result.code === 'NETWORK' || result.code === 'DEPENDENCY_UNAVAILABLE' || result.code === 'RETRY_TRANSACTION' || result.code === 'UNEXPECTED');
     const mapped = result.fields.map(f => fieldOf?.(f) ?? null).filter(Boolean) as F[];
@@ -131,17 +137,21 @@ export function EditForm<T extends Versioned, D, F extends string>({ title, path
     if (mapped.length) focusField(ids[mapped[0]]);
   }
   async function loadCurrent() {
+    if (inFlight.current) return;
+    inFlight.current = true; setBusy(true);
     const current = await reload();
+    inFlight.current = false; setBusy(false);
     if (!current) { setError(RELOAD_FAILED); return; }
     setBase(current); setDraft(toDraft(current.item)); setConflict(false); setError(''); setInvalid([]);
   }
+  if (missing) return <MissingRecord onClose={onClose}/>;
   return <form className="form-panel admin-form" aria-label={title} onSubmit={submit} noValidate aria-busy={busy}>
     <p className="eyebrow">EDIÇÃO · VERSÃO {base.item.version}</p><h2 ref={titleRef} tabIndex={-1}>{title}</h2>
     {header}
     {fields(draft, setDraft, invalid)}
-    {error && <div role="alert" className="visible-error">{error}{conflict && <div className="admin-actions"><button type="button" className="button-secondary" onClick={() => void loadCurrent()}>Carregar versão atual</button></div>}</div>}
+    {error && <div role="alert" className="visible-error">{error}{conflict && <div className="admin-actions"><button type="button" className="button-secondary" onClick={() => void loadCurrent()} disabled={busy}>Carregar versão atual</button></div>}</div>}
     <div className="admin-actions">
-      <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Salvando…' : retry ? 'Tentar salvar novamente' : 'Salvar alterações'}</button>
+      <button type="submit" className="button-primary" disabled={busy || conflict}>{busy ? 'Salvando…' : retry ? 'Tentar salvar novamente' : 'Salvar alterações'}</button>
       <button type="button" className="button-quiet" onClick={onClose} disabled={busy}>Cancelar</button>
     </div>
   </form>;
@@ -154,24 +164,28 @@ export function DeactivateConfirm<T extends Versioned>({ title, path, loaded, re
   onDone: (item: T) => void; onClose: () => void; onAuthError: AuthHandler;
 }) {
   const [base, setBase] = useState(loaded), [busy, setBusy] = useState(false), [error, setError] = useState(''), [conflict, setConflict] = useState(false), [blocked, setBlocked] = useState(false);
-  const titleRef = useRef<HTMLHeadingElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null), inFlight = useRef(false);
+  const [missing, setMissing] = useState(false);
   useEffect(() => { titleRef.current?.focus(); }, []);
   async function confirm() {
-    setBusy(true); setError('');
+    if (inFlight.current || conflict || missing) return;
+    inFlight.current = true; setBusy(true); setError('');
     const result = await request<T>(path, { method, ifMatch: base.etag });
-    setBusy(false);
+    inFlight.current = false; setBusy(false);
     if (result.ok) { onDone(result.data); return; }
     if (onAuthError(result.code)) return;
+    if (result.code === 'NOT_FOUND') { setMissing(true); return; }
     setConflict(result.code === 'VERSION_MISMATCH'); setBlocked(result.status === 409 || result.code === 'NOT_FOUND');
     setError(failureMessage(result, conflicts));
   }
   async function loadCurrent() { const current = await reload(); if (!current) { setError(RELOAD_FAILED); return; } setBase(current); setConflict(false); setError(''); }
+  if (missing) return <MissingRecord onClose={onClose}/>;
   return <section className="form-panel admin-form admin-confirm" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-warning">
     <p className="eyebrow">CONFIRMAÇÃO</p><h2 id="confirm-title" ref={titleRef} tabIndex={-1}>{title}</h2>
     <div id="confirm-warning" className="auth-note">{warning}</div>
     {error && <div role="alert" className="visible-error">{error}{conflict && <div className="admin-actions"><button type="button" className="button-secondary" onClick={() => void loadCurrent()}>Carregar versão atual</button></div>}</div>}
     <div className="admin-actions">
-      {!blocked && <button type="button" className="button-primary" onClick={() => void confirm()} disabled={busy}>{busy ? 'Aplicando…' : confirmLabel}</button>}
+      {!blocked && <button type="button" className="button-primary" onClick={() => void confirm()} disabled={busy || conflict}>{busy ? 'Aplicando…' : confirmLabel}</button>}
       <button type="button" className="button-quiet" onClick={onClose} disabled={busy}>Voltar</button>
     </div>
   </section>;
