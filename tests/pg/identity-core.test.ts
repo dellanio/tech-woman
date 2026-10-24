@@ -8,6 +8,8 @@ import * as identity from '../../src/lib/identity';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 type Ctx={db:Pool;url:string};
+// INT-006: pg-pool resolve end() antes de o backend sair; aguardar pg_stat_activity antes do DROP ... WITH (FORCE)
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
 
 async function withDb(fn:(ctx:Ctx)=>Promise<void>){
@@ -17,7 +19,7 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  await control.query(`create database ${name}`);const u=new URL(base);u.pathname='/'+name;const url=u.toString();
  const db=new Pool({connectionString:url,max:6});const previous=process.env.DATABASE_URL;
  try{ await migrate(url);process.env.DATABASE_URL=url;await closeDb();await fn({db,url}); }
- finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;await db.end();await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
+ finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
 async function addUser(db:Pool,opts:{email?:string;status?:string;password?:string;hash?:string;roles?:string[]}={}){
  const id=randomUUID(),email=opts.email??`u-${id.slice(0,8)}@example.invalid`;

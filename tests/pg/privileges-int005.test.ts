@@ -12,6 +12,8 @@ import {Pool} from 'pg';
 import {migrate} from '../../scripts/migration/migrate';
 
 const base=process.env.MIGRATION_DATABASE_URL;
+// INT-006: pg-pool resolve end() antes de o backend sair; aguardar pg_stat_activity antes do DROP ... WITH (FORCE)
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 const ROLES=['techwoman_migrator','techwoman_runtime','techwoman_mailer','techwoman_owner','techwoman_beatriz'];
 const TIMEOUTS=['lock_timeout','statement_timeout','idle_in_transaction_session_timeout'];
 const urlFor=(db:string,user?:string,password?:string)=>{const u=new URL(String(base));u.pathname='/'+db;if(user){u.username=user;u.password=password??'';}return u.toString();};
@@ -46,6 +48,6 @@ test('R-009/R-010: bootstrap revoga USAGE de PUBLIC em public com USAGE explíci
   try{assert.equal((await runtime.query('select internal.api_legacy_state(null) r')).rows[0].r,null,'runtime opera sem USAGE de PUBLIC');}finally{await runtime.end();}
  }finally{
   delete process.env.LOCAL_ROLE_SETUP;
-  await admin.end();await control.query(`drop database if exists ${db} with (force)`);await control.end();
+  await admin.end();await settled(control,db);await control.query(`drop database if exists ${db} with (force)`);await control.end();
  }
 });

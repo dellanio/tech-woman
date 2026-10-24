@@ -14,6 +14,8 @@ import {tokenDigest} from '../../src/lib/db';
 import {newSessionToken} from '../../src/lib/identity';
 
 const base=process.env.MIGRATION_DATABASE_URL;
+// INT-006: pg-pool resolve end() antes de o backend sair; aguardar pg_stat_activity antes do DROP ... WITH (FORCE)
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 const MATRIX='scripts/migration/agenda-grants-matrix.sql';
 const LOGIN_ROLES=['techwoman_migrator','techwoman_runtime','techwoman_mailer'] as const;
 const I4_HELPERS=['internal.api_account_create(text,text)','internal.api_session_actor(text,uuid[])','internal.domain_lock_users(text,bigint[])','internal.lock_user_set(uuid[])','internal.lock_users(uuid,uuid)'];
@@ -110,7 +112,7 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
  }finally{
   if(previousSetup===undefined)Reflect.deleteProperty(process.env,'LOCAL_ROLE_SETUP');else process.env.LOCAL_ROLE_SETUP=previousSetup;
   await Promise.all(clients.map(c=>c.end().catch(()=>undefined)));
-  await control.query(`drop database if exists ${db} with (force)`);
+  await settled(control,db);await control.query(`drop database if exists ${db} with (force)`);
   for(const role of LOGIN_ROLES){
    const before=prior.find(p=>p.rolname===role);
    if(!before)await control.query(`drop role if exists ${role}`);
