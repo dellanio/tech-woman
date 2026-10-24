@@ -175,7 +175,7 @@ export function DeactivateConfirm<T extends Versioned>({ title, path, loaded, re
     if (result.ok) { onDone(result.data); return; }
     if (onAuthError(result.code)) return;
     if (result.code === 'NOT_FOUND') { setMissing(true); return; }
-    setConflict(result.code === 'VERSION_MISMATCH'); setBlocked(result.status === 409 || result.code === 'NOT_FOUND');
+    setConflict(result.code === 'VERSION_MISMATCH'); setBlocked(result.status === 409);
     setError(failureMessage(result, conflicts));
   }
   async function loadCurrent() { const current = await reload(); if (!current) { setError(RELOAD_FAILED); return; } setBase(current); setConflict(false); setError(''); }

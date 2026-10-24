@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AdminMatchDto, AdminMentorDto, AdminParticipantDto } from '@/lib/agenda';
-import { request } from '../../shared';
+import { request, type ApiResult } from '../../shared';
 import { CollectionView, useCollection } from './collection';
 import { CreateForm, DeactivateConfirm, EditForm, RecordFrame, failureMessage, useRecord, type AuthHandler } from './records';
 import { reasonLabel } from './labels';
@@ -15,7 +15,7 @@ function useDirectory(onAuthError: AuthHandler) {
   const mine = ++generation.current; setState({ status: 'loading' });
   async function all<T>(path: string): Promise<T[]> {
    const items: T[] = []; let cursor: string | null = null;
-   do { const r = await request<T[]>(`${path}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); if (!r.ok) throw r; items.push(...r.data); cursor = r.nextCursor; } while (cursor);
+   do { const r: ApiResult<T[]> = await request<T[]>(`${path}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); if (!r.ok) throw r; items.push(...r.data); cursor = r.nextCursor; } while (cursor);
    return items;
   }
   try {
