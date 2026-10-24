@@ -27,11 +27,14 @@ class Refusal(Exception):
 
 def _sample(db_path, connection):
     parts = []
-    for suffix in ('', '-wal', '-shm'):
+    for suffix in ('', '-wal'):
         path = pathlib.Path(str(db_path) + suffix)
         if path.exists():
             info = path.stat()
             parts.append((suffix, info.st_size, info.st_mtime_ns))
+    # -shm is the mmap'd WAL index: readers (this read-only connection included) set read-marks in it and the kernel may
+    # bump its mtime later on writeback, with no data written. Only its presence counts; data changes show in the db/WAL.
+    parts.append(('-shm', pathlib.Path(str(db_path) + '-shm').exists()))
     digest = hashlib.sha256(pathlib.Path(db_path).read_bytes()).hexdigest()
     return parts, connection.execute('PRAGMA data_version').fetchone()[0], digest
 
