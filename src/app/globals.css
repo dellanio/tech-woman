@@ -159,3 +159,8 @@
 
 /* Task4: formulários de contas e confirmação nativa, usando os tokens existentes. */
 .admin-form{margin:24px 0;min-width:0}.admin-form>section{margin:28px 0}.admin-form h3{font:500 26px var(--font-display);margin:20px 0}.admin-form #user-profiles label,.admin-form #user-edit-roles label{display:flex;align-items:center;gap:12px;min-height:48px;cursor:pointer}.admin-form #user-profiles input,.admin-form #user-edit-roles input{width:20px;height:20px;accent-color:var(--accent);flex:none}.admin-resend{width:min(600px,calc(100vw - 32px));max-height:calc(100svh - 32px);overflow-y:auto;color:var(--ink);margin:auto}.admin-resend::backdrop{background:color-mix(in srgb,var(--canvas) 78%,transparent)}.admin-resend p{overflow-wrap:anywhere}.admin-resend button:focus-visible,.admin-form select:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+
+/* WP-004 T14: o botão secundário administrativo não herda o cinza nativo do navegador. */
+.admin-panel .admin-actions .button-secondary{background:var(--canvas)}
+/* Reserva o espaço do painel de sessão até a leitura autenticada terminar (T14/CLS). */
+.account-home>.auth-panel[aria-busy="true"]{min-height:550px}
