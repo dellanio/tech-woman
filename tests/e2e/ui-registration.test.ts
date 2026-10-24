@@ -15,7 +15,11 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}
 const main=(page:Page)=>page.getByRole('main');
 /** Alerta da tela (o Next injeta seu próprio route-announcer com role=alert fora do main). */
 const alertText=async(page:Page,expected:RegExp)=>{const a=main(page).getByRole('alert').filter({hasText:expected});await a.waitFor();return (await a.innerText()).trim();};
-const focused=(page:Page)=>page.evaluate(()=>{const el=document.activeElement as HTMLInputElement|null;return {id:el?.id??'',name:el?.getAttribute('name')??'',type:el?.getAttribute('type')??''};});
+/** O formulário move o foco no próximo animation frame; aguarda a condição real, sem reduzir a asserção. */
+const focused=async(page:Page,expected:Partial<{id:string;name:string;type:string}>)=>{
+ await page.waitForFunction(wanted=>{const el=document.activeElement as HTMLInputElement|null;const current={id:el?.id??'',name:el?.getAttribute('name')??'',type:el?.getAttribute('type')??''};return Object.entries(wanted).every(([key,value])=>current[key as keyof typeof current]===value);},expected);
+ return page.evaluate(()=>{const el=document.activeElement as HTMLInputElement|null;return {id:el?.id??'',name:el?.getAttribute('name')??'',type:el?.getAttribute('type')??''};});
+};
 const body=(request:Request)=>request.postDataJSON() as Record<string,unknown>;
 const NO_PROMISE=/enviamos|foi enviad|entregue|chegou|verifique sua caixa|protocolo|token/i;
 
@@ -50,11 +54,11 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   // etapa 1: foco no primeiro inválido
   await page.getByRole('button',{name:/Continuar/}).click();
   await alertText(page,/objetivo/);
-  assert.equal((await focused(page)).name,'goal');
+  assert.equal((await focused(page,{name:'goal'})).name,'goal');
   await page.getByRole('radio',{name:/Crescimento/}).check();
   await page.getByRole('button',{name:/Continuar/}).click();
   await alertText(page,/momento/);
-  assert.equal((await focused(page)).name,'moment');
+  assert.equal((await focused(page,{name:'moment'})).name,'moment');
   assert.equal(await page.getByRole('radio',{name:/Crescimento/}).isChecked(),true,'escolha preservada após erro');
   await page.locator('.moment-options label',{hasText:'Em atividade'}).click();
   await page.getByRole('button',{name:/Continuar/}).click();
@@ -63,7 +67,7 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   const submit=page.getByRole('button',{name:/Enviar inscrição/});
   await submit.click();
   await alertText(page,/interesse/);
-  assert.equal((await focused(page)).name,'interest');
+  assert.equal((await focused(page,{name:'interest'})).name,'interest');
   // interesses: limite 3; habilidades: até 4
   const interests=page.getByRole('group',{name:/O que faz parte/});
   for(const t of ['Dados','Produto','Design','Desenvolvimento'])await interests.getByLabel(t,{exact:true}).click();
@@ -71,7 +75,7 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   assert.equal(await interests.getByLabel('Desenvolvimento',{exact:true}).isChecked(),false);
   await submit.click();
   await alertText(page,/habilidade/);
-  assert.equal((await focused(page)).name,'skill');
+  assert.equal((await focused(page,{name:'skill'})).name,'skill');
   const skills=page.getByRole('group',{name:/Quais habilidades/});
   for(const s of ['Comunicação','Análise','Programação','Gestão'])await skills.getByLabel(s,{exact:true}).click();
   assert.equal(await skills.getByRole('checkbox',{checked:true}).count(),4,'quatro habilidades aceitas');
@@ -79,18 +83,18 @@ test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habi
   await page.getByLabel('Sua área de atuação').selectOption('outra');
   await submit.click();
   await alertText(page,/área/);
-  assert.equal((await focused(page)).id,'other-area');
+  assert.equal((await focused(page,{id:'other-area'})).id,'other-area');
   await page.getByLabel('Qual área?').fill('Biotecnologia');
   await page.getByLabel('Sua área de atuação').selectOption('dados');
   assert.equal(await page.getByLabel('Qual área?').count(),0);
   await page.getByLabel('Seu e-mail').fill('sem-arroba');
   await submit.click();
   await alertText(page,/e-mail/);
-  assert.equal((await focused(page)).id,'email');
+  assert.equal((await focused(page,{id:'email'})).id,'email');
   await page.getByLabel('Seu e-mail').fill(email);
   await submit.click();
   await alertText(page,/consentimento/);
-  assert.equal((await focused(page)).type,'checkbox');
+  assert.equal((await focused(page,{type:'checkbox'})).type,'checkbox');
   await page.getByRole('checkbox',{name:/Concordo/}).check();
   // falha de transporte (injeção só nesta tentativa): mensagem segura e nada se perde
   const keys:string[]=[];
@@ -165,18 +169,18 @@ test('mentora pública: nome de exibição obrigatório, capacidade legada, foco
   const submit=page.getByRole('button',{name:/Cadastrar perfil/});
   await submit.click();
   await alertText(page,/nome de exibição/);
-  assert.equal((await focused(page)).id,'mentor-name');
+  assert.equal((await focused(page,{id:'mentor-name'})).id,'mentor-name');
   await page.getByLabel('Nome de exibição').fill(name);await page.getByLabel('Seu e-mail').fill(email);
   await page.getByLabel('Trajetória').fill('Dez anos entre dados e produto em Recife.');
   await submit.click();
   await alertText(page,/especialidade/);
-  assert.equal((await focused(page)).name,'specialties');
+  assert.equal((await focused(page,{name:'specialties'})).name,'specialties');
   assert.equal(await page.getByLabel('Nome de exibição').inputValue(),name,'campos preservados');
   await mentorFields(page,name,email);
   await page.getByLabel(/Capacidade legada/).fill('51');
   await submit.click();
   await alertText(page,/capacidade/i);
-  assert.equal((await focused(page)).id,'capacity');
+  assert.equal((await focused(page,{id:'capacity'})).id,'capacity');
   await page.getByLabel(/Capacidade legada/).fill('2');
   const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/registrations/mentors')),submit.click()]);
   assert.equal(response.status(),202);
