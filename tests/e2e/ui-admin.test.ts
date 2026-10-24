@@ -352,3 +352,28 @@ test('usuários: criar dois domínios atomicamente, retry idempotente após resp
   assert.equal((await main(page).innerText()).includes(adminId),false);ui.assertNoLeak();
  }finally{await context.close();}
 });
+
+async function accountFixture(email:string){
+ const id=await one("insert into app_user(id,email,status) values(gen_random_uuid(),$1,'active') returning id",[email]);
+ await ui.db.query("insert into user_role(user_id,role) values($1,'participant')",[id]);const p=await addParticipant(email);await ui.db.query('update participant set user_id=$1 where id=$2',[id,p]);return id;
+}
+test('reenvio: diálogo modal nativo, Escape/cancelar sem job e foco devolvido, confirmar202 e retry com uma intenção sem exibir segredo ou jobId',{timeout:420_000},async()=>{
+ const {page,context}=await ui.newPage();try{
+  await staff(page,'admin');const email=unique('resend'),id=await accountFixture(email);await tab(page,'Usuários').click();
+  const item=await card(page,'Usuários',email),open=item.getByRole('button',{name:`Reenviar acesso de ${email}`});const calls=watch(page,`/api/v1/admin/users/${id}`);
+  const jobs=async()=>Number((await ui.db.query('select count(*)::int as n from email_job where user_id=$1',[id])).rows[0].n);
+  assert.equal(await jobs(),0);await open.click();const dialog=page.getByRole('dialog',{name:'Reenviar acesso temporário'});await dialog.waitFor();
+  assert.equal(await dialog.evaluate(el=>el.matches('dialog:modal')),true);
+  assert.match(await dialog.innerText(),/Quando a nova emissão ocorrer/);assert.match(await dialog.innerText(),/sessões serão invalidados/);assert.match(await dialog.innerText(),/mensagem mais recente/);
+  assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+id)),'contexto lido por ID antes do diálogo');
+  await page.keyboard.press('Escape');await dialog.waitFor({state:'detached'});assert.equal(await jobs(),0);assert.equal(calls.filter(c=>c.method==='POST').length,0);assert.equal(await open.evaluate(el=>el===document.activeElement),true);
+  await open.click();await dialog.waitFor();await dialog.getByRole('button',{name:'Cancelar',exact:true}).click();await dialog.waitFor({state:'detached'});assert.equal(await jobs(),0);assert.equal(calls.filter(c=>c.method==='POST').length,0);
+  let dropped=false;await page.route(`**/api/v1/admin/users/${id}/temporary-password`,async route=>{if(!dropped){dropped=true;await route.fetch();await route.abort('internetdisconnected');}else await route.continue();});
+  await open.click();await dialog.waitFor();await dialog.getByRole('button',{name:'Confirmar reenvio',exact:true}).dblclick();
+  await dialog.getByRole('alert').filter({hasText:/Sem conexão/}).waitFor();assert.equal(await jobs(),1);
+  await dialog.getByRole('button',{name:'Tentar solicitar novamente'}).click();await dialog.waitFor({state:'detached'});await page.unroute(`**/api/v1/admin/users/${id}/temporary-password`);
+  await main(page).getByRole('status').filter({hasText:/Solicitação na fila; nenhum envio\/entrega comprovados/}).waitFor();
+  const posts=calls.filter(c=>c.method==='POST');assert.equal(posts.length,2);assert.equal(new Set(posts.map(c=>c.headers['idempotency-key'])).size,1);assert.deepEqual(JSON.parse(posts[0].body??'{}'),{confirm:true});assert.equal('if-match' in posts[0].headers,false);assert.equal(await jobs(),1);
+  const job=(await ui.db.query('select id::text,status from email_job where user_id=$1',[id])).rows[0];assert.equal(job.status,'queued');assert.equal((await main(page).innerText()).includes(job.id as string),false);assert.doesNotMatch(await main(page).innerText(),/jobId|senha temporária:|Recife-/i);ui.assertNoLeak();
+ }finally{await context.close();}
+});
