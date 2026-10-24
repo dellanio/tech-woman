@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { ThemeButton } from './components';
+import { ThemeButton } from './theme-toggle';
 import type { ErrorCode, Role } from '@/lib/contracts';
 export const topics = [{value:'produto',label:'Produto'},{value:'dados',label:'Dados'},{value:'desenvolvimento',label:'Desenvolvimento'},{value:'design',label:'Design'}];
 export const abilities = [{value:'comunicacao',label:'Comunicação'},{value:'analise',label:'Análise'},{value:'codigo',label:'Programação'},{value:'gestao',label:'Gestão'}];
