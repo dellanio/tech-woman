@@ -100,6 +100,9 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
   const [busy, setBusy] = useState(false), [failure, setFailure] = useState<ApiFailure | null>(null);
   /** Uma chave por tentativa lógica: mesma turma após falha transitória reaproveita; outra turma ou recusa definitiva gera nova. */
   const attempt = useRef<{ cohortId: string; key: string } | null>(null);
+  /** Só a leitura mais recente pode atualizar a seleção, inclusive após voltar/trocar mentora. */
+  const cohortRequest = useRef(0);
+  useEffect(() => () => { cohortRequest.current += 1; }, []);
   const heading = useStepFocus(`${step.step}:${failure?.code ?? ''}`);
 
   const fail = useCallback((result: ApiFailure) => { const to = authRedirect(result.code, ACCOUNT); if (to) { router.replace(to); return true; } return false; }, [router]);
@@ -123,8 +126,10 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
   useEffect(() => { void loadRanking(null); }, [loadRanking]);
 
   const loadCohorts = useCallback(async (mentor: RankedChoice, keep: string) => {
+    const requestId = ++cohortRequest.current;
     setCohorts(null); setCohortError(null);
     const result = await allCohorts(mentor.id);
+    if (requestId !== cohortRequest.current) return;
     if (!result.ok) { if (!fail(result)) setCohortError(result); return; }
     const list = [...result.data].sort((a, b) => a.startsAt.localeCompare(b.startsAt) || a.id.localeCompare(b.id));
     setCohorts(list);
@@ -133,7 +138,7 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
     else setSelected(keep);
   }, [fail]);
   function openMentor(mentor: RankedChoice) { setFailure(null); setTopicFilter(''); setSelected(''); setSelectionNote(''); setStep({ step: 'cohorts', mentor }); void loadCohorts(mentor, ''); }
-  function backToMentors() { setFailure(null); setCohorts(null); setStep({ step: 'mentors' }); void loadRanking(null); }
+  function backToMentors() { cohortRequest.current += 1; setFailure(null); setCohorts(null); setStep({ step: 'mentors' }); void loadRanking(null); }
   function refreshCohorts(mentor: RankedChoice, keep: string) { setFailure(null); setSelectionNote(''); setStep({ step: 'cohorts', mentor }); void loadCohorts(mentor, keep); }
 
   async function reserve(mentor: RankedChoice, cohort: CohortDto) {
@@ -253,4 +258,3 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
     })()}
   </section>;
 }
-
