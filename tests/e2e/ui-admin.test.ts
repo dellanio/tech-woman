@@ -19,7 +19,7 @@ const main=(page:Page)=>page.getByRole('main');
 /** Alerta da tela (o Next injeta seu próprio route-announcer com role=alert fora do main). */
 const alertIn=(page:Page,expected:RegExp)=>main(page).getByRole('alert').filter({hasText:expected});
 /** Capturas preliminares (visual final é da tarefa 5): nome descritivo, nunca token/e-mail. */
-const capture=async(page:Page,name:string)=>{const dir=resolve(ui.evidence,'capturas','task4');mkdirSync(dir,{recursive:true});await page.screenshot({path:resolve(dir,`${name}.png`),fullPage:true});};
+const capture=async(page:Page,name:string)=>{const dir=resolve(ui.evidence,'capturas','task4');mkdirSync(dir,{recursive:true});await page.screenshot({path:resolve(dir,`run59-codex-${name}-${Date.now()}.png`),fullPage:true});};
 
 /** Temporária → troca obrigatória → definitiva pela UI; termina em /conta. */
 async function activate(page:Page,email:string,temp:string){
