@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { setFlash } from '../../account-ui';
 import { Frame, request } from '../../shared';
+import { MentorsSection } from './mentors';
 import { ParticipantsSection } from './participants';
 import { StaffGate, useStaffSession } from './staff-gate';
 
@@ -47,6 +48,7 @@ export function AdminPanel() {
         </aside>
         <section className="dashboard-main" aria-labelledby="resource-title">
           {!canWrite && <p className="notice admin-readonly" role="note">Acesso de equipe: você pode consultar os cadastros, mas só a administração altera dados.</p>}
+          {tab === 'mentoras' && <MentorsSection canWrite={canWrite} onAuthError={onAuthError}/>}
           {tab === 'participantes' && <ParticipantsSection canWrite={canWrite} onAuthError={onAuthError}/>}
         </section>
       </div>}
