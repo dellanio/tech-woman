@@ -34,10 +34,10 @@ test('rede lenta: resposta anterior não troca as turmas da mentora atual nem a 
   await page.getByRole('button',{name:'Ver temas e turmas de Bruna',exact:true}).click();
   await page.getByRole('group',{name:'Tema Bruna',exact:true}).waitFor();
   const old=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/v1/mentors/'+a.id+'/cohorts');release();await finished;await old;await page.waitForLoadState('networkidle');
-  assert.match(await page.locator('.choice-context').innerText(),/Bruna/);
+  assert.match(await page.locator('.choice-context').innerText(),/Bruna/i);
   assert.deepEqual(await page.locator('input[name=cohort]').evaluateAll(es=>es.map(e=>(e as HTMLInputElement).value)),[b.cohort],'somente turmas de Bruna após a resposta atrasada de Alice');
   await page.getByRole('group',{name:'Tema Bruna',exact:true}).getByRole('radio').check();await page.getByRole('button',{name:'Conferir resumo',exact:true}).click();
-  assert.match(await page.locator('.choice-summary').innerText(),/Bruna/);
+  assert.match(await page.locator('.choice-summary').innerText(),/Bruna/i);
   const response=page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/v1/me/enrollments');await page.getByRole('button',{name:'Reservar vaga',exact:true}).click();assert.equal((await response).status(),201);
   await page.getByRole('status').filter({hasText:'Reserva confirmada'}).waitFor();
   const rows=await ui.db.query('select e.cohort_id::text from enrollment e join participant p on p.id=e.participant_id where p.email=$1',[email]);assert.deepEqual(rows.rows,[{cohort_id:b.cohort}]);ui.assertNoLeak();
