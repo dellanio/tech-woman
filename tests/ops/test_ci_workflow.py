@@ -63,6 +63,13 @@ class JobShapeTests(unittest.TestCase):
         self.assertIn("fetch-depth: 0", checkout)
 
 
+    def test_pg_suite_exercises_the_built_standalone_instead_of_next_dev(self):
+        # INT-006 (R-004): without TEST_STANDALONE, legacy-http starts `next dev` after `pnpm build`; next dev rewrites
+        # .next and deletes .next/standalone, so the later e2e cannot start the web (MODULE_NOT_FOUND, CI #40147580002).
+        block = steps(ci())[position(ci(), 'pnpm test:pg')]
+        self.assertRegex(block, r"TEST_STANDALONE: '1'")
+
+
 class StepOrderTests(unittest.TestCase):
     def test_password_hash_csrf_and_origin_unit_suite_is_not_lost_by_the_pg_glob(self):
         text = ci()
