@@ -162,6 +162,7 @@ class RehearsalTests(unittest.TestCase):
 
         journal = [json.loads(l)['phase'] for l in (self.host.state_dir / 'journal.jsonl').read_text().splitlines()]
         self.assertEqual(journal, ['prepared', 'prepared', 'frozen', 'snapshotted', 'imported', 'activated', 'smoke_ok',
+                                   'pg_write_opening', 'pg_write_opening', 'pg_write_opening',  # D-039: baseline, switch, mailer
                                    'pg_write_open', 'pg_write_open', 'pg_write_open'])
         after = self.host.cutover_calls()[activation_calls:]
         self.assertFalse([c for c in after if 'tech-woman-sqlite-original' in json.dumps(c)], 'SQLite never comes back')
