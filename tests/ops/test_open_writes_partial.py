@@ -122,6 +122,18 @@ class PartialOpenEveryStep(PartialOpenTestCase):
         self.assertEqual(self.state().phase, 'smoke_ok')
         self.assertEqual([a for a in docker(self.host.cutover_calls()) if a[0] in ('rm', 'rename', 'network')], [])
 
+    def test_recover_after_a_partial_open_with_an_unreadable_live_database_fails_closed_85(self):
+        """GATE-003 probe follow-up: an empty psql answer is 'not readable' (85, nothing started), never a traceback."""
+        self.break_step('run-d.rc')
+        self.assertEqual(self.host.cutover('open-writes').returncode, 83)
+        before = len(self.host.cutover_calls())
+        done = self.host.cutover('recover', '--mode', 'restart')
+        self.assertEqual(done.returncode, 85, done.stderr)
+        self.assertNotIn('Traceback', done.stderr)
+        self.assertEqual([a for a in docker(self.host.cutover_calls()[before:]) if a[0] in ('start', 'run', 'rm', 'rename')], [])
+        self.assertEqual(self.state().phase, 'recovering')  # deploys stay denied until a proven recovery
+        self.assert_never_sqlite()
+
     def test_gate_refuses_deploys_while_opening(self):
         self.break_step('run-d.rc')
         self.host.cutover('open-writes')
