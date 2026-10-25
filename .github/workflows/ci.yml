@@ -46,8 +46,10 @@ jobs:
           BUILDING: '1'
           NEXT_TELEMETRY_DISABLED: '1'
           DATABASE_URL: postgresql://build:build@127.0.0.1:1/unavailable
+      # The PG suites use the standalone built above; `next dev` would rewrite .next and delete the standalone (INT-006).
       - run: pnpm test:pg
         env:
+          TEST_STANDALONE: '1'
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
       # The ops recovery/limits/preflight suites need their OWN disposable PostgreSQL 16 cluster (initdb, crash
       # restart, login-time role settings): server binaries only; the cluster runs as the runner user, never as a service.
