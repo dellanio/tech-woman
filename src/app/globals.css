@@ -97,7 +97,7 @@
 .account-role h2{margin-bottom:6px}
 .account-role .text-link:focus-visible,.account-role .button-primary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 .choice-journey{margin-top:0}
-.choice-journey>h2{font-size:clamp(36px,4vw,56px);margin:0 0 18px}
+.choice-journey>h2{margin:0 0 18px}
 .choice-step-title{font:500 clamp(26px,2.6vw,34px) var(--font-display);text-transform:uppercase;margin:22px 0 8px}
 .choice-step-title:focus-visible,.choice-journey button:focus-visible,.cohort-option:has(input:focus-visible){outline:3px solid var(--focus);outline-offset:3px}
 .choice-group{margin-top:26px}
@@ -167,3 +167,35 @@
 /* Mantém a sessão parada durante a troca de fontes e a hidratação em mobile. */
 .account-home>.auth-panel[aria-busy="true"]{animation:none}
 @media(max-width:760px){.account-home>.account-intro{min-height:260px}}
+/* FIX-UI: superfícies operativas (Frame operative: Conta/Admin). Prólogo compacto, tarefa primeiro, identificadores na fonte de leitura; só tokens existentes. */
+.account-enrollments h2,.choice-journey>h2{font:600 clamp(32px,3vw,48px)/1.1 var(--font-display);text-transform:uppercase}
+.admin-card h2{font:600 clamp(17px,1.5vw,20px)/1.35 var(--font-body);letter-spacing:0}
+.inner-operative{padding-top:var(--space-6)}
+.inner-operative .inner-meta{margin-bottom:var(--space-8)}
+@media(max-width:760px){
+.inner-operative{padding-top:var(--space-3)}
+.inner-operative .inner-meta{margin-bottom:var(--space-4)}
+.inner-operative .account-home{gap:var(--space-6)}
+.inner-operative .account-home>.account-intro{min-height:0}
+.inner-operative .account-intro .eyebrow{margin-bottom:var(--space-2)}
+/* Reserva as duas linhas do título também na fonte fallback, sem prólogo de altura editorial. */
+.inner-operative .account-intro h1{font-size:clamp(34px,9vw,40px);min-block-size:2em;margin-bottom:var(--space-2)}
+.inner-operative .account-intro .hero-lead{font-size:17px;margin-bottom:0}
+/* Loading e vazio têm a mesma caixa; a resposta não empurra reservas/sessão. */
+.inner-operative .choice-step>.auth-loading,.inner-operative .choice-step>.empty-inline{padding:var(--space-8);border:var(--border);margin:var(--space-6) 0;min-block-size:calc(var(--space-16) * 2 + var(--space-4))}
+.inner-operative .choice-mentor .score{margin:0}
+.inner-operative .dashboard-sidebar{align-items:baseline;gap:var(--space-1) var(--space-2);padding-bottom:var(--space-3);margin-bottom:var(--space-4)}
+.inner-operative .dashboard-sidebar .eyebrow{margin:0}
+.inner-operative .dashboard-sidebar h2{width:auto;font-size:26px;line-height:1.1;margin:0}
+.inner-operative .admin-role{margin:0}
+.inner-operative .admin-nav{gap:var(--space-1);margin:var(--space-1) 0}
+.inner-operative .admin-nav button,.inner-operative .admin-nav .sidebar-link,.inner-operative .dashboard-sidebar .logout{padding:var(--space-2) var(--space-3);min-height:var(--space-12)}
+.inner-operative .dashboard-top{padding-bottom:var(--space-3)}
+.inner-operative .dashboard-top .eyebrow{margin-bottom:var(--space-2)}
+.inner-operative .dashboard-top h1{font-size:34px;margin-bottom:var(--space-2)}
+.inner-operative .dashboard-top p:not(.eyebrow){font-size:14px}
+.inner-operative .admin-toolbar{gap:var(--space-2) var(--space-4);padding:var(--space-3) 0}
+.inner-operative .admin-toolbar .button-primary{margin-top:0}
+.inner-operative .admin-list>li{padding:var(--space-4) 0}
+.inner-operative .admin-card h2{margin:var(--space-2) 0 var(--space-3)}
+}

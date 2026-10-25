@@ -14,8 +14,8 @@ const ACCOUNT = '/conta';
 const PAGE_SIZE = 8;
 const LABELS = new Map([...topics, ...abilities].map(o => [o.value, o.label]));
 /** Razões vêm do ranking no banco com slugs (ex.: "dados", "analise"): exibimos os rótulos da interface. */
-const readable = (text: string) => text.replace(/\b[a-z]+\b/g, w => LABELS.get(w) ?? w).replace(/\(\+(\d+)\)/g, '(+$1 pontos)');
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const readable = (text: string) => text.replace(/\b[a-z]+\b/g, w => LABELS.get(w) ?? w).replace(/\(\+(\d+)\)/g, (_, n: string) => `(+${plural(Number(n), 'ponto', 'pontos')})`);
 
 function recifeParts(startsAt: string, endsAt: string, timeZone: string) {
   const day = new Intl.DateTimeFormat('pt-BR', { timeZone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -54,10 +54,10 @@ export function MyEnrollments({ version }: { version: number }) {
   useEffect(() => { void load(); }, [load, version]);
   const enrollments = data ? [...data.enrollments].sort((a, b) => a.startsAt.localeCompare(b.startsAt)) : [];
   return <section className="account-enrollments" aria-labelledby="enrollments-title" aria-busy={!data && !error}>
-    <p className="eyebrow">SUAS RESERVAS</p><h2 id="enrollments-title">Suas reservas</h2>
+    <h2 id="enrollments-title">Suas reservas</h2>
     {error ? <div role="alert" className="visible-error">{error.code === 'IDENTITY_RECONCILIATION_REQUIRED' ? error.message : `Não foi possível carregar suas reservas. ${error.message}`} <button type="button" className="button-quiet" onClick={() => void load()}>Tentar novamente</button></div> :
       !data ? <p role="status" className="auth-loading">Carregando suas reservas…</p> :
-      !enrollments.length && !data.legacyMatches.length ? <p className="empty-inline" role="status">Você ainda não tem reservas. Escolha mentora e turma abaixo.</p> :
+      !enrollments.length && !data.legacyMatches.length ? <p className="empty-inline" role="status">Você ainda não tem reservas. Escolha mentora e turma acima.</p> :
       <ul className="enrollment-list">
         {enrollments.map(e => <li key={e.id} className={`enrollment-item enrollment-${e.status}`}>
           <strong>{e.topic.name}</strong><span>com {e.mentor.displayName}</span><When startsAt={e.startsAt} endsAt={e.endsAt} timeZone="America/Recife"/><span className="enrollment-status">{ENROLLMENT_STATUS[e.status]}</span>
@@ -161,7 +161,7 @@ export function ChoiceJourney({ simulated, onReserved }: { simulated: boolean; o
       <p>{mentor.trajectory}</p>
       <p className="field-hint">Especialidades: {mentor.specialties.map(s => LABELS.get(s) ?? s).join(' · ')}</p>
     </div>
-    {suggested ? <div className="score" aria-label={`Afinidade: ${mentor.score} pontos`}><strong>{mentor.score}</strong><small>PONTOS</small></div> : <div aria-hidden="true"/>}
+    {suggested ? <div className="score" aria-label={`Afinidade: ${plural(mentor.score, 'ponto', 'pontos')}`}><strong>{mentor.score}</strong><small>{mentor.score === 1 ? 'PONTO' : 'PONTOS'}</small></div> : <div aria-hidden="true"/>}
     {suggested ? <ul aria-label="Motivos da sugestão">{mentor.reasons.map(r => <li key={r}>{readable(r)}</li>)}</ul> :
       <p className="choice-neutral">Seu diagnóstico não tem afinidade calculada com esta mentora. Ela tem turma aberta e pode ser escolhida normalmente.</p>}
     <div className="suggestion-actions"><button type="button" className="button-primary" aria-label={`Ver temas e turmas de ${mentor.displayName}`} onClick={() => openMentor(mentor)}>Ver temas e turmas ↗</button></div>
