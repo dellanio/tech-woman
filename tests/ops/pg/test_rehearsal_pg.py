@@ -63,7 +63,10 @@ class RehearsalTests(unittest.TestCase):
         self.cluster.psql('postgres', "do $$ begin if not exists (select 1 from pg_roles where rolname='backup_techwoman') "
                                       "then create role backup_techwoman login; end if; end $$; "
                                       "alter role backup_techwoman nobypassrls; grant pg_read_all_data to backup_techwoman")
-        env = dict(self.cluster.env(), MIGRATION_DATABASE_URL=self.cluster.url(self.db), TW_FAKE_REPO=str(ROOT))
+        node = shutil.which('node')
+        self.assertIsNotNone(node, 'node no PATH do teste (o migrador real roda com ele)')
+        env = dict(self.cluster.env(), MIGRATION_DATABASE_URL=self.cluster.url(self.db), TW_FAKE_REPO=str(ROOT),
+                   TW_FAKE_NODE=node)
         self.host = Host(self, pg_db=self.db, env=env)
         # the candidate's migrations are the real ones of this checkout (what the migrator applies)
         for stale in self.host.mig.glob('*.sql'):

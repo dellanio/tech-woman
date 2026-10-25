@@ -61,7 +61,9 @@ case "$sub" in
       for arg in "$@"; do
         if [[ -n "$dst" && "$arg" == "$dst"/* ]]; then args+=("$src${arg#"$dst"}"); else args+=("$arg"); fi
       done
-      cd "$TW_FAKE_REPO" && exec node "${args[@]}"
+      # INT-006: the hermetic PATH is fakes:/usr/bin:/bin; on the GitHub runner node lives elsewhere (setup-node),
+      # so the test hands over the node it resolved from its own PATH.
+      cd "$TW_FAKE_REPO" && exec "${TW_FAKE_NODE:-node}" "${args[@]}"
     fi
     case "$ep" in
       test)
