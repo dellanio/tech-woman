@@ -35,7 +35,7 @@ export function AdminPanel() {
     setLeaving(false);
     if (result.ok) { setFlash('signed-out'); router.replace('/login'); } else setError(result.message);
   }
-  return <Frame eyebrow="EQUIPE / PAINEL">
+  return <Frame eyebrow="EQUIPE / PAINEL" operative>
     <StaffGate view={view} retry={() => void retry()}>
       {({ canWrite }) => <div className="dashboard admin-panel">
         <aside className="dashboard-sidebar">

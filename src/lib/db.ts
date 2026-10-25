@@ -11,7 +11,8 @@ export function getDb() {
   if (!database) {
     const connectionString=process.env.DATABASE_URL;
     if(!connectionString) throw new Error('Configure DATABASE_URL para PostgreSQL.');
-    pool=new Pool({connectionString,max:5,connectionTimeoutMillis:3000,idleTimeoutMillis:10000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000});
+    // Margem para cold start em host compartilhado; aquisição continua limitada a 10 s (FIX-T01).
+    pool=new Pool({connectionString,max:5,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000});
     database=drizzle(pool,{schema});
   }
   return database;

@@ -63,6 +63,14 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   // I4: helpers privilegiados novos/redefinidos no WP-003 pertencem ao owner NOLOGIN, não à migradora LOGIN
   const helpers=(await admin.query('select p.oid::regprocedure::text sig,pg_get_userbyid(p.proowner) o,r.rolcanlogin login,p.prosecdef from pg_proc p join pg_roles r on r.oid=p.proowner where p.oid=any($1::regprocedure[]) order by 1',[I4_HELPERS])).rows;
   assert.deepEqual(helpers.map(h=>[h.sig,h.o,h.login,h.prosecdef]),[...I4_HELPERS].sort().map(s=>[s,'techwoman_owner',false,true]));
+  // T12/D-038: catálogo inteiro, sem allowlist — nenhuma SECURITY DEFINER da aplicação pertence a role LOGIN (inclusive as 41 WP-002 de identidade)
+  const definers=(await admin.query(`select p.oid::regprocedure::text sig,pg_get_userbyid(p.proowner) o,r.rolcanlogin login,coalesce(p.proconfig,'{}') cfg from pg_proc p join pg_roles r on r.oid=p.proowner
+   join pg_namespace n on n.oid=p.pronamespace where p.prosecdef and n.nspname not in ('pg_catalog','information_schema') order by 1`)).rows;
+  assert.ok(definers.length>=100,`catálogo de SECURITY DEFINER inspecionado: ${definers.length}`);
+  assert.deepEqual(definers.filter(d=>d.o!=='techwoman_owner'||d.login).map(d=>`${d.sig} → ${d.o}`),[],'toda SECURITY DEFINER pertence a techwoman_owner NOLOGIN');
+  assert.deepEqual(definers.filter(d=>!(d.cfg as string[]).some(c=>/^search_path=pg_catalog(, [a-z_]+)*, pg_temp$/.test(c))).map(d=>d.sig),[],'search_path fixo em toda SECURITY DEFINER');
+  for(const sig of ['internal.register_participant_account(text,text,text,jsonb,jsonb,text)','internal.identity_login_begin(text)','internal.email_claim(uuid)','internal.user_protected(uuid)'])
+   assert.equal(definers.find(d=>d.sig===sig)?.o,'techwoman_owner',sig);
   // 3. sessões LOGIN reais (não superusuárias): troca de role negada; runtime só por funções
   const runtime=await connectAs(urlFor(db,'techwoman_runtime',secrets.RUNTIME_PASSWORD)),mailer=await connectAs(urlFor(db,'techwoman_mailer',secrets.MAILER_PASSWORD)),migrator=await connectAs(migratorUrl);clients.push(runtime,mailer,migrator);
   for(const c of [runtime,mailer])for(const role of ['techwoman_owner','techwoman_beatriz','techwoman_migrator','techwoman_runtime','techwoman_mailer'])
@@ -72,7 +80,22 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   // I3: nem os grants locais reabrem DML/leitura de domínio para o runtime (só a home: event_content/demo_seed_state)
   for(const q of ['select * from participant','update participant set user_id=null','select * from mentor','select * from match',"insert into match(participant_id,mentor_id,score,reasons,status,origin) values(1,1,0,'[]','approved','legacy')"])await denied(runtime,q);
   await runtime.query('select * from event_content');await runtime.query('select * from demo_seed_state');
-  await migrator.query('set role techwoman_owner');await denied(migrator,'select * from app_user');await migrator.query('reset role');
+  // Owner NOLOGIN depois do ALTER OWNER (D-038): as funções de identidade leem a linha inteira de app_user (%ROWTYPE, hash para verificar senha),
+  // então o owner tem SELECT nessas tabelas. A fronteira equivalente/mais forte: ninguém entra como owner (NOLOGIN; só a migradora faz SET ROLE),
+  // e mesmo como owner não há DDL, TRUNCATE, DELETE de conta, troca de PK/chave, leitura de migrations/snapshot legado nem escrita fora das colunas das funções.
+  await assert.rejects(connectAs(urlFor(db,'techwoman_owner','x')),'owner não faz login');
+  await migrator.query('set role techwoman_owner');
+  for(const q of ['delete from app_user','truncate app_user','truncate auth_session','update app_user set id=id','update app_user set created_at=created_at',
+   'update auth_session set token_hash=token_hash','update password_reset_token set token_hash=token_hash','delete from auth_session','delete from email_job','update user_role set role=role',
+   'update migration_identity_link set user_id=user_id','insert into migration_issue(id,run_id,source_table,source_key,code) values(gen_random_uuid(),gen_random_uuid(),$$x$$,$$x$$,$$x$$)',
+   'delete from migration_identity_link','select * from internal.schema_migration','select * from legacy_snapshot.source_row','select * from migration_run',
+   'create table internal.owner_forbidden(id int)','create table public.owner_forbidden(id int)','alter table app_user add column owner_x int','alter function internal.user_protected(uuid) owner to techwoman_runtime'])await denied(migrator,q);
+  await migrator.query('reset role');
+  const ownerAcl=(await admin.query(`select c.relname t,string_agg(distinct a.privilege_type,',' order by a.privilege_type) p from pg_class c,aclexplode(c.relacl) a
+   where c.relnamespace='public'::regnamespace and a.grantee='techwoman_owner'::regrole and c.relname in ('app_user','user_role','auth_session','password_reset_token','email_job','email_delivery_attempt','api_idempotency','auth_rate_bucket','migration_identity_link','migration_issue') group by 1 order by 1`)).rows;
+  assert.deepEqual(ownerAcl,[{t:'api_idempotency',p:'DELETE,SELECT'},{t:'app_user',p:'SELECT'},{t:'auth_rate_bucket',p:'DELETE,SELECT'},{t:'auth_session',p:'SELECT'},{t:'email_delivery_attempt',p:'SELECT'},
+   {t:'email_job',p:'INSERT,SELECT'},{t:'migration_identity_link',p:'SELECT'},{t:'migration_issue',p:'SELECT'},{t:'password_reset_token',p:'SELECT'},{t:'user_role',p:'DELETE,SELECT'}],
+   'tabela inteira: só SELECT (+DELETE onde a função apaga); INSERT/UPDATE do owner são só por coluna; nunca TRUNCATE/REFERENCES/TRIGGER');
   // fluxos reais sob migradora não superusuária: helpers do owner (sessão, lock de contas, conta nova, lock de domínio) e função WP-002 que chama lock_users
   const adminId=randomUUID(),target=randomUUID(),digest=tokenDigest(newSessionToken()),hash='a'.repeat(64);
   await admin.query("insert into app_user(id,email,status) values($1,'boot-admin@example.invalid','active'),($2,'boot-p@example.invalid','active')",[adminId,target]);
@@ -101,6 +124,8 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    ['grant execute on function internal.domain_protected(text,bigint) to techwoman_runtime','revoke execute on function internal.domain_protected(text,bigint) from techwoman_runtime'],
    ['create policy matrix_runtime on public.participant for select to techwoman_runtime using (true)','drop policy matrix_runtime on public.participant'],
    ['alter function internal.lock_user_set(uuid[]) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.lock_user_set(uuid[]) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
+   ['alter function internal.register_participant_account(text,text,text,jsonb,jsonb,text) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.register_participant_account(text,text,text,jsonb,jsonb,text) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
+   ['alter function internal.identity_login_begin(text) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.identity_login_begin(text) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
   ] as const){
    await migrator.query(grant);
    r=psql(urlFor(db),MATRIX);
