@@ -93,20 +93,11 @@ BEGIN
    AND NOT EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c ~ '^search_path=pg_catalog(, [a-z_]+)*, pg_temp$')));
  PERFORM pg_temp.matrix_check('nenhuma função SECURITY DEFINER pertence a superusuária/BYPASSRLS', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles o ON o.oid = p.proowner
   WHERE p.pronamespace IN ('internal'::regnamespace, 'public'::regnamespace) AND p.prosecdef AND (o.rolsuper OR o.rolbypassrls)));
- -- Dono NOLOGIN: toda SECURITY DEFINER criada/redefinida no WP-003 (inclusive helpers de identidade) pertence ao owner NOLOGIN. Exceção registrada
- -- para o OPS: só as funções WP-002 herdadas abaixo continuam com o dono da migração (a migradora); nenhuma função nova entra nesta lista.
- PERFORM pg_temp.matrix_check('SECURITY DEFINER de internal/public pertence a role NOLOGIN (exceto as WP-002 herdadas registradas)', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
-  JOIN pg_catalog.pg_roles o ON o.oid = p.proowner WHERE p.pronamespace IN ('internal'::regnamespace, 'public'::regnamespace) AND p.prosecdef AND o.rolcanlogin
-   AND NOT (p.oid::regprocedure::text = ANY (ARRAY['internal.cancel_identity_jobs(uuid,text[],text[])', 'internal.identity_login_begin(text)', 'internal.identity_login_finish(uuid,text,bigint,text)',
-    'internal.identity_session_get(text)', 'internal.identity_change_begin(text)', 'internal.identity_change_finish(text,bigint,text,text)', 'internal.identity_logout(text)',
-    'internal.issue_temporary_credential(uuid,text)', 'internal.issue_reset_token(uuid,text)', 'internal.consume_reset_token(text,text)', 'internal.register_participant_account(text,text,text,jsonb,jsonb,text)',
-    'internal.register_mentor_account(text,text,text,jsonb,text,integer)', 'internal.activate_legacy_identity(uuid)', 'internal.request_password_forgot(text)', 'internal.enqueue_admin_temporary(uuid,text)',
-    'internal.add_own_participant_profile(text,text,text,jsonb,jsonb,text)', 'internal.add_own_mentor_profile(text,text,text,jsonb,text,integer)', 'internal.email_claim(uuid)', 'internal.email_emit_begin(uuid,uuid,text)',
-    'internal.email_emit_finish(uuid,uuid,uuid,text,text,text)', 'internal.migration_flagged_keys(boolean)', 'internal.privileged_email_keys()', 'internal.collision_unresolved(text)', 'internal.user_protected(uuid)',
-    'internal.domain_protected(text,bigint)', 'internal.admin_actor(text,boolean,uuid)', 'internal.account_result(text,uuid)', 'internal.user_has_active_enrollment(uuid)', 'internal.role_has_active_enrollment(uuid,text)',
-    'internal.email_destination_taken(text,uuid)', 'internal.idem_begin(text,text,text,text,text)', 'internal.idem_finish(uuid,text,integer)', 'internal.idem_abort(uuid)', 'internal.admin_user_list(text,uuid,integer)',
-    'internal.admin_user_get(text,uuid)', 'internal.admin_user_update(text,uuid,bigint,jsonb,uuid)', 'internal.admin_user_disable(text,uuid,bigint,uuid)', 'internal.admin_user_resend(text,uuid,uuid)',
-    'internal.admin_user_create(text,uuid,text,text,text[],jsonb,jsonb,uuid)', 'internal.rate_hit(text,integer,integer)', 'internal.lock_domain_owner(text,bigint)']))));
+ -- Dono NOLOGIN (T12/D-038): TODA SECURITY DEFINER de internal/public pertence a techwoman_owner (NOLOGIN), sem lista de exceção;
+ -- nenhuma pertence a role LOGIN (migradora, runtime, mailer ou editora).
+ PERFORM pg_temp.matrix_check('toda SECURITY DEFINER de internal/public pertence a techwoman_owner NOLOGIN (sem exceção)', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_roles o ON o.oid = p.proowner WHERE p.pronamespace IN ('internal'::regnamespace, 'public'::regnamespace) AND p.prosecdef
+   AND (o.rolname <> 'techwoman_owner' OR o.rolcanlogin)));
  PERFORM pg_temp.matrix_check('tabelas/views/sequences da aplicação não pertencem a superusuária', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles o ON o.oid = c.relowner
   WHERE c.relnamespace IN ('internal'::regnamespace, 'public'::regnamespace, 'legacy_snapshot'::regnamespace) AND c.relkind IN ('r','v','S','p') AND (o.rolsuper OR o.rolbypassrls)));
  PERFORM pg_temp.matrix_check('PUBLIC sem EXECUTE em funções de internal/public da aplicação', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
