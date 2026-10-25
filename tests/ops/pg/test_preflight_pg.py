@@ -50,18 +50,21 @@ class PreflightWorld(unittest.TestCase):
         self.host = Host(self, pg_db=self.db, env=self.cluster.env())
         (self.host.ops.fake / 'pg-passthrough').write_bytes(b'')
         self.host.seal()
-        # good operator state: limits applied, other databases closed to the roles, PUBLIC without USAGE on public
+        # good operator state: limits applied, PUBLIC without USAGE on public, and other databases closed to the
+        # techwoman roles by a role-specific pg_hba rule (D-040). PUBLIC keeps its default CONNECT on every other
+        # database: the ACL of other services is NEVER changed (ARQUITETURA-EVOLUCAO-POSTGRES.md:49).
         done = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', self.db, '-f', 'ops/sql/role-limits.sql'],
                               cwd=ROOT, env=self.cluster.env(), capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.q(REMEDIATION)
-        self.reopened = []
-        for name in self.cluster.psql('postgres', "select datname from pg_database where datallowconn and not datistemplate "
-                                                  "and datname <> '%s' and has_database_privilege('public', oid, 'CONNECT')"
-                                      % self.db).split():
-            self.cluster.psql('postgres', 'revoke connect on database %s from public' % name)
-            self.reopened.append(name)
-        self.addCleanup(self.reopen)
+        self.neighbour = self.cluster.create_database('tw_pf_neighbour')  # stands for another service's database
+        self.addCleanup(self.cluster.drop_database, self.neighbour)
+        self.reopened = self.cluster.psql('postgres', "select datname from pg_database where datallowconn and not "
+                                                      "datistemplate and datname <> '%s'" % self.db).split()
+        self.public_connect = self.cluster.psql('postgres', "select count(*) from pg_database where datallowconn and not "
+                                                            "datistemplate and datname <> '%s' and has_database_privilege("
+                                                            "'public', oid, 'CONNECT')" % self.db).strip()
+        self.assertGreaterEqual(int(self.public_connect), 2)  # postgres + the neighbour: PUBLIC CONNECT left as is
         self.hba = self.cluster.data / 'pg_hba.conf'
         # the pristine pg_hba of the disposable cluster is kept once, so an interrupted run can never leave scram behind
         pristine = self.cluster.data / 'pg_hba.conf.wp005-orig'
@@ -69,13 +72,15 @@ class PreflightWorld(unittest.TestCase):
             pristine.write_bytes(self.hba.read_bytes())
         self.original_hba = pristine.read_bytes()
         self.addCleanup(self.restore_hba)
-        self.write_hba('host all postgres 127.0.0.1/32 trust\n'
-                       'host all techwoman_migrator 127.0.0.1/32 trust\n'
-                       'host all all 127.0.0.1/32 scram-sha-256\n')
+        self.write_hba(self.isolated_hba())
 
-    def reopen(self):
-        for name in self.reopened:
-            self.cluster.psql('postgres', 'grant connect on database %s to public' % name)
+    def isolated_hba(self, reject=True):
+        roles = 'techwoman_runtime,techwoman_mailer,techwoman_beatriz,techwoman_migrator'
+        return ('host all postgres 127.0.0.1/32 trust\n'
+                'host %s techwoman_migrator 127.0.0.1/32 trust\n'
+                'host %s all 127.0.0.1/32 scram-sha-256\n' % (self.db, self.db)
+                + ('host all %s 0.0.0.0/0 reject\n' % roles if reject else '')
+                + 'host all all 127.0.0.1/32 scram-sha-256\n')
 
     def write_hba(self, text):
         self.hba.write_bytes(text.encode())
@@ -123,7 +128,6 @@ class SqlChecksTests(PreflightWorld):
             ('PF-COLGRANT', 'grant select (email) on public.participant to techwoman_beatriz',
              'revoke select (email) on public.participant from techwoman_beatriz'),
             ('PF-ROLE-LIMITS', 'alter role techwoman_mailer in database %s reset lock_timeout' % self.db, None),
-            ('PF-OTHER-DB', 'grant connect on database postgres to public', 'revoke connect on database postgres from public'),
         ]
         for check, bad, undo in cases:
             with self.subTest(check=check, bad=bad):
@@ -145,6 +149,29 @@ class SqlChecksTests(PreflightWorld):
                                         'ops/sql/role-limits.sql'], cwd=ROOT, env=self.cluster.env(), check=True,
                                        capture_output=True)
         self.assertEqual(self.preflight().returncode, 88)
+
+    def test_isolation_is_effective_by_hba_without_touching_the_acl_of_other_databases(self):
+        acl = self.cluster.psql('postgres', 'select json_agg(row(datname, datacl::text) order by datname) from pg_database')
+        done = self.preflight()
+        report = self.report(done)
+        self.assertEqual(report['PF-OTHER-DB']['status'], 'pass', report['PF-OTHER-DB'])
+        self.assertRegex(report['PF-OTHER-DB']['detail'], r'^\d+ role/database connection attempts refused by pg_hba$')
+        self.assertEqual(self.cluster.psql('postgres', 'select json_agg(row(datname, datacl::text) order by datname) '
+                                                       'from pg_database'), acl, 'the ACL of other databases is untouched')
+        self.assertNotIn(self.neighbour, done.stdout + done.stderr)
+
+    def test_an_open_hba_fails_pf_other_db_even_though_the_acl_is_default(self):
+        self.write_hba(self.isolated_hba(reject=False))  # roles reach other databases (password prompt, not reject)
+        done = self.preflight()
+        self.assertEqual(done.returncode, 87, done.stderr)
+        report = self.report(done)
+        self.assertEqual(report['PF-OTHER-DB']['status'], 'fail', report['PF-OTHER-DB'])
+        self.assertRegex(report['PF-OTHER-DB']['detail'], r'not refused by pg_hba')
+        self.assertEqual({i for i in SQL_IDS if report[i]['status'] == 'fail'}, {'PF-OTHER-DB'})
+        self.assertNotIn(self.neighbour, done.stdout + done.stderr)
+        self.write_hba('host all postgres 127.0.0.1/32 trust\nhost all all 127.0.0.1/32 trust\n')  # trust: login works
+        report = self.report(self.preflight())
+        self.assertEqual(report['PF-OTHER-DB']['status'], 'fail', report['PF-OTHER-DB'])
 
     def test_trust_or_password_authentication_for_the_roles_fails_pf_hba(self):
         self.write_hba('host all postgres 127.0.0.1/32 trust\nhost all all 127.0.0.1/32 trust\n')

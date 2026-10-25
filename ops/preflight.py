@@ -19,6 +19,10 @@ SQL_IDS = ['PF-ROLE-FLAGS', 'PF-ROLE-MEMBER', 'PF-PUBLIC-SCHEMA', 'PF-PUBLIC-FUN
 HOST_IDS = ['PF-PG-PORT', 'PF-PGADMIN-TLS', 'PF-PGADMIN-COOKIE', 'PF-PGADMIN-RATE', 'PF-PGADMIN-CONN',
             'PF-BACKUP-DAILY', 'PF-RESTORE', 'PF-NGINX-REDACT', 'PF-NO-SHARED-TOUCH']
 MATRIX_EXPECTED = (581, 18, 46)
+# D-040: every techwoman role that can log in must be refused by pg_hba BEFORE authentication on every other database
+OTHER_DB_ROLES = ('techwoman_runtime', 'techwoman_mailer', 'techwoman_beatriz', 'techwoman_migrator')
+HBA_REJECTED = re.compile(r'pg_hba\.conf rejects connection|no pg_hba\.conf entry')
+DB_NAME = re.compile(r'\A[A-Za-z0-9_][A-Za-z0-9_$-]{0,62}\Z')
 MATRIX_OK = re.compile(r'MATRIX OK: (\d+) negações por privilégio executadas, (\d+) execuções permitidas, (\d+) verificações')
 DUMP_NAME = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.dump\Z')
 
@@ -43,11 +47,40 @@ def sql_checks(pg):
     for cid in SQL_IDS:
         if cid == 'PF-COLGRANT':
             continue
+        if cid == 'PF-OTHER-DB':
+            results[cid] = other_db(pg, counts.get(cid))
+            continue
         bad = (counts.get(cid) or {}).get('bad')
         results[cid] = check(cid, 'pass', '0 offending objects') if bad == 0 else \
             check(cid, 'fail', '%s offending objects' % bad if type(bad) is int else 'no answer')
     results['PF-COLGRANT'] = matrix(pg)
     return [results[cid] for cid in SQL_IDS]
+
+
+def other_db(pg, answer):
+    """PF-OTHER-DB (D-040): effective isolation, not ACL. Each techwoman login role really tries to connect over TCP,
+    without any password (-w), to each other connectable database; only a refusal by pg_hba (before authentication)
+    counts as isolated. A password prompt, an authentication failure or a successful login all mean the HBA lets the
+    role reach that database, so the check fails. Nothing is granted or revoked; database names are never printed."""
+    targets = (answer or {}).get('databases') if type(answer) is dict else None
+    if type(targets) is not list or not all(type(t) is str for t in targets):
+        return check('PF-OTHER-DB', 'fail', 'no answer')
+    if not all(DB_NAME.match(t) for t in targets):
+        return check('PF-OTHER-DB', 'fail', 'unexpected database name')
+    if not targets:
+        return check('PF-OTHER-DB', 'pass', 'no other connectable database')
+    reachable = 0
+    for role in OTHER_DB_ROLES:
+        for target in targets:
+            done = pg.runner.run(pg.prefix + ['psql', '-X', '-w', '-h', '127.0.0.1', '-U', role, '-d', target, '-At',
+                                              '-c', 'select 1'], ok=range(0, 256))
+            if not (done.returncode != 0 and HBA_REJECTED.search(done.stderr or '')):
+                reachable += 1
+    attempts = len(OTHER_DB_ROLES) * len(targets)
+    if reachable:
+        return check('PF-OTHER-DB', 'fail', '%d of %d role/database connection attempts not refused by pg_hba'
+                     % (reachable, attempts))
+    return check('PF-OTHER-DB', 'pass', '%d role/database connection attempts refused by pg_hba' % attempts)
 
 
 def matrix(pg):

@@ -45,8 +45,9 @@ FILES = {'PF-PG-PORT': ['ss-ltn.txt'], 'PF-PGADMIN-TLS': ['pgadmin-headers.txt']
          'PF-PGADMIN-CONN': ['pgadmin-servers.json'], 'PF-BACKUP-DAILY': ['backup-listing.txt', 'backup-toc.txt'],
          'PF-NGINX-REDACT': ['nginx-T.txt', 'nginx-readback.txt'],
          'PF-NO-SHARED-TOUCH': ['shared-before.txt', 'shared-after.txt']}
-SQL_OK = json.dumps({cid: {'bad': 0} for cid in ['PF-ROLE-FLAGS', 'PF-ROLE-MEMBER', 'PF-PUBLIC-SCHEMA', 'PF-PUBLIC-FUNC',
-                                                  'PF-DEFPRIV', 'PF-ROLE-LIMITS', 'PF-OTHER-DB', 'PF-HBA']})
+SQL_OK = json.dumps(dict({cid: {'bad': 0} for cid in ['PF-ROLE-FLAGS', 'PF-ROLE-MEMBER', 'PF-PUBLIC-SCHEMA',
+                                                       'PF-PUBLIC-FUNC', 'PF-DEFPRIV', 'PF-ROLE-LIMITS', 'PF-HBA']},
+                         **{'PF-OTHER-DB': {'databases': []}}))  # connection attempts: tests/ops/pg (PG16 real)
 MATRIX_OK = 'psql:<stdin>:317: NOTICE:  MATRIX OK: 581 negações por privilégio executadas, 18 execuções permitidas, 46 verificações de catálogo/efeito\n'
 
 
