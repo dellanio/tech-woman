@@ -27,7 +27,18 @@ def _cell(value):
 
 
 def _connect(path):
-    return sqlite3.connect(pathlib.Path(path).resolve().as_uri() + '?mode=ro', uri=True)
+    """Read-only connection. A WAL database in a directory this process cannot write (read-only mount) cannot get
+    its -shm file, so mode=ro alone fails; there it is opened with immutable=1, which is only exact when no WAL frame
+    is pending: a non-empty -wal in a read-only directory is refused (81) instead of silently ignoring commits."""
+    path = pathlib.Path(path).resolve()
+    uri = path.as_uri() + '?mode=ro'
+    if path.exists() and not os.access(path.parent, os.W_OK) and not pathlib.Path(str(path) + '-shm').exists():
+        wal = pathlib.Path(str(path) + '-wal')
+        if wal.exists() and wal.stat().st_size > 0:
+            raise SnapshotError(81, 'read-only directory with a pending WAL: copy db, -wal and -shm to a writable '
+                                    'directory first (the original stays untouched)')
+        uri += '&immutable=1'
+    return sqlite3.connect(uri, uri=True)
 
 
 def _checks(connection):

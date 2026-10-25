@@ -30,8 +30,11 @@ hash do pacote (`ops_package`). Alterar qualquer arquivo de `ops/` muda o hash e
 3. `/var/lib/tech-woman-cutover` `root:root 0700`; `candidate.json` `0644`.
 4. Env files separados em `TW_ENV_DIR`: `web.env` (sem `MIGRATION_DATABASE_URL`/`MAILER_DATABASE_URL`), `mailer.env`
    (sem `MIGRATION_DATABASE_URL`), `migrator.env`. Só os **nomes** de variáveis são conferidos; valores nunca são lidos.
-5. Confirmar/ajustar em `paths.env` (valores ainda presumidos): `TW_PG_CONTAINER`, `TW_PG_DB`, `TW_PG_DUMP_USER`,
-   `TW_PG_ADMIN_USER`, `TW_CRON_PATHS`. Qualquer ajuste exige novo `seal`.
+5. Conferir `paths.env` contra o inventário do host (OPS-001, leitura read-only, e inventario-oci):
+   `TW_PG_CONTAINER=postgres` (container PostgreSQL 16 compartilhado, `127.0.0.1:5432`),
+   `TW_NETWORK=dellaniocom_default`, `TW_PG_DB=techwoman`. Ainda presumidos, a confirmar no readback do OPS-002:
+   `TW_PG_DUMP_USER`, `TW_PG_ADMIN_USER`, `TW_CRON_PATHS`. Qualquer ajuste exige novo `seal`
+   (`tests/ops/test_ops_inventory.py` fixa os três valores inventariados).
 
 ### Roles do PostgreSQL que o operador cria/ajusta
 - **Backup só-leitura (`TW_PG_DUMP_USER` = `backup_techwoman`)**: `CREATE ROLE backup_techwoman LOGIN BYPASSRLS;`
@@ -50,15 +53,33 @@ hash do pacote (`ops_package`). Alterar qualquer arquivo de `ops/` muda o hash e
   581/18/46 verde depois dela) é:
   `REVOKE USAGE ON SCHEMA public FROM PUBLIC; GRANT USAGE ON SCHEMA public TO techwoman_runtime, techwoman_mailer,
   techwoman_migrator, techwoman_owner, techwoman_beatriz;` — revogar sem os GRANTs quebra `internal.validate_agenda_state`.
-- **Outras bases**: `REVOKE CONNECT ON DATABASE <outra> FROM PUBLIC` onde as roles do Tech Woman não devem entrar
-  (o preflight conta, sem imprimir nomes).
+- **Outras bases (D-040)**: **nunca** alterar a ACL de bases de outros serviços (`portal_glosas`, `postgres`, …):
+  `PUBLIC` mantém o `CONNECT` padrão. O isolamento é feito **só** no `pg_hba.conf`, com regras específicas das roles
+  do Tech Woman: primeiro as linhas que as admitem **na base techwoman** (`scram-sha-256`), depois uma linha
+  `host all techwoman_runtime,techwoman_mailer,techwoman_beatriz,techwoman_migrator 0.0.0.0/0 reject` (e a
+  equivalente `::/0` se houver IPv6), **antes** de qualquer regra genérica `all`. As regras dos outros serviços ficam
+  como estão; `pg_ctl reload`/`select pg_reload_conf()` depois, nunca restart. `PF-OTHER-DB` prova o isolamento
+  **efetivo**: cada role tenta conectar de verdade (TCP, sem senha) a cada outra base e só conta como isolada a
+  recusa do `pg_hba` antes da autenticação; pedido de senha, falha de senha ou login aceito = fail (nomes de bases
+  nunca impressos).
 - **pg_hba**: a primeira regra TCP que alcança runtime/mailer/editora na base techwoman deve ser `scram-sha-256` (ou `cert`).
 
 ## 3. Fases e transições (`state.json`)
 
-`prepared → frozen → snapshotted → imported → activated → smoke_ok → pg_write_open`; `frozen|snapshotted|imported →
-aborted_pre_write`; `activated|smoke_ok|pg_write_open → recovering`; `recovering → pg_write_open` (recuperação provada);
-`prepared → prepared` (registro do stage) e `pg_write_open → pg_write_open` (release, rebind, primeiro write).
+`prepared → frozen → snapshotted → imported → activated → smoke_ok → pg_write_opening → pg_write_open`;
+`frozen|snapshotted|imported → aborted_pre_write`; `activated|smoke_ok|pg_write_opening|pg_write_open → recovering`;
+`recovering → pg_write_open` (recuperação provada); `prepared → prepared` (registro do stage),
+`pg_write_opening → pg_write_opening` (progresso da publicação, primeiro write) e `pg_write_open → pg_write_open`
+(release, rebind, primeiro write).
+
+**`pg_write_opening` (D-039, T16):** o `open-writes` mede o baseline e grava **antes de qualquer exposição** a fase
+`pg_write_opening` com baseline/ponto de corte do 1º write, `known_pg_images`, `last_good_pg_image` e o schema. Cada
+passo concluído da publicação (`switch` = manutenção removida + rede/IP/alias + rename para `tech-woman`; `mailer`)
+fica registrado em `opening.done`. Falha no meio ⇒ a fase continua `pg_write_opening` (deploys negados, 75) e o
+operador escolhe: **repetir `open-writes`** (retoma sem refazer passos concluídos; se `tech-woman` já roda a imagem PG,
+nada é removido nem renomeado; o baseline não é medido de novo) ou **`recover --mode restart|reconcile`** (aceito nessa
+fase; o restart cria o mailer se ele nunca foi criado). `record-first-write` também é aceito. Nunca volta ao SQLite e
+nunca há restore destrutivo automático.
 Qualquer outra transição sai 75. **Nenhuma** transição volta de uma fase pós-ativação para o SQLite.
 
 ## 4. Runbook do corte (sempre no host, nunca pelo CI)
@@ -75,8 +96,8 @@ Qualquer outra transição sai 75. **Nenhuma** transição volta de uma fase pó
 | 8 | `cutover.py import-verify` | relatório do importador real limpo duas vezes, mesmo `runId` | `imported` (ou abort pré-write, SQLite restaurado) |
 | 9 | `cutover.py activate` | janela | migrador + web PG ao lado da página 503 |
 | 10 | `cutover.py smoke` | — | GET interno read-only |
-| 11 | `cutover.py open-writes` | janela | baseline, tráfego no web PG (mesmo IP/alias), mailer depois |
-| 12 | `cutover.py record-first-write` | — | tipo+hora do 1º write auditado acima do baseline (sem PII) |
+| 11 | `cutover.py open-writes` | janela | baseline durável (`pg_write_opening`) **antes** de expor; tráfego no web PG (mesmo IP/alias), mailer depois, smoke ⇒ `pg_write_open`; falha ⇒ repetir (idempotente) ou `recover` |
+| 12 | `cutover.py record-first-write` | `pg_write_opening` ou `pg_write_open` | tipo+hora do 1º write auditado acima do baseline (sem PII) |
 | 13 | release de código: novo `seal` (mesmo schema) → `cutover.py rebind` → (GitHub) `deploy.sh` **release** → `cutover.py register-release < atestado.json` | schema igual, imagem atestada | backup `pg_dump` antes de qualquer efeito; troca no lugar; rollback só para `last_good_pg_image` |
 
 Release (passo 13), ordem garantida pelo `deploy.sh`: gate → login/pull/verify → `release-check` (a web em execução tem de
@@ -153,6 +174,12 @@ maintenance page kept”); no `abort` a fase não muda e o SQLite continua prote
   ferramenta). Nada é apagado do texto além de comentários e da linha `\restrict`: `a AND (b OR c)` ≠ `(a AND b) OR c`
   (provado em PG16: CHECK reagrupado com os mesmos dados ⇒ `schema_equal:false`, 86). Bases `<db>_restore_*` ficam para
   inspeção; o operador as remove.
+
+**Snapshot de leitura em pasta só leitura (OPS-001 #2):** `ops/snapshot.py` abre a origem com `mode=ro`; se o
+diretório não é gravável e não há `-shm`, usa `immutable=1` — só quando o `-wal` está ausente ou vazio. Com `-wal`
+pendente nessa situação sai **81** (nada é lido pela metade). `scripts/migration/snapshot.py --read` (fora do pacote
+`ops/`) continua exigindo pasta gravável: copie `db`, `-wal` e `-shm` para um diretório gravável e leia a cópia; o
+original fica intacto.
 
 ## 7. Preflight (C8, S12)
 

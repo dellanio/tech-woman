@@ -29,7 +29,7 @@ function applyLimits(url: string, vars: Record<string, string> = {}) {
 }
 async function settings(db: Pool) {
   return (await db.query(`select r.rolname role, d.datname db, s.setconfig cfg from pg_db_role_setting s
-    join pg_roles r on r.oid=s.setrole left join pg_database d on d.oid=s.setdatabase where r.rolname = any($1) order by 1`, [ROLES])).rows;
+    join pg_roles r on r.oid=s.setrole left join pg_database d on d.oid=s.setdatabase where r.rolname = any($1) order by 1, 2, s.setconfig::text`, [ROLES])).rows;
 }
 async function login<T>(url: string, role: string, fn: (c: Client) => Promise<T>) {
   const c = new Client({connectionString: loginUrl(url, role)}); await c.connect();

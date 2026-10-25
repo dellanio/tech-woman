@@ -5,9 +5,9 @@ from tests.ops.hostfixture import Host
 
 cutover = harness.load_ops_module('cutover')
 ORIGINAL = 'tech-woman-sqlite-original'
-POST_ACTIVATION = ['activated', 'smoke_ok', 'pg_write_open', 'recovering']
+POST_ACTIVATION = ['activated', 'smoke_ok', 'pg_write_opening', 'pg_write_open', 'recovering']
 # operator commands that are the legitimate next step of each phase (they have their own tests)
-VALID_NEXT = {'activated': {'smoke'}, 'smoke_ok': {'open-writes'}, 'pg_write_open': set(), 'recovering': set()}
+VALID_NEXT = {'activated': {'smoke'}, 'smoke_ok': {'open-writes'}, 'pg_write_opening': {'open-writes'}, 'pg_write_open': set(), 'recovering': set()}
 COMMANDS = {
     'prepare': [], 'freeze': ['--quiet-seconds', '1'], 'snapshot': [], 'import-verify': [],
     'activate': [], 'smoke': [], 'open-writes': [], 'abort': ['--reason', 'operator-decision'],
@@ -19,7 +19,8 @@ class NoSqliteFallbackTests(unittest.TestCase):
         self.addCleanup(host.sqlite()[1].close)
         candidate, state = host.imported()
         path = {'activated': ['activated'], 'smoke_ok': ['activated', 'smoke_ok'],
-                'pg_write_open': ['activated', 'smoke_ok', 'pg_write_open'],
+                'pg_write_opening': ['activated', 'smoke_ok', 'pg_write_opening'],
+                'pg_write_open': ['activated', 'smoke_ok', 'pg_write_opening', 'pg_write_open'],
                 'recovering': ['activated', 'recovering']}[phase]
         for step in path:
             state.transition(step, '2026-10-23T12:00:00Z')
@@ -42,7 +43,7 @@ class NoSqliteFallbackTests(unittest.TestCase):
     def test_the_transition_table_has_no_edge_from_a_post_activation_phase_to_a_pre_write_one(self):
         for source, target in cutover.TRANSITIONS:
             if source in POST_ACTIVATION:
-                self.assertIn(target, {'smoke_ok', 'pg_write_open', 'recovering'}, (source, target))
+                self.assertIn(target, {'smoke_ok', 'pg_write_opening', 'pg_write_open', 'recovering'}, (source, target))
         self.assertNotIn(ORIGINAL, repr(cutover.TRANSITIONS))
 
 

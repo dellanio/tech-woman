@@ -84,7 +84,9 @@ def canonical_schema(pg, db, workdir, stamp):
 
 
 def _json(text):
-    lines = [line for line in text.splitlines() if line.strip()]
+    lines = [line for line in (text or '').splitlines() if line.strip()]
+    if not lines:  # an empty answer proves nothing: callers turn ValueError into "not readable" (fail closed)
+        raise ValueError('psql printed no JSON answer')
     return json.loads(lines[-1])
 
 
@@ -113,6 +115,8 @@ def live_facts(pg, baseline):
            % (counts, audit_max, SEQUENCES_BEHIND.strip()))
     try:
         facts = _json(pg.read_only(sql, error='the live database is not readable'))
+        if type(facts) is not dict or type(facts.get('audit_after_baseline')) is not int:
+            raise ValueError('unexpected answer from the live database')
     except (hostops.HostError, ValueError) as error:
         raise Unreadable(str(error))
     facts['first_write_present'] = facts['audit_after_baseline'] >= 1

@@ -213,6 +213,7 @@ def _pg_open(host, last_good=OLD_PG_DIGEST, known=(OLD_PG_DIGEST,), schema_aggre
     candidate, state = _imported(host)
     state.transition('activated', NOW_FIXED, activation={'digest': OLD_PG_DIGEST, 'container': 'tech-woman-web-pg', 'at': NOW_FIXED})
     state.transition('smoke_ok', NOW_FIXED)
+    state.transition('pg_write_opening', NOW_FIXED)
     aggregate = schema_aggregate or candidate['migrations']['aggregate_sha256']
     state.transition('pg_write_open', NOW_FIXED, known_pg_images=list(known), last_good_pg_image=last_good,
                      schema_migrations={'aggregate_sha256': aggregate},

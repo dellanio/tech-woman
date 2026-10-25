@@ -1,6 +1,8 @@
 -- WP-005 S12: read-only T12 checks of the techwoman database (run by ops/preflight.py inside READ ONLY).
 -- One JSON object, one entry per stable check id, each with the number of offending objects ("bad"). Only counts
--- leave the database: no role password, no other database name, no row content.
+-- leave the database (no role password, no row content), except PF-OTHER-DB: the names of the other connectable
+-- databases go to ops/preflight.py, which tries a REAL connection of each techwoman role to each of them (D-040) and
+-- prints only counts; a name is never printed.
 with roles(r) as (values ('techwoman_runtime'), ('techwoman_mailer'), ('techwoman_beatriz'))
 select json_build_object(
  'PF-ROLE-FLAGS', json_build_object('bad',
@@ -30,10 +32,11 @@ select json_build_object(
          and s.setdatabase = (select oid from pg_database where datname = current_database())
          and split_part(c, '=', 1) in ('lock_timeout', 'statement_timeout', 'idle_in_transaction_session_timeout')
          and split_part(c, '=', 2) !~ '^0+([a-z]+)?$') <> 3)),
- 'PF-OTHER-DB', json_build_object('bad',
-   (select count(*) from pg_database d
-     where d.datallowconn and not d.datistemplate and d.datname <> current_database()
-       and exists (select 1 from roles where has_database_privilege(roles.r, d.oid, 'CONNECT')))),
+ -- D-040: no ACL predicate (PUBLIC keeps CONNECT on databases of other services and is never revoked here);
+ -- isolation is proven by the connection attempts of ops/preflight.py against these targets.
+ 'PF-OTHER-DB', json_build_object('databases',
+   (select coalesce(json_agg(d.datname order by d.datname), '[]'::json) from pg_database d
+     where d.datallowconn and not d.datistemplate and d.datname <> current_database())),
  -- pg_hba: no broken line, and the FIRST TCP rule reaching each role for this database demands scram-sha-256/cert
  'PF-HBA', json_build_object('bad',
    (select count(*) from pg_hba_file_rules where error is not null)

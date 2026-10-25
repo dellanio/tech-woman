@@ -63,6 +63,7 @@ class RecoveryWorld(unittest.TestCase):
         state.transition('activated', NOW_FIXED, activation={'digest': OLD_PG_DIGEST, 'container': 'tech-woman-web-pg',
                                                              'at': NOW_FIXED})
         state.transition('smoke_ok', NOW_FIXED)
+        state.transition('pg_write_opening', NOW_FIXED)
         self.baseline = json.loads(self.q(BASELINE))
         state.transition('pg_write_open', NOW_FIXED, known_pg_images=[OLD_PG_DIGEST], last_good_pg_image=OLD_PG_DIGEST,
                          schema_migrations={'aggregate_sha256': candidate['migrations']['aggregate_sha256']},

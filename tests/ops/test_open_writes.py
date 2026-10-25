@@ -86,7 +86,8 @@ class OpenWritesTests(OpenWritesTestCase):
         (self.host.ops.fake / 'rename.rc').write_bytes(b'1')
         done = self.host.cutover('open-writes')
         self.assertEqual(done.returncode, 83, done.stderr)
-        self.assertEqual(self.state().phase, 'smoke_ok')
+        self.assertEqual(self.state().phase, 'pg_write_opening')  # D-039: baseline durable, recover accepted
+        self.assertEqual(self.state().data['first_pg_write']['baseline'], BASELINE)
         self.assertNotIn('tech-woman-sqlite-original', [x for a in docker(self.host.cutover_calls()) for x in a])
 
 

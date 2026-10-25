@@ -34,11 +34,13 @@ class CreateAndLoadTests(StateTestCase):
         self.assertEqual(caught.exception.code, 75)
 
 
-PHASES = ['prepared', 'frozen', 'snapshotted', 'imported', 'activated', 'smoke_ok', 'pg_write_open',
-          'aborted_pre_write', 'recovering']
+PHASES = ['prepared', 'frozen', 'snapshotted', 'imported', 'activated', 'smoke_ok', 'pg_write_opening',
+          'pg_write_open', 'aborted_pre_write', 'recovering']
 ALLOWED = {
     ('prepared', 'prepared'), ('prepared', 'frozen'), ('frozen', 'snapshotted'), ('snapshotted', 'imported'),
-    ('imported', 'activated'), ('activated', 'smoke_ok'), ('smoke_ok', 'pg_write_open'),
+    ('imported', 'activated'), ('activated', 'smoke_ok'), ('smoke_ok', 'pg_write_opening'),
+    ('pg_write_opening', 'pg_write_opening'), ('pg_write_opening', 'pg_write_open'),
+    ('pg_write_opening', 'recovering'),
     ('frozen', 'aborted_pre_write'), ('snapshotted', 'aborted_pre_write'), ('imported', 'aborted_pre_write'),
     ('activated', 'recovering'), ('smoke_ok', 'recovering'), ('pg_write_open', 'recovering'),
     ('pg_write_open', 'pg_write_open'), ('recovering', 'pg_write_open'),

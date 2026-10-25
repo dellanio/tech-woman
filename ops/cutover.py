@@ -60,7 +60,10 @@ TRANSITIONS = {
     ('snapshotted', 'imported'): 'operator import-verify',
     ('imported', 'activated'): 'operator activate',
     ('activated', 'smoke_ok'): 'operator smoke',
-    ('smoke_ok', 'pg_write_open'): 'operator open-writes',
+    ('smoke_ok', 'pg_write_opening'): 'operator open-writes: baseline/cutoff durable before any exposure',
+    ('pg_write_opening', 'pg_write_opening'): 'operator open-writes progress / record-first-write',
+    ('pg_write_opening', 'pg_write_open'): 'operator open-writes completed',
+    ('pg_write_opening', 'recovering'): 'operator recover of a partial switch',
     ('frozen', 'aborted_pre_write'): 'abort before any PG write',
     ('snapshotted', 'aborted_pre_write'): 'abort before any PG write',
     ('imported', 'aborted_pre_write'): 'abort before any PG write',
@@ -109,7 +112,7 @@ def _check_ownership(directory, policy):
 PHASES = {phase for pair in TRANSITIONS for phase in pair}
 REQUIRED_KEYS = {'schema', 'seq', 'prev_sha256', 'phase', 'candidate_sha256'}
 OPTIONAL_KEYS = {'staged', 'window', 'freeze', 'snapshot', 'import', 'activation', 'known_pg_images',
-                 'last_good_pg_image', 'schema_migrations', 'first_pg_write', 'abort', 'recovery'}
+                 'last_good_pg_image', 'schema_migrations', 'first_pg_write', 'abort', 'recovery', 'opening'}
 JOURNAL_KEYS = {'seq', 'phase', 'from', 'at', 'state_sha256', 'prev_entry_sha256'}
 HEX64 = re.compile(r'\A[0-9a-f]{64}\Z')
 
@@ -681,10 +684,33 @@ def _baseline(text):
     return data
 
 
+def _running_image(runner, name):
+    """Image of a container, '' when it does not exist (or cannot be inspected)."""
+    done = runner.run(['docker', 'inspect', name, '--format', '{{.Config.Image}}'], ok=(0, 1))
+    return done.stdout.strip().split('|')[0] if done.returncode == 0 else ''
+
+
+def _mailer_argv(paths, image):
+    env_dir = pathlib.Path(paths['TW_ENV_DIR'])
+    return ['docker', 'run', '-d', '--name', 'tech-woman-mailer', '--restart', 'unless-stopped', '--network',
+            paths['TW_NETWORK'], '--env-file', str(env_dir / 'mailer.env'), '--workdir', '/tools', '--memory', '256m',
+            '--cpus', '0.25', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--entrypoint', 'node',
+            image, '--import', 'tsx', 'scripts/email-worker.ts']
+
+
 def cmd_open_writes(paths, flags):
-    """smoke_ok -> pg_write_open: baseline, public traffic to the PG web (same IP/alias), then the mailer."""
+    """smoke_ok -> pg_write_opening -> pg_write_open (D-039).
+
+    The baseline (cut-off point for the first PostgreSQL write), the known PG image and the schema are made durable
+    in pg_write_opening BEFORE the maintenance page is removed, so a failure anywhere in the publication leaves a
+    phase that recover and record-first-write accept. Repeating open-writes in pg_write_opening resumes
+    idempotently: finished steps (recorded in the state, or observed on the host) are not redone and the renamed PG
+    web is never removed. Never back to SQLite, never an automatic restore."""
     manifest = _manifest()
-    state, candidate = _sealed_state(paths, manifest, 'smoke_ok')
+    phase = State.load(paths['TW_STATE_DIR'], _policy(paths)).phase
+    if phase not in ('smoke_ok', 'pg_write_opening'):
+        raise StateError(75, 'phase %s does not allow this command' % phase)
+    state, candidate = _sealed_state(paths, manifest, phase)
     hostops = _sibling('hostops')
     runner = hostops.Runner(paths)
     now = _now()
@@ -693,33 +719,53 @@ def cmd_open_writes(paths, flags):
         raise StateError(73, 'outside the authorised window')
     image, network = _staged_image(state), paths['TW_NETWORK']
     env_dir, web = pathlib.Path(paths['TW_ENV_DIR']), state.data['activation']['container']
-    base = ['docker', 'run', '--rm', '--network', network, '--env-file', str(env_dir / 'migrator.env'), '--workdir',
-            '/tools', '--memory', '256m', '--cpus', '0.5', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
-            '--entrypoint', 'node', image, '-e', BASELINE_SCRIPT]
-    try:
-        baseline = _baseline(runner.run(base, error='baseline query failed').stdout)
-    except hostops.HostError as error:
-        raise StateError(82, str(error))
-    except ValueError as error:
-        raise StateError(82, str(error))
+    digest = state.data['staged']['digest']
+    if state.phase == 'smoke_ok':
+        base = ['docker', 'run', '--rm', '--network', network, '--env-file', str(env_dir / 'migrator.env'), '--workdir',
+                '/tools', '--memory', '256m', '--cpus', '0.5', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
+                '--entrypoint', 'node', image, '-e', BASELINE_SCRIPT]
+        try:
+            baseline = _baseline(runner.run(base, error='baseline query failed').stdout)
+        except hostops.HostError as error:
+            raise StateError(82, str(error))
+        except ValueError as error:
+            raise StateError(82, str(error))
+        state.transition('pg_write_opening', now, known_pg_images=[digest], last_good_pg_image=digest,
+                         schema_migrations={'aggregate_sha256': candidate['migrations']['aggregate_sha256']},
+                         first_pg_write={'at': None, 'kind': None, 'baseline': baseline},
+                         opening={'started_at': now, 'done': []})
+    done = list((state.data.get('opening') or {}).get('done') or [])
+
+    def mark(step):
+        done.append(step)
+        state.transition('pg_write_opening', _now(), opening=dict(state.data.get('opening') or {}, done=list(done)))
+
     ip = state.data['freeze']['ip']
     try:
-        runner.run(['docker', 'rm', '-f', 'tech-woman'], error='cannot remove the maintenance container')
-        runner.run(['docker', 'network', 'disconnect', network, web], error='cannot detach the PG web')
-        runner.run(['docker', 'network', 'connect', '--ip', ip, '--alias', 'app', network, web],
-                   error='cannot attach the PG web to the public address')
-        runner.run(['docker', 'rename', web, 'tech-woman'], error='cannot rename the PG web')
-        runner.run(['docker', 'run', '-d', '--name', 'tech-woman-mailer', '--restart', 'unless-stopped', '--network',
-                    network, '--env-file', str(env_dir / 'mailer.env'), '--workdir', '/tools', '--memory', '256m',
-                    '--cpus', '0.25', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--entrypoint', 'node',
-                    image, '--import', 'tsx', 'scripts/email-worker.ts'], error='the mailer could not start')
-        runner.run(['docker', 'exec', 'tech-woman', 'node', '-e', SMOKE_SCRIPT], error='internal smoke after the switch failed')
+        if 'switch' not in done:
+            public = _running_image(runner, 'tech-woman')
+            if public != image:  # not renamed yet: whatever answers as tech-woman is the maintenance page
+                if public:
+                    runner.run(['docker', 'rm', '-f', 'tech-woman'], error='cannot remove the maintenance container')
+                runner.run(['docker', 'network', 'disconnect', network, web], ok=(0, 1),
+                           error='cannot detach the PG web')
+                runner.run(['docker', 'network', 'connect', '--ip', ip, '--alias', 'app', network, web],
+                           error='cannot attach the PG web to the public address')
+                runner.run(['docker', 'rename', web, 'tech-woman'], error='cannot rename the PG web')
+            mark('switch')
+        if 'mailer' not in done:
+            if _running_image(runner, 'tech-woman-mailer') == image:
+                runner.run(['docker', 'start', 'tech-woman-mailer'], error='the mailer could not start')
+            else:
+                runner.run(_mailer_argv(paths, image), error='the mailer could not start')
+            mark('mailer')
+        runner.run(['docker', 'exec', 'tech-woman', 'node', '-e', SMOKE_SCRIPT],
+                   error='internal smoke after the switch failed')
     except hostops.HostError as error:
-        raise StateError(error.code, 'the switch to PostgreSQL stopped (never back to SQLite): %s' % error)
-    digest = state.data['staged']['digest']
-    state.transition('pg_write_open', now, known_pg_images=[digest], last_good_pg_image=digest,
-                     schema_migrations={'aggregate_sha256': candidate['migrations']['aggregate_sha256']},
-                     first_pg_write={'at': None, 'kind': None, 'baseline': baseline})
+        raise StateError(error.code, 'the switch to PostgreSQL stopped in phase pg_write_opening (never back to '
+                                     'SQLite; the baseline is recorded): repeat open-writes or run recover: %s' % error)
+    state.transition('pg_write_open', _now(), opening=dict(state.data.get('opening') or {}, done=list(done),
+                                                           completed_at=_now()))
     print(json.dumps({'phase': 'pg_write_open'}))
 
 
@@ -799,8 +845,8 @@ def cmd_register_release(paths, flags):
 def cmd_record_first_write(paths, flags):
     """pg_write_open: record kind and UTC time of the first audited PostgreSQL change above the baseline, once."""
     state = State.load(paths['TW_STATE_DIR'], _policy(paths))
-    if state.phase != 'pg_write_open':
-        raise StateError(75, 'record-first-write needs phase pg_write_open')
+    if state.phase not in ('pg_write_open', 'pg_write_opening'):
+        raise StateError(75, 'record-first-write needs phase pg_write_open or pg_write_opening')
     first = state.data.get('first_pg_write') or {}
     if first.get('kind'):
         raise StateError(75, 'the first PostgreSQL write is already recorded')
@@ -819,12 +865,12 @@ def cmd_record_first_write(paths, flags):
             and re.fullmatch(r'[a-z_]{1,40}\.[a-z_]{1,40}', str(found['kind']))
             and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', str(found['at']))):
         raise StateError(70, 'unexpected first-write description')
-    state.transition('pg_write_open', _now(), first_pg_write={'at': found['at'], 'kind': found['kind'],
+    state.transition(state.phase, _now(), first_pg_write={'at': found['at'], 'kind': found['kind'],
                                                               'baseline': baseline})
     print(json.dumps({'first_pg_write': found}))
 
 
-RECOVERY_PHASES = ('pg_write_open', 'recovering')
+RECOVERY_PHASES = ('pg_write_open', 'pg_write_opening', 'recovering')
 
 
 def _no_proof(paths, candidate, reason):
@@ -870,7 +916,11 @@ def _recover_restart(paths, state, candidate, now):
         raise StateError(76, 'the web container is not a known PostgreSQL image; it is never restarted')
     try:
         runner.run(['docker', 'start', 'tech-woman'], error='cannot start the PostgreSQL web')
-        runner.run(['docker', 'start', 'tech-woman-mailer'], error='cannot start the mailer')
+        if 'mailer' in ((state.data.get('opening') or {}).get('done') or ['mailer']) \
+                or _running_image(runner, 'tech-woman-mailer'):
+            runner.run(['docker', 'start', 'tech-woman-mailer'], error='cannot start the mailer')
+        else:  # partial switch (pg_write_opening): the mailer was never created
+            runner.run(_mailer_argv(paths, _staged_image(state)), error='cannot start the mailer')
         runner.run(['docker', 'exec', 'tech-woman', 'node', '-e', SMOKE_SCRIPT], error='internal smoke failed')
     except hostops.HostError as error:
         raise StateError(77, 'recovery stopped on PostgreSQL (never SQLite): %s' % error)
@@ -958,7 +1008,7 @@ def cmd_recover(paths, flags):
     manifest = _manifest()
     state = State.load(paths['TW_STATE_DIR'], _policy(paths))
     if state.phase not in RECOVERY_PHASES:
-        raise StateError(75, 'recover needs phase pg_write_open or recovering')
+        raise StateError(75, 'recover needs phase pg_write_open, pg_write_opening or recovering')
     candidate = _sealed_candidate(paths, manifest)
     now = _now()
     if mode == 'compare':
@@ -967,7 +1017,7 @@ def cmd_recover(paths, flags):
         if not report['equal']:
             raise StateError(86, 'the dump differs from the live database (see the report)')
         return
-    if state.phase == 'pg_write_open':
+    if state.phase in ('pg_write_open', 'pg_write_opening'):
         state.transition('recovering', now, recovery={'mode': mode, 'started_at': now, 'result': 'in-progress'})
     if mode == 'restart':
         facts = _recover_restart(paths, state, candidate, now)

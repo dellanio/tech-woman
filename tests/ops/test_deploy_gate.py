@@ -117,7 +117,7 @@ class PhaseMatrixTests(GateTestCase):
                 self.assertEqual(json.loads(result.stdout)['attestation']['phase'], phase)
         self.assertEqual(outcomes, {
             'prepared': 0, 'frozen': 75, 'snapshotted': 75, 'imported': 75, 'activated': 75, 'smoke_ok': 75,
-            'pg_write_open': 72, 'aborted_pre_write': 75, 'recovering': 75})
+            'pg_write_opening': 75, 'pg_write_open': 72, 'aborted_pre_write': 75, 'recovering': 75})
 
     def test_pg_write_open_is_a_release_and_ignores_the_stage_window(self):
         self.host.window = {'authorized': -7200, 'expires': -3600}  # the stage window is long over
