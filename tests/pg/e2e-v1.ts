@@ -14,6 +14,7 @@ import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {cpSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync,existsSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {createServer} from 'node:net';
 import {Pool} from 'pg';
 
 const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
@@ -33,6 +34,8 @@ function client(origin:string){
   return {status:res.status,json:text?JSON.parse(text):null,cookie:m&&m[1]?m[1]:null};
  };
 }
+/** INT-006: porta livre do SO (bind :0). A faixa sorteada 55300..55389 colidia com o cluster das ops do CI (55346). */
+function freePort(){return new Promise<number>((ok,fail)=>{const s=createServer();s.once('error',fail);s.listen(0,'127.0.0.1',()=>{const a=s.address();s.close(()=>typeof a==='object'&&a?ok(a.port):fail(new Error('sem porta')));});});}
 async function waitUp(origin:string,proc?:ChildProcess){
  for(let i=0;i<240;i++){
   try{const r=await fetch(origin+'/api/v1/auth/session');if(r.status<500)return;}catch{}
@@ -97,7 +100,7 @@ async function selfManaged(){
  const hide=(t:string)=>Object.values(pw).reduce((x,s)=>x.split(s).join('<redacted>'),t);
  await control.query(`create database ${db}`);
  const admin=new Pool({connectionString:urlFor()});let web:ChildProcess|undefined;
- const port=String(55300+Math.floor(Math.random()*90));const origin=`http://127.0.0.1:${port}`;
+ const port=String(await freePort());const origin=`http://127.0.0.1:${port}`;let webErr='';
  try{
   const boot=spawnSync('psql',['-X','-q','-v','ON_ERROR_STOP=1','-f','scripts/migration/bootstrap-local.sql',urlFor()],{encoding:'utf8',env:{...process.env,...pw}});
   assert.equal(boot.status,0,'bootstrap-local.sql: '+hide((boot.stdout??'')+(boot.stderr??'')));
@@ -109,7 +112,9 @@ async function selfManaged(){
   cpSync('public','.next/standalone/public',{recursive:true});cpSync('.next/static','.next/standalone/.next/static',{recursive:true});
   const env:NodeJS.ProcessEnv={PATH:process.env.PATH,NODE_ENV:'production',PORT:port,HOSTNAME:'127.0.0.1',DATABASE_URL:urlFor('techwoman_runtime',pw.RUNTIME_PASSWORD),APP_ORIGIN:origin,SESSION_SECRET:randomBytes(48).toString('hex'),EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',ALLOW_LOCAL_HTTP:'1',NEXT_TELEMETRY_DISABLED:'1'};
   for(const k of Object.keys(env))assert.ok(!/MIGRATION|MAILER/.test(k),'web sem credencial migradora/mailer');
-  const start=async()=>{web=spawn(process.execPath,['.next/standalone/server.js'],{env,stdio:'ignore'});await waitUp(origin,web);};
+  const start=async()=>{web=spawn(process.execPath,['.next/standalone/server.js'],{env,stdio:['ignore','ignore','pipe']});webErr='';
+   web.stderr!.on('data',(c:Buffer)=>{webErr=(webErr+c.toString()).slice(-2000);});
+   try{await waitUp(origin,web);}catch(error){throw new Error(`${(error as Error).message} (porta ${port}): ${hide(webErr)}`);}};
   const stop=async()=>{if(web&&web.exitCode===null){const w=web;w.kill('SIGTERM');await new Promise<void>(r=>w.once('exit',()=>r()));}};
   await start();
   const http=client(origin);const mailerUrl=urlFor('techwoman_mailer',pw.MAILER_PASSWORD);
