@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Read-only inspection only; anything else is a tripwire. Output comes from $TW_FAKE_DIR/timers.
+source "$(dirname "$0")/_common.sh"
+case "${1:-}" in
+  is-active)
+    tw_log systemctl false "$@"
+    f="${TW_FAKE_DIR:-/nonexistent}/active/${2:-}"
+    if [[ -f "$f" ]]; then cat "$f"; [[ "$(cat "$f")" == active ]] && exit 0; exit 3; fi
+    echo inactive
+    exit 3 ;;
+  list-timers|list-unit-files|list-units)
+    tw_log systemctl false "$@"
+    scenario=timers
+    [[ "$1" == list-unit-files ]] && scenario=unit-files
+    [[ "$1" == list-units ]] && scenario=units
+    [[ -f "${TW_FAKE_DIR:-/nonexistent}/$scenario" ]] && cat "$TW_FAKE_DIR/$scenario"
+    exit 0 ;;
+esac
+tw_log systemctl true "$@"
+echo "tripwire: systemctl ${1:-} must never run in tests" >&2
+exit 99

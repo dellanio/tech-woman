@@ -1,12 +1,71 @@
+# Desenvolvimento local sintético; não usar como provisionamento de produção.
 services:
-  app:
-    build: .
-    env_file: .env
+  postgres:
+    image: postgres:16-bookworm
     environment:
-      DATABASE_PATH: /app/data/tech-woman.db
-      NODE_ENV: production
-      ALLOW_LOCAL_HTTP: "1"
-    ports:
-      - "3000:3000"
+      POSTGRES_DB: techwoman
+      POSTGRES_USER: techwoman_bootstrap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?configure .env local}
+      MIGRATOR_PASSWORD: ${MIGRATOR_PASSWORD:?configure .env local}
+      RUNTIME_PASSWORD: ${RUNTIME_PASSWORD:?configure .env local}
+      MAILER_PASSWORD: ${MAILER_PASSWORD:?configure .env local}
+    ports: ["127.0.0.1:55432:5432"]
     volumes:
-      - ./data:/app/data
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/migration/bootstrap-local.sql:/docker-entrypoint-initdb.d/001-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U techwoman_bootstrap -d techwoman"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  migrate:
+    build: .
+    image: techwoman-wp001-local
+    working_dir: /tools
+    command: ["node", "--import", "tsx", "scripts/migration/migrate.ts"]
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://techwoman_migrator:${MIGRATOR_PASSWORD}@postgres:5432/techwoman
+      LOCAL_ROLE_SETUP: "1"
+    depends_on:
+      postgres: {condition: service_healthy}
+  seed:
+    image: techwoman-wp001-local
+    working_dir: /tools
+    command: ["node", "--import", "tsx", "scripts/seed-demo.ts"]
+    environment:
+      DATABASE_URL: postgresql://techwoman_migrator:${MIGRATOR_PASSWORD}@postgres:5432/techwoman
+      LOCAL_SEED: "1"
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?configure admin sintético local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?configure senha exclusiva local}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  app:
+    image: techwoman-wp001-local
+    environment:
+      DATABASE_URL: postgresql://techwoman_runtime:${RUNTIME_PASSWORD}@postgres:5432/techwoman
+      APP_ORIGIN: http://localhost:3000
+      SESSION_SECRET: ${SESSION_SECRET:?configure .env local}
+      EMAIL_MODE: fake
+      SES_SEND_ENABLED: "0"
+      ALLOW_LOCAL_HTTP: "1"
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      seed: {condition: service_completed_successfully}
+  mailer:
+    image: techwoman-wp001-local
+    working_dir: /tools
+    command: ["node", "--import", "tsx", "scripts/email-worker.ts"]
+    environment:
+      MAILER_DATABASE_URL: postgresql://techwoman_mailer:${MAILER_PASSWORD:?configure .env local}@postgres:5432/techwoman
+      EMAIL_MODE: fake
+      SES_SEND_ENABLED: "0"
+    mem_limit: 512m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+# Não montar .env inteiro no web; MIGRATION_DATABASE_URL existe só em migrate.
+volumes:
+  pgdata:

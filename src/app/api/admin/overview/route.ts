@@ -1,4 +1,6 @@
-import { currentAdmin, unauthorized } from '@/lib/auth';
+import { handle, requireSession } from '@/lib/auth';
+import { legacyJson } from '@/lib/agenda-http';
 import { adminOverview } from '@/lib/service';
 export const runtime = 'nodejs';
-export async function GET() { const admin = await currentAdmin(); if (!admin || !['owner','member'].includes(admin.role)) return unauthorized(); return Response.json(adminOverview(),{headers:{'Cache-Control':'no-store'}}); }
+/** Sessão full admin/team (team só lê); o banco revalida o ator e omite admins/vínculos protegidos. */
+export const GET = handle(async (request: Request) => legacyJson(await adminOverview((await requireSession(request, { roles: ['admin', 'team'] })).token)));
