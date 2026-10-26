@@ -58,7 +58,8 @@ test('role-limits.sql stores finite timeouts per role IN DATABASE, idempotently,
     const byRole = Object.fromEntries(rows.map(r => [r.role, [...r.cfg].sort()]));
     assert.deepEqual(byRole.techwoman_runtime, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
     assert.deepEqual(byRole.techwoman_mailer, ['idle_in_transaction_session_timeout=10s', 'lock_timeout=5s', 'statement_timeout=15s']);
-    assert.deepEqual(byRole.techwoman_beatriz, ['idle_in_transaction_session_timeout=30s', 'lock_timeout=10s', 'statement_timeout=60s']);
+    // D-048: the editor's read-only setting is fixed by the same artifact, in the same scope
+    assert.deepEqual(byRole.techwoman_beatriz, ['default_transaction_read_only=on', 'idle_in_transaction_session_timeout=30s', 'lock_timeout=10s', 'statement_timeout=60s']);
     for (const bad of <Record<string, string>[]>[{runtime_lock: '0'}, {beatriz_idle: '-1s'}, {mailer_statement: 'forever'}, {runtime_lock: "5s'; drop role techwoman_mailer; --"}]) {
       const r = applyLimits(url, bad);
       assert.notEqual(r.status, 0, JSON.stringify(bad));
@@ -76,10 +77,15 @@ test('the limits are effective in NEW login connections of each role, not throug
     assert.equal(applyLimits(url).status, 0);
     for (const [role, lock, statement, idle] of [['techwoman_runtime', '5s', '15s', '10s'], ['techwoman_mailer', '5s', '15s', '10s'], ['techwoman_beatriz', '10s', '1min', '30s']]) {
       assert.deepEqual(await login(url, role, show), {lock_timeout: lock, statement_timeout: statement, idle_in_transaction_session_timeout: idle}, role);
+      const readOnly = await login(url, role, async c => (await c.query('show default_transaction_read_only')).rows[0].default_transaction_read_only);
+      assert.equal(readOnly, role === 'techwoman_beatriz' ? 'on' : 'off', `${role}: only the editor's new login sessions are read-only (D-048)`);
     }
     const viaSetRole = new Client({connectionString: url}); await viaSetRole.connect();
-    try {await viaSetRole.query('set role techwoman_runtime'); assert.equal((await show(viaSetRole)).lock_timeout, '0', 'SET ROLE does not apply login settings');}
-    finally {await viaSetRole.end();}
+    try {
+      await viaSetRole.query('set role techwoman_runtime'); assert.equal((await show(viaSetRole)).lock_timeout, '0', 'SET ROLE does not apply login settings');
+      await viaSetRole.query('set role techwoman_beatriz');
+      assert.equal((await viaSetRole.query('show default_transaction_read_only')).rows[0].default_transaction_read_only, 'off', 'nor the read-only one: the privileges deny');
+    } finally {await viaSetRole.end();}
     const neighbour = 'tw_neighbour_' + randomUUID().replace(/-/g, '').slice(0, 12);
     await db.query(`create database ${neighbour}`);
     try {
@@ -108,7 +114,7 @@ test('statement and lock limits end the wait with 57014/55P03 instead of blockin
   });
 });
 
-test('an idle editor transaction holding the agenda guard is terminated and five independent reservations go through', async () => {
+test('a forgotten read-only editor transaction cannot take the agenda guard, blocks no reservation, and is terminated by the idle limit, releasing the lock it held', async () => {
   const {withDb, mentorWithCohort, pidOf, waitLocked} = await harness();
   const {participantActor} = await kit();
   const {tokenDigest} = await db_();
@@ -121,25 +127,33 @@ test('an idle editor transaction holding the agenda guard is terminated and five
     let editorError: {code?: string} | undefined;
     editor.on('error', e => {editorError = e as {code?: string};});
     const editorPid = await pidOf(editor);
+    const edit = "update topic set name = 'Tema editado' where id = (select topic_id from mentor_topic limit 1)";
+    // D-048: the editor cannot take the guard: read-only session (25006) and, even in READ WRITE, no privilege (42501)
+    await assert.rejects(editor.query(edit), (e: {code?: string}) => e.code === '25006');
+    await editor.query('begin read write');
+    await assert.rejects(editor.query(edit), (e: {code?: string}) => e.code === '42501');
+    await editor.query('rollback');
+    // pgAdmin's forgotten BEGIN: a read leaves the transaction idle holding ACCESS SHARE on topic
     await editor.query('begin');
-    await editor.query("update topic set name = 'Tema editado' where id = (select topic_id from mentor_topic limit 1)");  // takes the guard
+    assert.equal((await editor.query('select count(*)::int n from topic')).rows[0].n, 1);
     const runtime = new Pool({connectionString: loginUrl(url, 'techwoman_runtime'), max: 5});
+    const ddl = new Client({connectionString: url}); await ddl.connect();
     try {
-      const started = Date.now();
-      const reservations = people.map(p => runtime.query('select internal.api_enroll($1,$2,$3,$4,$5) r',
-        [tokenDigest(p.token), randomUUID(), randomUUID(), createHash('sha256').update(p.id).digest('hex'), {cohortId: agenda.cohort}]));
-      reservations.forEach(r => r.catch(() => undefined));
-      // barrier: the reservations are really waiting on a lock (the guard held by the idle editor)
-      let blocked: {pid: number}[] = [];
-      for (let i = 0; i < 60 && !blocked.length; i++) {
-        blocked = (await db.query("select pid from pg_stat_activity where usename='techwoman_runtime' and datname=current_database() and wait_event_type='Lock'")).rows;
-        if (!blocked.length) await new Promise(r => setTimeout(r, 25));
-      }
-      assert.ok(blocked.length >= 1, 'a reservation was blocked behind the idle editor');
-      await waitLocked(db, blocked[0].pid);
-      const results = await Promise.all(reservations);
-      const waited = Date.now() - started;
+      // nothing queues behind the read-only editor: the five reservations go through while it is still alive and idle
+      const results = await Promise.all(people.map(p => runtime.query('select internal.api_enroll($1,$2,$3,$4,$5) r',
+        [tokenDigest(p.token), randomUUID(), randomUUID(), createHash('sha256').update(p.id).digest('hex'), {cohortId: agenda.cohort}])));
       assert.deepEqual(results.map(r => r.rows[0].r.status), ['active', 'active', 'active', 'active', 'active']);
+      assert.equal((await db.query('select count(*)::int n from pg_stat_activity where pid=$1', [editorPid])).rows[0].n, 1, 'reservations did not wait for the idle editor');
+      // the lock it still holds is real: an owner/migration DDL on topic waits behind it until the 2s idle limit ends the session
+      await ddl.query('begin');
+      const started = Date.now();
+      const ddlPid = await pidOf(ddl);
+      const waiting = ddl.query('lock table topic in access exclusive mode');
+      waiting.catch(() => undefined);
+      await waitLocked(db, ddlPid);
+      await waiting;
+      const waited = Date.now() - started;
+      await ddl.query('commit');
       assert.ok(waited >= 1000 && waited < 2000 + 3000, `released by the 2s idle limit (${waited} ms)`);
       assert.equal((await db.query('select count(*)::int n from pg_stat_activity where pid=$1', [editorPid])).rows[0].n, 0, 'the idle editor session was terminated');
       assert.equal((await runtime.query('select 1 one')).rows[0].one, 1, 'the runtime pool is not exhausted');
@@ -147,11 +161,11 @@ test('an idle editor transaction holding the agenda guard is terminated and five
         (select count(*)::int from match m join enrollment x on x.id=m.enrollment_id where x.cohort_id=$1) m,
         (select count(*)::int from email_job j join enrollment x on x.id=j.enrollment_id where x.cohort_id=$1) j`, [agenda.cohort])).rows[0];
       assert.deepEqual(counts, {e: 5, m: 5, j: 5});
-      assert.equal((await db.query("select name from topic where id=(select topic_id from mentor_topic limit 1)")).rows[0].name === 'Tema editado', false, 'the editor change was rolled back');
+      assert.equal((await db.query("select name from topic where id=(select topic_id from mentor_topic limit 1)")).rows[0].name === 'Tema editado', false, 'the editor changed nothing');
       await assert.rejects(editor.query('select 1'));
       assert.ok(!editorError || ['25P03', '57P01'].includes(String(editorError.code)) || editorError.code === undefined);
     } finally {
-      await runtime.end(); await editor.end().catch(() => undefined);
+      await runtime.end(); await ddl.end().catch(() => undefined); await editor.end().catch(() => undefined);
     }
   });
 });

@@ -1,12 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,shiftToStarted,pgFails,applyLocalGrants,EDITOR} from './agenda-harness';
+import {withDb,withClients,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,shiftToStarted,pgFails,applyLocalGrants,DIRECT_SQL,editorWriteDenied} from './agenda-harness';
+// D-048: a editora é somente leitura; a reserva/cancelamento por SQL direto destes contratos é do dono do banco (DIRECT_SQL).
 
-test('reserva SQL da editora: match current selected com score/reasons do ranking legado (score0 aceito), job reservation e auditoria sem dados pessoais', ()=>withDb(async ({db,url})=>{
+test('reserva SQL direta (dono; a editora somente leitura recebe 42501): match current selected com score/reasons do ranking legado (score0 aceito), job reservation e auditoria sem dados pessoais', ()=>withDb(async ({db,url})=>{
  const user=await addUser(db,{roles:['participant']}),other=await addUser(db,{roles:['participant']});
  const participant=await addParticipant(db,{userId:user.id,email:user.email}),zero=await addParticipant(db,{userId:other.id,email:other.email,goal:'leadership',interests:['design'],skills:['gestao'],area:null});
  const mentor=await addMentor(db,{specialties:['dados','desenvolvimento']}),cohort=await addCohort(db,await addMentorTopic(db,mentor,await addTopic(db)),{from:0});
- const ids=await withClients(url,[EDITOR],async b=>Promise.all([participant,zero].map(async p=>(await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[p,cohort])).rows[0].id as string)));
+ await editorWriteDenied(url,"insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,cohort]);
+ const ids=await withClients(url,[DIRECT_SQL],async b=>Promise.all([participant,zero].map(async p=>(await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[p,cohort])).rows[0].id as string)));
  const matches=(await db.query("select participant_id::text,mentor_id::text,score,reasons,status,origin,enrollment_id::text from match order by participant_id")).rows;
  assert.deepEqual(matches,[
   {participant_id:participant,mentor_id:mentor,score:9,status:'selected',origin:'current',enrollment_id:ids[0],
@@ -32,7 +34,7 @@ test('elegibilidade da reserva SQL: só active, turma open e futura, domínio at
  const overlapping=await addCohort(db,otherMt,{from:0.5}),contiguous=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:1});
  const p=await addParticipant(db),legacy=await addParticipant(db,{userId:null}),inactive=await addParticipant(db,{active:false});
  const disabledUser=await addUser(db,{status:'disabled'});const disabled=await addParticipant(db,{userId:disabledUser.id,email:disabledUser.email});
- await withClients(url,[EDITOR],async b=>{
+ await withClients(url,[DIRECT_SQL],async b=>{
   const enroll=(participant:string,cohort:string,status='active')=>b.query('insert into enrollment(participant_id,cohort_id,status) values($1,$2,$3)',[participant,cohort,status]);
   await pgFails(enroll(p,open,'cancelled'),'23514','agenda_invalid_transition');
   for(const c of [draft,closed])await pgFails(enroll(p,c),'23514','agenda_cohort_not_open');
@@ -60,7 +62,7 @@ test('cancelar (inclusive após o início) e reativar (só futura) mantêm cance
    (select array_agg(j.status order by j.created_at,j.dedupe_key) from email_job j where j.enrollment_id=e.id) jobs,
    (select array_agg(a.action order by a.id) from audit_event a where a.entity_type='enrollment' and a.entity_id=e.id::text) audit
   from enrollment e join match m on m.enrollment_id=e.id where e.id=$1`,[id])).rows[0];
- await withClients(url,[EDITOR],async b=>{
+ await withClients(url,[DIRECT_SQL],async b=>{
   const enroll=async(who:string,cohort:string)=>(await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text",[who,cohort])).rows[0].id as string;
   const set=(id:string,status:string)=>b.query('update enrollment set status=$2 where id=$1',[id,status]);
   const e=await enroll(p,c);

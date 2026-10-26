@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {withDb,withClients,revision,pgFails,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,startedCohort,at} from './agenda-harness';
-import {OWNER,EDITOR,addUser,linkFixture,applyLocalGrants,pidOf,waitLocked} from './agenda-harness';
+import {OWNER,EDITOR,DIRECT_SQL,addUser,linkFixture,applyLocalGrants,pidOf,waitLocked} from './agenda-harness';
 import {readFileSync} from 'node:fs';
 
 test('guard: todo statement DML nas seis tabelas escreve agenda_guard.revision, inclusive sem linhas', ()=>withDb(async ({db})=>{
@@ -139,21 +139,30 @@ test('segurança SQL: owner NOLOGIN sem BYPASSRLS; funções de Agenda dele, sea
  assert.equal((await db.query("select count(*)::int n from pg_proc where pronamespace='internal'::regnamespace and proname=any($1) and prosrc ~* 'execute\\s'",[AGENDA_FUNCTIONS])).rows[0].n,0,'sem SQL dinâmico');
 }));
 
-test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negados hashes, identidade, auditoria, guard, DELETE destrutivo, TRUNCATE, DDL, DISABLE TRIGGER e owner', ()=>withDb(async ({db,url})=>{
+test('editora somente leitura (D-048): lê agenda e perfis por coluna e views sem e-mail/token; toda escrita negada por privilégio (agenda, perfis, views, sequences), como hashes, identidade, auditoria, guard, DELETE destrutivo, TRUNCATE, DDL, DISABLE TRIGGER e owner', ()=>withDb(async ({db,url})=>{
  const mentor=await addMentor(db),participant=await addParticipant(db),topic=await addTopic(db),spare=await addTopic(db);
+ // o que a editora gravava no WP-003 agora é fixture do dono do banco (migradora): tema, vínculos, turma aberta e reserva
+ await db.query("insert into topic(slug,name,description) values('editora','Editora','d')");
+ const mt=await addMentorTopic(db,mentor,topic),tmp=await addMentorTopic(db,mentor,spare,2);
+ const c=await addCohort(db,mt,{from:0,capacity:20,status:'draft'});await db.query("update cohort set capacity=10,status='open' where id=$1",[c]);
+ const e=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id",[participant,c])).rows[0].id;
+ const state=async()=>(await db.query("select string_agg(x,'|' order by x) s from (select t::text x from topic t union all select m::text from mentor_topic m union all select c::text from cohort c union all select e::text from enrollment e union all select p::text from participant p union all select m::text from mentor m) a")).rows[0].s;
+ const before=await state();
  await withClients(url,[EDITOR],async b=>{
   const ok=(sql:string,args:unknown[]=[])=>b.query(sql,args);
   const denied=(sql:string,args:unknown[]=[])=>pgFails(b.query(sql,args),'42501');
-  await ok("insert into topic(slug,name,description) values('editora','Editora','d')");await ok("update topic set name='E2',active=true where slug='editora'");
-  const mt=(await ok("insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1) returning id",[mentor,topic])).rows[0].id;
-  const tmp=(await ok("insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2) returning id",[mentor,spare])).rows[0].id;
-  await ok('update mentor_topic set position=2 where id=$1',[tmp]);await ok('delete from mentor_topic where id=$1',[tmp]);
-  const c=(await ok("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,20,'draft') returning id",[mt,at(0),at(1)])).rows[0].id;
-  await ok("update cohort set capacity=10,status='open' where id=$1",[c]);
-  const e=(await ok("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id",[participant,c])).rows[0].id;
-  await ok("update enrollment set status='cancelled' where id=$1",[e]);
-  await ok("update participant set goal='leadership',moment='returning',interests='[\"dados\"]',skills='[\"gestao\"]',area='dados',active=true where id=$1",[participant]);
-  await ok("update mentor set display_name='Nova',trajectory='t2',specialties='[\"dados\"]',availability='a2',capacity=3,active=true where id=$1",[mentor]);
+  // escrita que o WP-003 concedia por coluna: negada
+  for(const [sql,args] of [["insert into topic(slug,name,description) values('editora-2','Editora','d')",[]],["update topic set name='E2',active=true where slug='editora'",[]],
+   ['insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2)',[mentor,spare]],['update mentor_topic set position=2 where id=$1',[tmp]],['delete from mentor_topic where id=$1',[tmp]],
+   ["insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,20,'draft')",[mt,at(2),at(3)]],["update cohort set capacity=10,status='open' where id=$1",[c]],
+   ["insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,c]],["update enrollment set status='cancelled' where id=$1",[e]],
+   ["update participant set goal='leadership',moment='returning',interests='[\"dados\"]',skills='[\"gestao\"]',area='dados',active=true where id=$1",[participant]],
+   ["update mentor set display_name='Nova',trajectory='t2',specialties='[\"dados\"]',availability='a2',capacity=3,active=true where id=$1",[mentor]],
+   ["update participant_editor set goal='leadership' where id=$1",[participant]],["update mentor_editor set display_name='Nova' where id=$1",[mentor]],
+   ["select nextval('topic_id_seq')",[]],["select nextval('mentor_topic_id_seq')",[]],["select nextval('cohort_id_seq')",[]],["select nextval('enrollment_id_seq')",[]]] as const)
+   await denied(sql,[...args]);
+  // leitura continua: agenda, views seguras e perfil por coluna (inclusive linhas gravadas pelo dono)
+  assert.deepEqual((await ok('select (select count(*)::int from topic) t,(select count(*)::int from mentor_topic) mt,(select count(*)::int from cohort) c,(select count(*)::int from enrollment) e')).rows[0],{t:3,mt:2,c:1,e:1});
   assert.equal((await ok('select id,goal,moment,interests,skills,area,active,version from participant_editor where id=$1',[participant])).rowCount,1);
   assert.equal((await ok('select id,display_name,trajectory,specialties,availability,capacity,active,demo,version from mentor_editor where id=$1',[mentor])).rowCount,1);
   await ok('select id,goal,active from participant');await ok('select id,display_name,active from mentor');
@@ -168,6 +177,7 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
   for(const sql of ['truncate topic','alter table topic disable trigger all','alter table cohort disable trigger agenda_validate','create table public.editora_x(id int)','drop trigger agenda_guard on topic',
    "select setval('topic_id_seq',100)",'select internal.domain_protected(\'participant\',1)'])await denied(sql);
  });
+ assert.equal(await state(),before,'nenhuma linha de agenda/perfil mudou');
  // SET ROLE é checado contra session_user (superusuário no teste); a propriedade real é não pertencer a roles privilegiadas.
  for(const target of [OWNER,'techwoman_runtime','techwoman_mailer'])assert.equal((await db.query("select pg_has_role($1,$2,'MEMBER') m",[EDITOR,target])).rows[0].m,false,`editora não é membro de ${target}`);
  const viewCols=(await db.query("select table_name,string_agg(column_name,',' order by column_name) cols from information_schema.columns where table_name in ('participant_editor','mentor_editor') group by table_name order by table_name")).rows;
@@ -175,7 +185,7 @@ test('editora: DML por coluna em agenda e perfis; views sem e-mail/token; negado
  assert.equal(viewCols.length,2);
 }));
 
-test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASCII 1..80, name 1..120, description ≤1000); perfil valida só as colunas alteradas (enums, tags, área, limites); legado incomum preservado e cancelamento livre', ()=>withDb(async ({db,url})=>{
+test('I2 formato no banco contra DML direto (dono; a editora somente leitura recebe 42501): topic com CHECK (slug kebab ASCII 1..80, name 1..120, description ≤1000); perfil valida só as colunas alteradas (enums, tags, área, limites); legado incomum preservado e cancelamento livre', ()=>withDb(async ({db,url})=>{
  const mentor=await addMentor(db,{specialties:['dados']}),participant=await addParticipant(db);
  const cohort=await addCohort(db,await addMentorTopic(db,mentor,await addTopic(db)));
  const enrollment=(await db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text id",[participant,cohort])).rows[0].id;
@@ -185,6 +195,11 @@ test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASC
  const rowOf=async(table:string,id:string)=>(await db.query(`select to_jsonb(x)-'version'-'updated_at'-'active'-'goal'-'display_name' j from ${table} x where id=$1`,[id])).rows[0].j;
  const legacyBefore=[await rowOf('participant',legacy),await rowOf('mentor',legacyMentor)];
  await withClients(url,[EDITOR],async b=>{
+  await pgFails(b.query("insert into topic(slug,name,description) values('editora-i2','Nome','')"),'42501');
+  await pgFails(b.query("update participant_editor set goal='growth' where id=$1",[participant]),'42501');
+  await pgFails(b.query("update mentor_editor set display_name='Nome' where id=$1",[mentor]),'42501');
+ });
+ await withClients(url,[DIRECT_SQL],async b=>{
   const ok=(sql:string,args:unknown[]=[])=>b.query(sql,args);
   const rejected=(sql:string,args:unknown[]=[],constraint?:string)=>pgFails(b.query(sql,args),'23514',constraint);
   for(const [slug,name,description] of [['Não Kebab','Nome',''],['ok-slug','',''],['ok-slug-2','   ',''],['a'.repeat(81),'Nome',''],['-inicio','Nome',''],['a--b','Nome',''],['fim-','Nome',''],
@@ -209,7 +224,7 @@ test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASC
   await ok('update participant set active=false where id=$1',[legacy]);await ok("update participant_editor set goal='growth' where id=$1",[legacy]);
   await ok('update mentor set active=false where id=$1',[legacyMentor]);await ok("update mentor_editor set display_name='Nome novo' where id=$1",[legacyMentor]);
   await ok("update participant set interests=interests,area=area where id=$1",[legacy]);
-  // cancelamento da editora não depende do perfil
+  // cancelamento direto não depende do perfil
   await ok("update enrollment set status='cancelled' where id=$1",[enrollment]);
  });
  assert.deepEqual([await rowOf('participant',legacy),await rowOf('mentor',legacyMentor)],legacyBefore,'legado incomum preservado sem normalização');
@@ -218,7 +233,7 @@ test('I2 formato no banco contra DML da editora: topic com CHECK (slug kebab ASC
 }));
 
 const AGENDA_TABLES=['topic','mentor_topic','cohort','enrollment','mentor','participant'];
-test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado nem candidato privilegiado sem user_id; validador vê o conjunto integral; runtime sem acesso direto', ()=>withDb(async ({db,url})=>{
+test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado nem candidato privilegiado sem user_id (somente leitura: 42501; policy FOR SELECT fecha até concessão indevida); validador vê o conjunto integral; runtime sem acesso direto', ()=>withDb(async ({db,url})=>{
  const admin=await addUser(db,{roles:['admin','mentor','participant']});const team=await addUser(db,{roles:['team']});
  const adminMentor=await addMentor(db,{userId:admin.id}),adminParticipant=await addParticipant(db,{userId:admin.id});
  const sameEmailMentor=await addMentor(db,{email:` ${team.email.toUpperCase()} `});
@@ -242,14 +257,24 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
   assert.deepEqual(await ids('select id from mentor_topic'),[mt]);assert.deepEqual(await ids('select id from cohort'),[full]);
   assert.deepEqual(await ids('select id from enrollment'),[],'reservas com participante ou mentora protegida ocultas');
   assert.equal((await b.query('select count(*)::int n from topic')).rows[0].n,1);
-  for(const [sql,args] of [["update participant set goal='leadership' where id=any($1)",[[adminParticipant,candidate]]],["update mentor set trajectory='x' where id=any($1)",[[adminMentor,sameEmailMentor]]],
-   ["update cohort set capacity=2 where id=$1",[hiddenCohort]],["delete from mentor_topic where id=$1",[hiddenMt]],["update enrollment set status='cancelled' where cohort_id=$1",[hiddenCohort]]] as const)
-   assert.equal((await b.query(sql,[...args])).rowCount,0,sql);
-  await pgFails(b.query('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2)',[adminMentor,topic]),'42501');
-  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(5),at(6)]),'42501');
-  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]),'42501');
-  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]),'42501');
-  await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,full]),'23514','agenda_capacity_exceeded');
+  const writes=[["update participant set goal='leadership' where id=any($1)",[[adminParticipant,candidate]]],["update mentor set trajectory='x' where id=any($1)",[[adminMentor,sameEmailMentor]]],
+   ["update cohort set capacity=2 where id=$1",[hiddenCohort]],["delete from mentor_topic where id=$1",[hiddenMt]],["update enrollment set status='cancelled' where cohort_id=$1",[hiddenCohort]]] as const;
+  const inserts=[['insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,2)',[adminMentor,topic]],["insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(5),at(6)]],
+   ["insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[candidate,full]],["insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[ambiguous,hiddenCohort]],
+   ["insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,full]]] as const;
+  // D-048: somente leitura — toda escrita, protegida ou não, é negada por privilégio
+  for(const [sql,args] of [...writes,...inserts])await pgFails(b.query(sql,[...args]),'42501');
+  // defesa em profundidade: com uma concessão indevida (simulada e revogada), as policies agenda_editor FOR SELECT não deixam alterar linha
+  // protegida (0 linhas) nem inserir (RLS, 42501 — nunca o motivo de negócio)
+  const simulated=['update (goal) on public.participant','update (trajectory) on public.mentor','update (capacity) on public.cohort','delete on public.mentor_topic','update (status) on public.enrollment',
+   'insert (mentor_id,topic_id,position) on public.mentor_topic','insert (mentor_topic_id,starts_at,ends_at,capacity,status) on public.cohort','insert (participant_id,cohort_id,status) on public.enrollment'];
+  try{
+   for(const g of simulated)await db.query(`grant ${g} to ${EDITOR}`);
+   for(const [sql,args] of writes)assert.equal((await b.query(sql,[...args])).rowCount,0,sql);
+   for(const [sql,args] of inserts)await pgFails(b.query(sql,[...args]),'42501');
+  }finally{for(const g of simulated)await db.query(`revoke ${g} from ${EDITOR}`);}
+  // a regra de capacidade continua no banco para o SQL direto do dono
+  await pgFails(db.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active')",[participant,full]),'23514','agenda_capacity_exceeded');
   // WP-003 I3: o runtime não lê nem escreve domínio direto (nem com os grants locais): só pelas operações SQL do owner, que veem o conjunto integral
   for(const sql of ['select count(*) from participant','select count(*) from mentor',"update participant set goal='growth' where id=$1"])await pgFails(runtime.query(sql,sql.includes('$1')?[participant]:[]),'42501');
  });
@@ -257,10 +282,11 @@ test('R3/RLS forçada: editora não vê nem altera domínio de admin vinculado n
  assert.equal((await db.query("select count(*)::int n from enrollment where status='active'")).rows[0].n,2);
 }));
 
-test('lote da editora: um item inválido desfaz o statement inteiro (INSERT/UPDATE multi-linha)', ()=>withDb(async ({db,url})=>{
+test('lote de SQL direto (dono; a editora somente leitura recebe 42501): um item inválido desfaz o statement inteiro (INSERT/UPDATE multi-linha)', ()=>withDb(async ({db,url})=>{
  const mentor=await addMentor(db),mt=await addMentorTopic(db,mentor,await addTopic(db)),c=await addCohort(db,mt,{from:0,capacity:2});
  const [p1,p2,p3]=[await addParticipant(db),await addParticipant(db),await addParticipant(db)];
- await withClients(url,[EDITOR],async b=>{
+ await withClients(url,[EDITOR],async b=>pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active'),($3,$2,'active')",[p1,c,p2]),'42501'));
+ await withClients(url,[DIRECT_SQL],async b=>{
   await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,5,'open'),($1,$4,$5,5,'open')",[mt,at(3),at(4),at(3.5),at(4.5)]),'23514','agenda_mentor_overlap');
   await pgFails(b.query("insert into enrollment(participant_id,cohort_id,status) select p,$2,'active' from unnest($1::bigint[]) p",[[p1,p2,p3],c]),'23514','agenda_capacity_exceeded');
   await b.query("insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active'),($3,$2,'active')",[p1,c,p2]);
@@ -269,17 +295,22 @@ test('lote da editora: um item inválido desfaz o statement inteiro (INSERT/UPDA
  assert.deepEqual((await db.query("select (select count(*)::int from cohort) cohorts,(select count(*)::int from enrollment) enrollments,(select capacity::int from cohort where id=$1) capacity",[c])).rows[0],{cohorts:1,enrollments:2,capacity:2});
 }));
 
-test('limites finitos: guard com lock_timeout próprio; script do operador fixa timeouts da editora e é idempotente', ()=>withDb(async ({db,url})=>{
+test('limites finitos: guard com lock_timeout próprio; script do operador fixa timeouts e read-only da editora e é idempotente', ()=>withDb(async ({db,url})=>{
  const script=readFileSync('scripts/migration/agenda-privileges.sql','utf8');await db.query(script);await db.query(script);
  const cfg=(await db.query('select s.setconfig from pg_db_role_setting s where s.setrole=$1::regrole and s.setdatabase=(select oid from pg_database where datname=current_database())',[EDITOR])).rows[0].setconfig as string[];
  for(const key of ['lock_timeout','statement_timeout','idle_in_transaction_session_timeout']){
   const v=cfg.find(x=>x.startsWith(key+'='));assert.ok(v&&!/=0$/.test(v),`${key} finito para a editora: ${v}`);
  }
+ assert.deepEqual(cfg.filter(x=>x.startsWith('default_transaction_read_only=')),['default_transaction_read_only=on'],'D-048: editora read-only nesta base, uma vez só após reaplicar');
  const guard=(await db.query("select proconfig from pg_proc where oid='internal.acquire_agenda_guard()'::regprocedure")).rows[0].proconfig as string[];
  assert.ok(guard.some(x=>/^lock_timeout=\d+s$/.test(x)),'guard com lock_timeout fixo');
  const owner=(await db.query('select rolcanlogin,rolbypassrls from pg_roles where rolname=$1',[OWNER])).rows[0];assert.deepEqual(owner,{rolcanlogin:false,rolbypassrls:false});
- await withClients(url,[undefined,EDITOR],async (holder,b)=>{
+ // a espera finita vem do lock_timeout do próprio guard: a segunda sessão (SQL direto do dono) não tem lock_timeout de sessão
+ await withClients(url,[undefined,DIRECT_SQL,EDITOR],async (holder,b,editor)=>{
   await holder.query('begin');await holder.query("insert into topic(slug,name) values('segura-guard','S')");
+  assert.equal((await b.query('show lock_timeout')).rows[0].lock_timeout,'0','sessão sem lock_timeout próprio');
+  // D-048: a editora nem chega ao guard (42501 imediato, sem esperar)
+  await pgFails(editor.query("insert into topic(slug,name) values('editora-guard','E')"),'42501');
   const pid=await pidOf(b),started=Date.now();const pending=b.query("insert into topic(slug,name) values('espera-guard','E')");
   pending.catch(()=>undefined);await waitLocked(db,pid);
   await pgFails(pending,'55P03');assert.ok(Date.now()-started<15000,'espera pelo guard é finita');
@@ -304,7 +335,13 @@ test('R3: RLS é avaliada antes das regras de elegibilidade — tentativa sobre 
  const admin=await addUser(db,{roles:['admin','mentor']});const adminMentor=await addMentor(db,{userId:admin.id});
  const hiddenMt=await addMentorTopic(db,adminMentor,await addTopic(db));await db.query('update mentor set active=false where id=$1',[adminMentor]);
  await withClients(url,[EDITOR],async b=>{
-  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(1),at(2)]),'42501');
-  await pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,now()-interval '1 hour',now(),2,'closed')",[hiddenMt]),'42501');
+  const attempts=()=>[pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,$2,$3,2,'open')",[hiddenMt,at(1),at(2)]),'42501'),
+   pgFails(b.query("insert into cohort(mentor_topic_id,starts_at,ends_at,capacity,status) values($1,now()-interval '1 hour',now(),2,'closed')",[hiddenMt]),'42501')];
+  for(const attempt of attempts())await attempt;
+  // D-048: o 42501 acima já vem do privilégio (somente leitura); com INSERT concedido por engano (simulado e revogado), a RLS FOR SELECT
+  // continua recusando antes das regras de elegibilidade (42501, nunca agenda_inactive/agenda_not_future)
+  await db.query(`grant insert (mentor_topic_id,starts_at,ends_at,capacity,status) on public.cohort to ${EDITOR}`);
+  try{for(const attempt of attempts())await attempt;}
+  finally{await db.query(`revoke insert (mentor_topic_id,starts_at,ends_at,capacity,status) on public.cohort from ${EDITOR}`);}
  });
 }));
