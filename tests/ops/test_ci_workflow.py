@@ -9,7 +9,7 @@ def ci():
 
 
 def base_ci():
-    return subprocess.run(['git', 'show', 'aadb3cb:.github/workflows/ci.yml'], cwd=ROOT, capture_output=True,
+    return subprocess.run(['git', 'show', '2ff7347a927458710c1789bb7ad52928f3f68e6c:.github/workflows/ci.yml'], cwd=ROOT, capture_output=True,
                           check=True).stdout.decode().replace(chr(13) + chr(10), chr(10))
 
 

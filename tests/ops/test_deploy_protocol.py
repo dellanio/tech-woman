@@ -129,7 +129,7 @@ class ProbeTests(unittest.TestCase):
                 self.assertEqual([c['cmd'] for c in result.calls()], ['flock'])
 
     def test_previous_script_rejects_the_v2_probe_without_effect(self):
-        legacy = subprocess.run(['git', 'show', 'aadb3cb:ops/deploy.sh'], cwd=ROOT, capture_output=True,
+        legacy = subprocess.run(['git', 'show', '2ff7347a927458710c1789bb7ad52928f3f68e6c:ops/deploy.sh'], cwd=ROOT, capture_output=True,
                                 check=True).stdout
         with tempfile.TemporaryDirectory(prefix='tw-legacy-') as tmp:
             script = pathlib.Path(tmp) / 'deploy.sh'
