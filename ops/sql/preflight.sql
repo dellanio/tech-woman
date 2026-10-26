@@ -24,14 +24,20 @@ select json_build_object(
             or (p.prosecdef and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c where c like 'search_path=%'))))),
  'PF-DEFPRIV', json_build_object('bad',
    (select count(*) from pg_default_acl d where exists (select 1 from aclexplode(d.defaclacl) a where a.grantee = 0))),
- -- the three finite timeouts set for each role IN THIS DATABASE (ops/sql/role-limits.sql)
+ -- the three finite timeouts set for each role IN THIS DATABASE (ops/sql/role-limits.sql), plus (D-048) the fixed
+ -- default_transaction_read_only=on of techwoman_beatriz in this database: missing, off or any other value is offending
  'PF-ROLE-LIMITS', json_build_object('bad',
    (select count(*) from roles where (
       select count(*) from pg_db_role_setting s, unnest(s.setconfig) c
        where s.setrole = (select oid from pg_roles where rolname = roles.r)
          and s.setdatabase = (select oid from pg_database where datname = current_database())
          and split_part(c, '=', 1) in ('lock_timeout', 'statement_timeout', 'idle_in_transaction_session_timeout')
-         and split_part(c, '=', 2) !~ '^0+([a-z]+)?$') <> 3)),
+         and split_part(c, '=', 2) !~ '^0+([a-z]+)?$') <> 3)
+   + (select count(*) from (values (1)) v where not exists (
+      select 1 from pg_db_role_setting s, unnest(s.setconfig) c
+       where s.setrole = (select oid from pg_roles where rolname = 'techwoman_beatriz')
+         and s.setdatabase = (select oid from pg_database where datname = current_database())
+         and c = 'default_transaction_read_only=on'))),
  -- D-040: no ACL predicate (PUBLIC keeps CONNECT on databases of other services and is never revoked here);
  -- isolation is proven by the connection attempts of ops/preflight.py against these targets.
  'PF-OTHER-DB', json_build_object('databases',

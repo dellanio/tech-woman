@@ -110,7 +110,7 @@ class SqlChecksTests(PreflightWorld):
         self.assertEqual({i: report[i]['status'] for i in SQL_IDS}, {i: 'pass' for i in SQL_IDS})
         self.assertEqual({i: report[i]['status'] for i in HOST_IDS}, {i: 'pending' for i in HOST_IDS})
         self.assertEqual(json.loads(done.stdout)['overall'], 'pending')
-        self.assertRegex(report['PF-COLGRANT']['detail'], r'^581 denied, 18 allowed, 46 checked$')
+        self.assertRegex(report['PF-COLGRANT']['detail'], r'^792 denied, 10 allowed, 48 checked$')
         self.assertEqual(self.q(SNAPSHOT), before, 'the preflight changes nothing (the matrix rolls back)')
         for other in self.reopened:
             self.assertNotIn(other, done.stdout)  # neighbour database names never appear
@@ -128,6 +128,9 @@ class SqlChecksTests(PreflightWorld):
             ('PF-COLGRANT', 'grant select (email) on public.participant to techwoman_beatriz',
              'revoke select (email) on public.participant from techwoman_beatriz'),
             ('PF-ROLE-LIMITS', 'alter role techwoman_mailer in database %s reset lock_timeout' % self.db, None),
+            # D-048: the editor's fixed read-only setting is demanded too — missing or off both fail
+            ('PF-ROLE-LIMITS', 'alter role techwoman_beatriz in database %s reset default_transaction_read_only' % self.db, None),
+            ('PF-ROLE-LIMITS', 'alter role techwoman_beatriz in database %s set default_transaction_read_only = off' % self.db, None),
         ]
         for check, bad, undo in cases:
             with self.subTest(check=check, bad=bad):
