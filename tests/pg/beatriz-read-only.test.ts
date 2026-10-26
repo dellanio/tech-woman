@@ -111,6 +111,25 @@ async function world(opts:{migrations?:(files:string[])=>string[]}={}):Promise<W
 const rows=async(db:Pool,sql:string)=>(await db.query(sql)).rows;
 const writeCatalog=async(db:Pool)=>(await rows(db,WRITE_CATALOG)).map(r=>`${r.k}: ${r.x}`);
 const readCatalog=async(db:Pool)=>(await rows(db,READ_CATALOG)).map(r=>String(r.obj).replace(/^public\./,'')).sort();
+/** Contrato explícito do card, além da varredura pg_catalog (mais abrangente). */
+const informationSchemaWrites=(db:Pool)=>rows(db,`
+ select table_schema,table_name,privilege_type from information_schema.role_table_grants
+ where grantee='techwoman_beatriz' and table_schema in ('public','internal')
+   and privilege_type in ('INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER')
+ union all
+ select table_schema,table_name||'.'||column_name,privilege_type from information_schema.column_privileges
+ where grantee='techwoman_beatriz' and table_schema in ('public','internal')
+   and privilege_type in ('INSERT','UPDATE','REFERENCES')
+ order by 1,2,3`);
+
+test('D-048 information_schema: banco anterior expõe grants de escrita; migrar para somente leitura zera role_table_grants e column_privileges',async()=>{
+ const w=await world({migrations:all=>all.filter(f=>f<READ_ONLY_FIRST)});
+ try{
+  assert.ok((await informationSchemaWrites(w.admin)).length>0,'regressão sensível: o banco anterior concedia escrita');
+  await migrate(w.migratorUrl);
+  assert.deepEqual(await informationSchemaWrites(w.admin),[],'zero grants de escrita em information_schema após upgrade');
+ }finally{await w.cleanup();}
+});
 /** Fixtures sintéticas gravadas pelo dono/migradora (nunca pela editora): uma mentora, tema, turma e reserva visíveis. */
 async function fixtures(db:Pool){
  const tag=randomBytes(4).toString('hex');
@@ -142,6 +161,7 @@ test('D-048 banco novo: catálogo da editora sem escrita (tabela/view/coluna/seq
  const w=await world();
  try{
   assert.deepEqual(await writeCatalog(w.admin),[],'nenhum privilégio de escrita da editora (catálogo e efetivo)');
+  assert.deepEqual(await informationSchemaWrites(w.admin),[],'banco novo: information_schema.role_table_grants e column_privileges sem escrita');
   assert.deepEqual(await readCatalog(w.admin),EXPECTED_READ,'leitura do WP-003 preservada: agenda/views inteiras, perfil por coluna, helper de visibilidade');
   const policies=await rows(w.admin,POLICIES);
   assert.deepEqual(policies.map(p=>[p.t,p.polname,p.polcmd,p.polpermissive,p.check_expr]),AGENDA_TABLES.slice().sort().map(t=>[t,'agenda_editor','r',true,null]),'policies agenda_editor só FOR SELECT, sem WITH CHECK');
