@@ -5,6 +5,8 @@
 -- Idempotent. Values may be overridden with -v name=value (e.g. -v beatriz_idle=45s); each must be a finite
 -- interval > 0 and <= 1 hour, otherwise nothing is changed. Values arrive as psql literals (:'x'), never as SQL.
 -- Login settings apply to NEW login sessions only: restart the web/mailer pools after applying.
+-- D-048: techwoman_beatriz is read-only; default_transaction_read_only = on is FIXED here (no -v override), in the same place
+-- as her timeouts, and PF-ROLE-LIMITS demands it. It is a first layer only: SET ROLE does not load it, the privileges do the denying.
 \set ON_ERROR_STOP on
 \if :{?runtime_lock}   \else \set runtime_lock 5s \endif
 \if :{?runtime_statement} \else \set runtime_statement 15s \endif
@@ -43,5 +45,6 @@ BEGIN
  FOR r IN SELECT * FROM tw_role_limits LOOP
   EXECUTE format('ALTER ROLE %I IN DATABASE %I SET %s = %L', r.role, current_database(), r.setting, r.value);
  END LOOP;
+ EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET default_transaction_read_only = %L', current_database(), 'on');
 END $$;
 COMMIT;

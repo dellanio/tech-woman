@@ -36,6 +36,9 @@ DO $$ DECLARE r record; BEGIN
  EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET lock_timeout = %L', current_database(), '10s');
  EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET statement_timeout = %L', current_database(), '60s');
  EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET idle_in_transaction_session_timeout = %L', current_database(), '30s');
+ -- D-048: editora somente leitura (sem DML desde 20261026140000_beatriz_read_only.sql); toda sessão LOGIN nova nasce read-only.
+ -- SET ROLE não carrega este setting: a barreira continua sendo o privilégio, o setting é a primeira camada (PF-ROLE-LIMITS exige on).
+ EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET default_transaction_read_only = %L', current_database(), 'on');
  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'techwoman_migrator') THEN
   GRANT techwoman_owner TO techwoman_migrator WITH INHERIT TRUE, SET TRUE;
  END IF;

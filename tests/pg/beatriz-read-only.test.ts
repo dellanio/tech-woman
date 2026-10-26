@@ -67,7 +67,7 @@ const POLICIES=`select c.relname t,p.polname,p.polcmd,p.polpermissive,pg_get_exp
 const SETTING=`select coalesce((select s.setconfig from pg_db_role_setting s where s.setrole='techwoman_beatriz'::regrole
  and s.setdatabase=(select oid from pg_database where datname=current_database())),'{}') cfg`;
 /** Leitura preservada (lista do WP-003): tabela inteira na agenda/views, perfil só por coluna, helper booleano. */
-const EXPECTED_READ=['execute internal.agenda_editor_visible(text,bigint)','mentor.availability','mentor.capacity','mentor.created_at','mentor.demo','mentor.display_name','mentor.id',
+const EXPECTED_READ=['execute internal.agenda_editor_visible(text,bigint)','mentor.active','mentor.availability','mentor.capacity','mentor.created_at','mentor.demo','mentor.display_name','mentor.id',
  'mentor.specialties','mentor.trajectory','mentor.updated_at','mentor.version','mentor_editor','mentor_topic','participant.active','participant.area','participant.created_at','participant.goal',
  'participant.id','participant.interests','participant.moment','participant.skills','participant.updated_at','participant.version','participant_editor','schema internal','schema public','cohort','enrollment','topic'].sort();
 
@@ -165,8 +165,9 @@ test('D-048 sessão LOGIN real da editora: nasce read-only (25006); BEGIN READ W
   assert.equal((await editor.query('select id,goal,moment,interests,skills,area,active,version from participant_editor where id=$1',[f.participant])).rowCount,1);
   assert.equal((await editor.query('select id,display_name,trajectory,specialties,availability,capacity,active,demo,version from mentor_editor where id=$1',[f.mentor])).rowCount,1);
   assert.equal((await editor.query('select id,goal,active from participant where id=$1',[f.participant])).rowCount,1);
-  // nextval verifica o privilégio antes do modo read-only (42501); DML para no modo read-only da transação (25006)
-  for(const [sql,args] of writes(f))await fails(editor.query(sql,args),sql.includes('nextval(')?'42501':'25006',`read-only: ${sql}`);
+  // DML em tabela para no modo read-only da transação (25006); view (privilégio checado ao expandir a view) e nextval (privilégio antes do
+  // modo read-only) já param no privilégio (42501)
+  for(const [sql,args] of writes(f))await fails(editor.query(sql,args),/nextval\(|_editor /.test(sql)?'42501':'25006',`read-only: ${sql}`);
   // o setting é só a primeira camada: a editora pode desligá-lo, e mesmo assim o privilégio nega
   for(const [sql,args] of writes(f)){
    await editor.query('begin read write');
