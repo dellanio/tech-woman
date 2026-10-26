@@ -14,7 +14,7 @@ por ele. Tudo aqui foi ensaiado localmente com fakes de host (docker, registry, 
 | `ops/verify-image.sh` | verificação read-only da imagem (`--network none`) | não |
 | `ops/freeze.py`, `ops/snapshot.py`, `ops/recover.py`, `ops/hostops.py` | bibliotecas do CLI | não |
 | `ops/preflight.py` + `ops/sql/preflight.sql` + `ops/sql/agenda-grants-matrix.sql` | preflight T12/T18 | não (cria só a base isolada do PF-RESTORE) |
-| `ops/sql/role-limits.sql` | timeouts finitos por role **IN DATABASE** | sim (configuração das 3 roles na base techwoman) |
+| `ops/sql/role-limits.sql` | timeouts finitos por role **IN DATABASE** + `default_transaction_read_only=on` fixo da editora (D-048) | sim (configuração das 3 roles na base techwoman) |
 | `ops/nginx/*.conf` | redação de tokens só no vhost Tech Woman | — |
 | `ops/paths.env` | caminhos e nomes fixos do host (parte do pacote hasheado) | — |
 
@@ -47,10 +47,22 @@ hash do pacote (`ops_package`). Alterar qualquer arquivo de `ops/` muda o hash e
   (padrões: runtime/mailer lock 5s, statement 15s, idle-tx 10s; editora 10s/60s/30s; sobrescreva com
   `-v runtime_lock=...` etc.). Só `ALTER ROLE ... IN DATABASE techwoman`: bases vizinhas não mudam. Vale para
   **novas** sessões de login — reinicie os pools do web/mailer depois. Valor zero, negativo, > 1h ou não-intervalo
-  aborta sem mudar nada.
+  aborta sem mudar nada. O mesmo script fixa `default_transaction_read_only = on` da editora (sem `-v` para mudar;
+  `scripts/migration/agenda-privileges.sql` grava o mesmo valor).
+- **Editora somente leitura (D-048)**: `techwoman_beatriz` só consulta. A migration
+  `drizzle/20261026140000_beatriz_read_only.sql` revoga INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER em tabelas e
+  views (inclusive os grants por coluna do WP-003) e todo privilégio nas sequences de agenda; ficam SELECT (agenda e
+  views inteiras, perfil por coluna), USAGE de `public`/`internal` e EXECUTE de `internal.agenda_editor_visible`; as
+  policies `agenda_editor` são recriadas `FOR SELECT` com o mesmo USING. No host já revogado à mão a migration só
+  reafirma (REVOKE ausente é no-op) e recria as policies, sem ampliar nada. Um grant por coluna feito por **outro
+  grantor** sobrevive ao REVOKE do dono: a migration confere o catálogo inteiro (qualquer grantor, efetivo via PUBLIC,
+  default ACL) e **aborta sem aplicar nada** se sobrar escrita — o operador remove o grant estranho
+  (`REVOKE ... GRANTED BY`) e reaplica. O setting read-only vale só para sessões **LOGIN novas** da editora: `SET ROLE`
+  não o carrega, por isso a barreira é o privilégio (o pgAdmin deve entrar como `techwoman_beatriz`; a matriz roda por
+  SET ROLE e prova as negações por privilégio). Mudanças de dados pedidas pela Beatriz são feitas pelo administrador.
 - **USAGE em `public`**: o preflight exige que `PUBLIC` não tenha USAGE/CREATE em `public`, `internal` e
   `legacy_snapshot`. Com o bootstrap de produção, owner e editora dependem de PUBLIC; a remediação **provada** (matriz
-  581/18/46 verde depois dela) é:
+  verde depois dela: 581/18/46 antes do D-048, 792/10/48 com a editora somente leitura) é:
   `REVOKE USAGE ON SCHEMA public FROM PUBLIC; GRANT USAGE ON SCHEMA public TO techwoman_runtime, techwoman_mailer,
   techwoman_migrator, techwoman_owner, techwoman_beatriz;` — revogar sem os GRANTs quebra `internal.validate_agenda_state`.
 - **Outras bases (D-040)**: **nunca** alterar a ACL de bases de outros serviços (`portal_glosas`, `postgres`, …):
@@ -186,9 +198,11 @@ original fica intacto.
 `python3 /usr/local/lib/tech-woman/preflight.py run [--restore-dump <nome.dump>]` — saída JSON
 `{candidate_sha256, overall, checks[{id,status,detail}]}`; exit 0/87/88.
 
-- **SQL (T12)**: `PF-ROLE-FLAGS`, `PF-ROLE-MEMBER`, `PF-PUBLIC-SCHEMA`, `PF-PUBLIC-FUNC`, `PF-DEFPRIV`, `PF-ROLE-LIMITS`,
+- **SQL (T12)**: `PF-ROLE-FLAGS`, `PF-ROLE-MEMBER`, `PF-PUBLIC-SCHEMA`, `PF-PUBLIC-FUNC`, `PF-DEFPRIV`, `PF-ROLE-LIMITS`
+  (três timeouts finitos por role **e** `default_transaction_read_only=on` da editora nesta base; ausente ou `off` = fail),
   `PF-OTHER-DB`, `PF-HBA` (uma consulta READ ONLY) e `PF-COLGRANT` (a matriz do WP-003, cópia byte-idêntica, exige
-  exatamente 581 negações / 18 permitidas / 46 verificações; ela roda numa transação que desfaz as fixtures). Base
+  exatamente 792 negações / 10 permitidas / 48 verificações — medidas em PG16 com a editora somente leitura, D-048; toda
+  escrita da editora é uma negação executada; ela roda numa transação que desfaz as fixtures). Base
   ilegível ⇒ todos **fail**.
 - **Host (T18)**: `PF-PG-PORT`, `PF-PGADMIN-TLS/-COOKIE/-RATE/-CONN`, `PF-BACKUP-DAILY`, `PF-NGINX-REDACT`,
   `PF-NO-SHARED-TOUCH` ficam **pending** até o operador registrar readback em
@@ -234,4 +248,4 @@ base vazia, web só com a credencial runtime, mailer só com a sua, cadastro 202
 (`pnpm test:e2e` = `tests/pg/e2e-v1.ts`); o transporte fake NÃO atesta entrega SES. Continua NÃO provado: CI remoto no runner ARM (o job `check` não rodou: abrir PR dispara
 o fluxo de merge, fora do escopo da integração); host OCI, pgAdmin, nginx
 real, backup diário real, troca de tráfego pelo alias `app` no nginx compartilhado; importador contra o SQLite de
-produção; caminho positivo real da Beatriz. Preflight de host só passa com evidência real coletada pelo operador.
+produção; leitura real da Beatriz pelo pgAdmin do host (somente leitura, D-048). Preflight de host só passa com evidência real coletada pelo operador.
