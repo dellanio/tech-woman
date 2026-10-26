@@ -4,6 +4,9 @@ pg-pool resolve end() antes de o backend sair; um DROP DATABASE ... WITH (FORCE)
 backend e o FATAL 57P01 ("terminating connection due to administrator command") chega a um cliente sem listener,
 falhando um teste qualquer de forma intermitente (CI #40143692992, INT-006 r1). O padrão já corrigido em
 1fae897 é esperar pg_stat_activity esvaziar (settled) antes do DROP.
+
+O glob cobre todo *.ts de tests/pg (não só *.test.ts): o e2e-v1.ts é executado por `pnpm test:e2e` e por isso
+ficava fora da guarda — foi exatamente ele que derrubou a CI da main (57P01 no teardown, PR #6).
 """
 import pathlib, re, unittest
 
@@ -14,7 +17,7 @@ DROP = re.compile(r'drop database[^`]*with \(force\)', re.IGNORECASE)
 class PgTeardownTests(unittest.TestCase):
     def test_every_forced_drop_of_a_test_database_waits_for_its_backends_first(self):
         missing = []
-        for path in sorted((ROOT / 'tests/pg').glob('*.test.ts')):
+        for path in sorted((ROOT / 'tests/pg').glob('*.ts')):
             text = path.read_text(encoding='utf-8')
             for match in DROP.finditer(text):
                 before = text[max(0, match.start() - 400):match.start()]

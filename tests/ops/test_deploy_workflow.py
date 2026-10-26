@@ -130,7 +130,7 @@ class MergeIdentityTests(unittest.TestCase):
 
 class StageAndPolicyTests(unittest.TestCase):
     def base_workflow(self):
-        return subprocess.run(['git', 'show', 'aadb3cb:.github/workflows/deploy.yml'], cwd=ROOT, capture_output=True,
+        return subprocess.run(['git', 'show', '2ff7347a927458710c1789bb7ad52928f3f68e6c:.github/workflows/deploy.yml'], cwd=ROOT, capture_output=True,
                               check=True).stdout.decode().replace(chr(13) + chr(10), chr(10))
 
     def test_public_smoke_runs_only_after_a_release_never_after_a_stage(self):

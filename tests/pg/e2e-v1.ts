@@ -15,7 +15,7 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import {cpSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync,existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createServer} from 'node:net';
-import {Pool} from 'pg';
+import {Client,Pool} from 'pg';
 
 const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
 type Reply={status:number;json:any;cookie:string|null};
@@ -44,6 +44,8 @@ async function waitUp(origin:string,proc?:ChildProcess){
  }
  throw new Error('timeout aguardando web');
 }
+/** INT-006: espera o banco de teste não ter mais backends em pg_stat_activity antes de um DROP ... WITH (FORCE). */
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 /** Worker em memória com a credencial mailer: o segredo só existe na memória deste processo. */
 async function drain(mailerUrl:string){
  process.env.MAILER_DATABASE_URL=mailerUrl;
@@ -76,7 +78,7 @@ async function flowBefore(http:ReturnType<typeof client>,mailerUrl:string){
  assert.equal(reg2.status,202);
  return {addr,temp,fresh,session:changed.cookie!};
 }
-async function flowAfter(http:ReturnType<typeof client>,s:{addr:string;temp:string;fresh:string;session:string},admin:Pool){
+async function flowAfter(http:ReturnType<typeof client>,s:{addr:string;temp:string;fresh:string;session:string},admin:Pool|Client){
  const who=await http('/api/v1/auth/session',{cookie:s.session});
  assert.deepEqual([who.status,who.json?.data?.state],[200,'authenticated'],'sessão sobrevive ao restart');
  assert.equal((await http('/api/v1/auth/login',{body:{email:s.addr,password:s.temp}})).status,401,'temporária consumida');
@@ -99,9 +101,12 @@ async function selfManaged(){
  const pw={MIGRATOR_PASSWORD:randomBytes(18).toString('hex'),RUNTIME_PASSWORD:randomBytes(18).toString('hex'),MAILER_PASSWORD:randomBytes(18).toString('hex')};
  const hide=(t:string)=>Object.values(pw).reduce((x,s)=>x.split(s).join('<redacted>'),t);
  await control.query(`create database ${db}`);
- const admin=new Pool({connectionString:urlFor()});let web:ChildProcess|undefined;
+ // Client.end aguarda o socket fechar; Pool.end pode resolver antes disso (pg-pool).
+ const admin=new Client({connectionString:urlFor()});let web:ChildProcess|undefined;
  const port=String(await freePort());const origin=`http://127.0.0.1:${port}`;let webErr='';
+ const stop=async()=>{if(web&&web.pid!==undefined&&web.exitCode===null&&web.signalCode===null){const w=web;w.kill('SIGTERM');await new Promise<void>(r=>w.once('exit',()=>r()));}};
  try{
+  await admin.connect();
   const boot=spawnSync('psql',['-X','-q','-v','ON_ERROR_STOP=1','-f','scripts/migration/bootstrap-local.sql',urlFor()],{encoding:'utf8',env:{...process.env,...pw}});
   assert.equal(boot.status,0,'bootstrap-local.sql: '+hide((boot.stdout??'')+(boot.stderr??'')));
   // migradora em processo próprio, só com a credencial migradora
@@ -115,7 +120,6 @@ async function selfManaged(){
   const start=async()=>{web=spawn(process.execPath,['.next/standalone/server.js'],{env,stdio:['ignore','ignore','pipe']});webErr='';
    web.stderr!.on('data',(c:Buffer)=>{webErr=(webErr+c.toString()).slice(-2000);});
    try{await waitUp(origin,web);}catch(error){throw new Error(`${(error as Error).message} (porta ${port}): ${hide(webErr)}`);}};
-  const stop=async()=>{if(web&&web.exitCode===null){const w=web;w.kill('SIGTERM');await new Promise<void>(r=>w.once('exit',()=>r()));}};
   await start();
   const http=client(origin);const mailerUrl=urlFor('techwoman_mailer',pw.MAILER_PASSWORD);
   const state=await flowBefore(http,mailerUrl);
@@ -130,8 +134,14 @@ async function selfManaged(){
   if(evidence)writeFileSync(resolve(evidence,'e2e-v1-result.json'),JSON.stringify(out,null,2));
   console.log(JSON.stringify(out));
  }finally{
-  if(web&&web.exitCode===null)web.kill('SIGTERM');
-  await admin.end();await control.query(`drop database if exists ${db} with (force)`).catch(()=>undefined);await control.end();
+  try{await stop();}finally{
+   try{
+    await admin.end();
+    // INT-006: o Client.end aguarda o socket local, mas o backend some de pg_stat_activity depois.
+    await settled(control,db);
+    await control.query(`drop database if exists ${db} with (force)`);
+   }finally{await control.end();}
+  }
  }
 }
 
