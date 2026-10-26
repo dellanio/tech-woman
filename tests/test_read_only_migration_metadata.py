@@ -8,6 +8,11 @@ TAG = '20261026140000_beatriz_read_only'
 
 
 class ReadOnlyMigrationMetadataTests(unittest.TestCase):
+    def test_read_only_setting_is_a_fixed_literal_in_the_limits_values(self):
+        sql = (ROOT / 'ops/sql/role-limits.sql').read_text()
+        self.assertIn("('techwoman_beatriz', 'default_transaction_read_only', 'on')", sql)
+        self.assertNotIn(":'beatriz_read_only'", sql)
+
     def test_read_only_migration_has_timestamped_snapshot_and_journal(self):
         journal = json.loads((ROOT / 'drizzle/meta/_journal.json').read_text())
         entries = [entry for entry in journal['entries'] if entry['tag'] == TAG]

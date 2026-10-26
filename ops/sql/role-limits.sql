@@ -30,7 +30,8 @@ INSERT INTO tw_role_limits VALUES
  ('techwoman_mailer', 'idle_in_transaction_session_timeout', :'mailer_idle'),
  ('techwoman_beatriz', 'lock_timeout', :'beatriz_lock'),
  ('techwoman_beatriz', 'statement_timeout', :'beatriz_statement'),
- ('techwoman_beatriz', 'idle_in_transaction_session_timeout', :'beatriz_idle');
+ ('techwoman_beatriz', 'idle_in_transaction_session_timeout', :'beatriz_idle'),
+ ('techwoman_beatriz', 'default_transaction_read_only', 'on');
 DO $$
 DECLARE r record;
 BEGIN
@@ -38,13 +39,14 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r.role) THEN
    RAISE EXCEPTION 'role-limits: role % does not exist', r.role;
   END IF;
-  IF r.value !~ '^[0-9]{1,6}(ms|s|min|h)$' OR r.value::interval <= interval '0' OR r.value::interval > interval '1 hour' THEN
+  IF r.setting = 'default_transaction_read_only' THEN
+   IF r.value <> 'on' THEN RAISE EXCEPTION 'role-limits: read-only must be on'; END IF;
+  ELSIF r.value !~ '^[0-9]{1,6}(ms|s|min|h)$' OR r.value::interval <= interval '0' OR r.value::interval > interval '1 hour' THEN
    RAISE EXCEPTION 'role-limits: % for % must be a finite interval > 0 and <= 1h', r.setting, r.role;
   END IF;
  END LOOP;
  FOR r IN SELECT * FROM tw_role_limits LOOP
   EXECUTE format('ALTER ROLE %I IN DATABASE %I SET %s = %L', r.role, current_database(), r.setting, r.value);
  END LOOP;
- EXECUTE format('ALTER ROLE techwoman_beatriz IN DATABASE %I SET default_transaction_read_only = %L', current_database(), 'on');
 END $$;
 COMMIT;
