@@ -35,5 +35,5 @@ test('R2: composição local não passa .env ou credencial migradora ao web',()=
  for(const key of ['MIGRATION_DATABASE_URL','ADMIN_PASSWORD','POSTGRES_PASSWORD'])assert.equal(compose.services.app.environment[key],undefined);
  assert.match(compose.services.app.environment.DATABASE_URL,/techwoman_runtime/);assert.match(compose.services.migrate.environment.MIGRATION_DATABASE_URL,/techwoman_migrator/);
  assert.equal(compose.services.app.environment.SES_SEND_ENABLED,'0');assert.equal(compose.services.app.environment.EMAIL_MODE,'fake');assert.equal(compose.services.app.env_file,undefined);
- const docker=readFileSync('Dockerfile','utf8');for(const path of ['/app/scripts /tools/scripts','/app/drizzle /tools/drizzle','/app/src/lib /tools/src/lib','/app/node_modules /tools/node_modules'])assert.ok(docker.includes(path));
+ const docker=readFileSync('Dockerfile','utf8');for(const path of ['/app/scripts /tools/scripts','/app/drizzle /tools/drizzle','/app/src/lib /tools/src/lib','/tools/node_modules /tools/node_modules'])assert.ok(docker.includes(path));
 });

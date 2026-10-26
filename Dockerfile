@@ -1,3 +1,10 @@
+FROM node:24-bookworm-slim AS tools-deps
+RUN corepack enable && corepack prepare pnpm@10.34.6 --activate
+WORKDIR /tools
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# tsx é runtime do migrador/importador/mailer; kit, TypeScript e Playwright não são.
+RUN pnpm install --prod --frozen-lockfile
+
 FROM node:24-bookworm-slim AS build
 RUN corepack enable && corepack prepare pnpm@10.34.6 --activate
 WORKDIR /app
@@ -15,7 +22,7 @@ COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 # Ferramentas offline e worker usam /tools, nunca a credencial migradora no web.
 # O worker real entra em scripts/ no WP-002, sem alteração deste padrão de cópia.
-COPY --from=build /app/node_modules /tools/node_modules
+COPY --from=tools-deps /tools/node_modules /tools/node_modules
 COPY --from=build /app/package.json /tools/package.json
 COPY --from=build /app/scripts /tools/scripts
 COPY --from=build /app/src/lib /tools/src/lib

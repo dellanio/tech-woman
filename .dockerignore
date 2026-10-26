@@ -1,4 +1,7 @@
 node_modules
+.task-runtime/
+.pool-runtime/
+.tools-smoke/
 .next
 .env
 .env.*
