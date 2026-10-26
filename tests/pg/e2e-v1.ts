@@ -44,6 +44,8 @@ async function waitUp(origin:string,proc?:ChildProcess){
  }
  throw new Error('timeout aguardando web');
 }
+/** INT-006: espera o banco de teste não ter mais backends em pg_stat_activity antes de um DROP ... WITH (FORCE). */
+const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
 /** Worker em memória com a credencial mailer: o segredo só existe na memória deste processo. */
 async function drain(mailerUrl:string){
  process.env.MAILER_DATABASE_URL=mailerUrl;
@@ -135,8 +137,9 @@ async function selfManaged(){
   try{await stop();}finally{
    try{
     await admin.end();
-    // Sem FORCE: conexões remanescentes são falha de cleanup, não devem ser terminadas/ocultadas.
-    await control.query(`drop database if exists ${db}`);
+    // INT-006: o Client.end aguarda o socket local, mas o backend some de pg_stat_activity depois.
+    await settled(control,db);
+    await control.query(`drop database if exists ${db} with (force)`);
    }finally{await control.end();}
   }
  }
