@@ -1,18 +1,11 @@
-import { Invalid, publicSuggestions, reserve } from '@/lib/service';
-import { confirmChoice } from '@/lib/email';
-import { sameOrigin } from '@/lib/auth';
-export const runtime='nodejs';
-const failure=(error:unknown)=>Response.json({error:error instanceof Invalid?error.message:'Não foi possível concluir a escolha.'},{status:error instanceof Invalid?error.status:400});
-export async function GET(_request:Request,{params}:{params:Promise<{token:string}>}) {
-  try {return Response.json(publicSuggestions((await params).token),{headers:{'Cache-Control':'no-store'}});} catch(error){return failure(error)}
-}
-export async function POST(request:Request,{params}:{params:Promise<{token:string}>}) {
-  if (!sameOrigin(request)) return Response.json({error:'Origem não autorizada.'},{status:403});
-  try {
-    const input:unknown=await request.json();
-    if (!input || typeof input!=='object' || !('mentorId' in input) || typeof input.mentorId!=='number') throw new Invalid('Mentora inválida.');
-    const chosen=reserve((await params).token,input.mentorId);
-    const emailStatus=await confirmChoice(chosen.participantId,input.mentorId,chosen.participantEmail,chosen.protocol,chosen.mentorEmail);
-    return Response.json({status:'Mentoria reservada',mentorEmail:chosen.mentorEmail,emailStatus});
-  } catch(error){return failure(error)}
-}
+import { handleWith, readJson, requireOrigin } from '@/lib/auth';
+import { legacyJson, noReferrer } from '@/lib/agenda-http';
+import { legacyChoices, legacyChoose } from '@/lib/service';
+export const runtime = 'nodejs';
+type Params = { token: string };
+type Context = { params: Promise<Params> };
+/** GET: histórico + instrução de ativação. POST: nunca cria match/reserva por token → 409 IDENTITY_RECONCILIATION_REQUIRED (Origin/JSON antes). */
+const read = handleWith(async (_request: Request, { token }: Params) => legacyJson(await legacyChoices(token)));
+const choose = handleWith(async (request: Request, { token }: Params) => { requireOrigin(request); return legacyChoose(token, await readJson(request)); });
+export const GET = async (request: Request, context: Context) => noReferrer(await read(request, context));
+export const POST = async (request: Request, context: Context) => noReferrer(await choose(request, context));

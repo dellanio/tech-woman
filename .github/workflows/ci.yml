@@ -12,19 +12,80 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 45
+    # Ephemeral synthetic PostgreSQL 16 for this job only; no real data, no shared state.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          # Full history: the policy tests diff/show against the frozen BASE commit (INT-006, R-004).
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
       - run: corepack enable && corepack prepare pnpm@10.34.6 --activate
       - run: pnpm install --frozen-lockfile
       - run: python3 -m unittest discover -s tests -v
+      - run: pnpm exec tsx --test tests/unit/password.test.ts
       - run: pnpm exec tsc --noEmit
+      # The build must not need a database: DATABASE_URL points at a closed port.
       - run: pnpm build
         env:
           BUILDING: '1'
           NEXT_TELEMETRY_DISABLED: '1'
+          DATABASE_URL: postgresql://build:build@127.0.0.1:1/unavailable
+      # The PG suites use the standalone built above; `next dev` would rewrite .next and delete the standalone (INT-006).
+      - run: pnpm test:pg
+        env:
+          TEST_STANDALONE: '1'
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      # The ops recovery/limits/preflight suites need their OWN disposable PostgreSQL 16 cluster (initdb, crash
+      # restart, login-time role settings): server binaries only; the cluster runs as the runner user, never as a service.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-16
+      - run: python3 -m unittest -v tests.ops.pg.test_recovery_pg tests.ops.pg.test_preflight_pg tests.ops.pg.test_rehearsal_pg
+        env:
+          WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg
+          WP005_PG_PORT: '55346'
+          PG_BIN: /usr/lib/postgresql/16/bin
+      - run: pnpm exec tsx --test --test-concurrency=1 tests/ops/pg/*.test.ts
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+          WP005_PG_DATA: ${{ runner.temp }}/wp005-recovery-pg
+          WP005_PG_PORT: '55346'
+          PG_BIN: /usr/lib/postgresql/16/bin
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      # Native ARM build, never pushed. The label carries the exact commit of this checkout.
+      - name: Build the production image (local only)
+        id: image
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse HEAD)
+          image_id=$(docker build --quiet --platform linux/arm64 --label org.opencontainers.image.revision="$revision" .)
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+      - name: Verify the image contract
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse HEAD)
+          facts=$(python3 ops/manifest.py release-facts --repo . --migrations-dir drizzle)
+          aggregate=$(printf '%s\n' "$facts" | sed -n 's/^migrations_aggregate=//p')
+          count=$(printf '%s\n' "$facts" | sed -n 's/^migrations_count=//p')
+          bash ops/verify-image.sh --image-only "$IMAGE_ID" "$revision" "$aggregate" "$count"
+      - name: Candidate facts
+        run: python3 ops/manifest.py release-facts --repo . --migrations-dir drizzle >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Only `crontab -l` is allowed; output comes from $TW_FAKE_DIR/crontab.
+source "$(dirname "$0")/_common.sh"
+if [[ $# -eq 1 && "$1" == -l ]]; then
+  tw_log crontab false "$@"
+  [[ -f "${TW_FAKE_DIR:-/nonexistent}/crontab" ]] && cat "$TW_FAKE_DIR/crontab"
+  exit 0
+fi
+tw_log crontab true "$@"
+echo "tripwire: crontab $* must never run in tests" >&2
+exit 99

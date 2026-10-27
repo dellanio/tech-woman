@@ -1,0 +1,11 @@
+# Bytes exatos do pacote ops/ (hash recusa CR) e scripts de operação: LF real em qualquer checkout.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.conf text eol=lf
+*.env  text eol=lf
+# Fakes executáveis sem extensão (shebang) e pacote ops/ inteiro: LF em qualquer checkout (bash quebra os testes).
+ops/**          text eol=lf
+tests/ops/fakes/* text eol=lf

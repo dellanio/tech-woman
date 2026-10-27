@@ -1,0 +1,71 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn,execFileSync} from 'node:child_process';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {Pool} from 'pg';
+import {migrate} from '../../scripts/migration/migrate';
+import {seedDemo} from '../../scripts/seed-demo';
+import {closeDb,tokenDigest} from '../../src/lib/db';
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:55301';
+
+test('T02/R2: import db/auth/event/email/service sem qualquer socket ou DDL',()=>{
+ const output=execFileSync(process.execPath,['--import','tsx','-e',`require('node:net').Socket.prototype.connect=function(){throw new Error('FORBIDDEN_NETWORK_ON_IMPORT')};Promise.all(['db','auth','event','email','service'].map(m=>import('./src/lib/'+m+'.ts'))).then(()=>console.log('IMPORT_NO_IO_OK'));`],{env:{...process.env,DATABASE_URL:'postgresql://unavailable@127.0.0.1:1/unavailable',MIGRATION_DATABASE_URL:undefined},encoding:'utf8'});
+ assert.match(output,/IMPORT_NO_IO_OK/);
+});
+
+test('T01/T02/R2: cada handler aguarda DTO real; senha errada 401 sem cookie, páginas Recife',async()=>{
+ const base=process.env.MIGRATION_DATABASE_URL;assert.ok(base,'PG16 real obrigatório');
+ const control=new Pool({connectionString:base});const name='tw_http_'+randomUUID().replace(/-/g,'');await control.query(`CREATE DATABASE ${name}`);const url=new URL(base);url.pathname='/'+name;
+ const password=randomBytes(24).toString('base64url'),adminEmail='admin-http@example.invalid';
+ process.env.DATABASE_URL=url.toString();process.env.ADMIN_EMAIL=adminEmail;process.env.ADMIN_PASSWORD=password;
+ await migrate(url.toString());await seedDemo();await closeDb();const accountDb=new Pool({connectionString:url.toString(),max:2});
+ const app=spawn(process.execPath,process.env.TEST_STANDALONE==='1'?['.next/standalone/server.js']:['node_modules/next/dist/bin/next','dev','--hostname','127.0.0.1','--port',new URL(origin).port],{stdio:'ignore',env:{...process.env,PORT:new URL(origin).port,HOSTNAME:'127.0.0.1',DATABASE_URL:url.toString(),MIGRATION_DATABASE_URL:undefined,SESSION_SECRET:randomBytes(48).toString('hex'),APP_ORIGIN:origin,EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',NEXT_TELEMETRY_DISABLED:'1'}});
+ let cookie='',csrf='';
+ const call=async(path:string,method='GET',body?:unknown)=>{
+  const response=await fetch(origin+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...(csrf&&method!=='GET'?{'X-CSRF-Token':csrf}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const result=await response.json();assert.ok(result&&typeof result==='object'&&Object.keys(result).length>0,'Promise serializada/vazio em '+path.replace(/\/[a-f0-9]{64}/g,'/<redacted>'));return {response,result};
+ };
+ try{
+  let ready=false;for(let i=0;i<600;i++){if(app.exitCode!==null)throw new Error('Next encerrou antes do smoke');try{const res=await fetch(origin+'/api/mentor',{signal:AbortSignal.timeout(3000)});if(res.ok){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,500));}assert.ok(ready,'Next deve subir');
+  const home=await fetch(origin+'/');assert.equal(home.status,200);assert.match(await home.text(),/em Recife, PE/);
+  let reply=await call('/api/admin/login','POST',{email:adminEmail,password:'wrong'});assert.equal(reply.response.status,401);assert.equal(reply.response.headers.get('set-cookie'),null);
+  reply=await call('/api/admin/login','POST',{email:adminEmail,password});assert.equal(reply.response.status,200);assert.equal(reply.result.role,'owner');cookie=reply.response.headers.get('set-cookie')!.split(';')[0];assert.match(cookie,/^tw_session=[A-Za-z0-9_-]{43}$/,'sessão opaca revogável tw_session (contrato v1), nunca o antigo tw_admin');
+  reply=await call('/api/admin/decide','POST',{participantId:'1',mentorId:'1',action:'reject'});assert.deepEqual([reply.response.status,reply.result.error.code],[403,'CSRF_REJECTED'],'mutação antiga exige o CSRF da sessão');
+  reply=await call('/api/v1/auth/csrf');csrf=String(reply.result.data.csrfToken);assert.ok(csrf);
+  reply=await call('/api/admin/overview');assert.equal(reply.response.status,200);assert.ok(Array.isArray(reply.result.participants));assert.ok(reply.result.mentors.length>0);
+  const mentorId=reply.result.mentors[0].id;assert.equal(typeof mentorId,'string');
+  reply=await call('/api/mentor');assert.equal(typeof reply.result.open,'boolean');
+  reply=await call('/api/mentor','POST',{email:'mentor-http@example.invalid',trajectory:'Trajetória sintética',specialties:['dados'],availability:'Sem horário',capacity:4,consent:true});assert.equal(reply.response.status,202);assert.deepEqual(reply.result,{status:'received',next:'check_email'},'contrato v1: 202 neutro, sem protocolo');
+  assert.deepEqual((await accountDb.query("select u.status,(select count(*)::int from mentor m where m.user_id=u.id and m.capacity=4) m,(select count(*)::int from email_job j where j.user_id=u.id and j.kind='registration' and j.status='queued') j from app_user u where u.email_key='mentor-http@example.invalid'")).rows,[{status:'pending_activation',m:1,j:1}],'conta pendente + perfil + job de e-mail');
+  const input={email:'participant-http@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
+  reply=await call('/api/participant','POST',{...input,email:'participant-new@example.invalid'});assert.equal(reply.response.status,202);assert.deepEqual(reply.result,{status:'received',next:'check_email'},'contrato v1: 202 neutro, sem token nem protocolo');
+  assert.equal((await accountDb.query("select count(*)::int n from app_user u join participant p on p.user_id=u.id where u.email_key='participant-new@example.invalid' and u.status='pending_activation'")).rows[0].n,1);
+  const legacy=async(addr:string)=>{const raw=randomBytes(32).toString('hex');const row=(await accountDb.query("insert into participant(email,goal,moment,interests,skills,area,token_hash,consent_version) values($1,'growth','working','[\"dados\"]','[\"analise\"]','dados',$2,'v0') returning id",[addr,tokenDigest(raw)])).rows[0];await accountDb.query("insert into email_attempt(participant_id,status,updated_at) values($1,'mock-not-sent',now())",[row.id]);return raw;};
+  const token=await legacy(input.email);
+  reply=await call('/api/state/'+token);assert.equal(reply.response.status,200);assert.match(reply.result.emailStatus,/NÃO ENVIADA/);assert.equal(reply.response.headers.get('cache-control'),'no-store');
+  // Contrato final (CONTRATOS §7, linhas 113–115): link antigo só lê histórico + instrução; escolha por token → 409; approve sem turma → 422.
+  reply=await call('/api/choice/'+token);assert.equal(reply.response.status,200);assert.deepEqual([reply.result.choices,reply.result.next],[[],'activate_account']);assert.equal(reply.response.headers.get('referrer-policy'),'no-referrer');
+  reply=await call('/api/choice/'+token,'POST',{mentorId});assert.deepEqual([reply.response.status,reply.result.error.code],[409,'IDENTITY_RECONCILIATION_REQUIRED']);
+  reply=await call('/api/state/'+token);assert.equal(reply.result.status,'Aguardando escolha ou revisão da equipe');
+  const statePage=await fetch(origin+'/inscricao/estado/'+token);assert.equal(statePage.status,200);assert.match(await statePage.text(),/TW-\d{5}/);
+  const person=(await call('/api/admin/overview')).result.participants.find((p:{email:string})=>p.email===input.email);assert.ok(person);
+  await accountDb.query("insert into match(participant_id,mentor_id,score,reasons,status,origin) values($1,$2,3,'[]','approved','legacy')",[person.id,mentorId]);
+  reply=await call('/api/state/'+token);assert.equal(reply.result.status,'Mentoria reservada','par legado importado continua visível no link antigo');
+  reply=await call('/api/admin/overview');assert.equal(reply.result.participants.find((p:{id:string})=>p.id===person.id).approvedMentorId,mentorId);
+  reply=await call('/api/admin/change','POST',{participantId:person.id,action:'cancel'});assert.equal(reply.response.status,200);assert.equal(reply.result.status,'Reserva cancelada');
+  assert.equal((await accountDb.query("select status from match where participant_id=$1",[person.id])).rows[0].status,'cancelled','histórico preservado como cancelado');
+  const secondToken=await legacy('participant-decide@example.invalid');
+  reply=await call('/api/admin/overview');const second=reply.result.participants.find((p:{email:string})=>p.email==='participant-decide@example.invalid');assert.ok(second);
+  reply=await call('/api/admin/decide','POST',{participantId:second.id,mentorId,action:'approve'});assert.deepEqual([reply.response.status,reply.result.error.code,reply.result.error.fields],[422,'INVALID_INPUT',['cohortId']]);
+  reply=await call('/api/state/'+secondToken);assert.equal(reply.result.status,'Aguardando escolha ou revisão da equipe');
+  reply=await call('/api/admin/change','POST',{mentorId,action:'deactivate'});assert.equal(reply.response.status,200);assert.equal(reply.result.status,'Mentora desativada');
+  reply=await call('/api/admin/change','POST',{mentorId,action:'activate'});assert.equal(reply.response.status,200);
+  reply=await call('/api/admin/change','POST',{action:'remove-demo'});assert.equal(reply.response.status,200);assert.match(reply.result.status,/desativadas/);
+  reply=await call('/api/admin/event');assert.equal(reply.response.status,200);const event={description:reply.result.description,venue:'Recife sintético',agenda:'Texto preservado',speakers:'',date:'2026-11-14',duration:''};
+  reply=await call('/api/admin/event','PUT',event);assert.equal(reply.response.status,200);assert.equal(reply.result.venue,event.venue);
+  reply=await call('/api/admin/event');assert.equal(reply.result.date,event.date);
+  reply=await call('/api/state/'+'f'.repeat(64));assert.equal(reply.response.status,404);
+  reply=await call('/api/admin/logout','POST');assert.equal(reply.result.ok,true);assert.match(reply.response.headers.get('set-cookie')!,/tw_session=;.*Max-Age=0/);assert.equal((await accountDb.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n,0,'logout revoga a sessão no banco');cookie='';
+  reply=await call('/api/admin/overview');assert.equal(reply.response.status,401);
+ }finally{app.kill('SIGTERM');await new Promise<void>(resolve=>{if(app.exitCode!==null)resolve();else app.once('exit',()=>resolve());});await accountDb.end();await control.end();await closeDb();}
+});

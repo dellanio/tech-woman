@@ -1,0 +1,419 @@
+### =====================================================================
+### Tech Woman — exemplos da API de Agenda (/api/v1)
+###
+### Como usar (VSCode):
+###   1. Instale a extensão "REST Client" (humao.rest-client).
+###   2. Suba o site local (veja docs/MANUAL-BEATRIZ.md, capítulo 4).
+###   3. Abra este arquivo e clique em "Send Request" acima de cada bloco, NA ORDEM.
+###
+### Tudo aqui é FICTÍCIO e local: e-mails @example.invalid, nenhum segredo no arquivo.
+### As senhas vêm do seu .env (que nunca vai para o Git) pela variável {{$dotenv ...}}.
+### As linhas "# expect:" são só anotações para os testes automáticos; o REST Client as ignora.
+### =====================================================================
+
+@baseUrl = http://localhost:3000
+@api = {{baseUrl}}/api/v1
+@adminEmail = {{$dotenv ADMIN_EMAIL}}
+@adminPassword = {{$dotenv ADMIN_PASSWORD}}
+# Conta fictícia de participante criada no capítulo 7 do manual:
+@participantEmail = participante-exemplo@example.invalid
+@participantPassword = {{$dotenv PARTICIPANT_PASSWORD}}
+@suffix = {{$timestamp}}
+
+###
+### PARTE 1 — entrar como administradora do SITE (conta local de testes)
+###
+### O servidor só aceita escrita se o cabeçalho Origin for igual a APP_ORIGIN do .env.
+### O navegador manda Origin sozinho; aqui precisamos mandar à mão.
+
+# @name login
+# expect: 200
+POST {{api}}/auth/login
+Content-Type: application/json
+Origin: {{baseUrl}}
+
+{"email":"{{adminEmail}}","password":"{{adminPassword}}"}
+
+###
+### O cookie "tw_session" (HttpOnly) foi guardado pelo REST Client. Agora pegue o token CSRF:
+### toda escrita (POST/PATCH/DELETE) precisa mandá-lo no cabeçalho X-CSRF-Token.
+
+# @name csrf
+# expect: 200
+GET {{api}}/auth/csrf
+
+###
+
+# expect: 200
+GET {{api}}/auth/session
+
+###
+### PARTE 2 — temas (topic)
+### Escrita exige: Origin + X-CSRF-Token + Idempotency-Key (um UUID NOVO a cada criação).
+
+# @name createTopic
+# expect: 201
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"slug":"exemplo-dados-{{suffix}}","name":"Dados (exemplo)","description":"Tema fictício para o manual."}
+
+###
+### Repetir o MESMO pedido com a MESMA chave não cria outro tema (idempotência): volta o mesmo recurso.
+
+# expect: 201
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{createTopic.request.headers.Idempotency-Key}}
+
+{"slug":"exemplo-dados-{{suffix}}","name":"Dados (exemplo)","description":"Tema fictício para o manual."}
+
+###
+### A MESMA chave com conteúdo DIFERENTE é recusada.
+
+# expect: 409
+# expect-code: IDEMPOTENCY_CONFLICT
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{createTopic.request.headers.Idempotency-Key}}
+
+{"slug":"exemplo-dados-{{suffix}}","name":"Outro nome","description":"Conteúdo diferente."}
+
+###
+
+# @name createTopic2
+# expect: 201
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"slug":"exemplo-design-{{suffix}}","name":"Design (exemplo)"}
+
+###
+
+# @name createTopic3
+# expect: 201
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"slug":"exemplo-produto-{{suffix}}","name":"Produto (exemplo)"}
+
+###
+### GET de um recurso devolve o cabeçalho ETag (a versão). Guarde-o para o PATCH.
+
+# @name getTopic
+# expect: 200
+GET {{api}}/topics/{{createTopic.response.body.$.data.id}}
+
+###
+### PATCH/DELETE exigem If-Match com a versão atual (aqui, a do ETag acima).
+
+# @name patchTopic
+# expect: 200
+PATCH {{api}}/topics/{{createTopic.response.body.$.data.id}}
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+If-Match: {{getTopic.response.headers.ETag}}
+
+{"description":"Descrição atualizada."}
+
+###
+### Sem If-Match: 428. Com versão velha (a que acabamos de gastar): 412.
+
+# expect: 428
+# expect-code: PRECONDITION_REQUIRED
+PATCH {{api}}/topics/{{createTopic.response.body.$.data.id}}
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+
+{"description":"Sem If-Match."}
+
+###
+
+# expect: 412
+# expect-code: VERSION_MISMATCH
+PATCH {{api}}/topics/{{createTopic.response.body.$.data.id}}
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+If-Match: {{getTopic.response.headers.ETag}}
+
+{"description":"Versão velha."}
+
+###
+### Sem o token CSRF: recusado.
+
+# expect: 403
+# expect-code: CSRF_REJECTED
+POST {{api}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+Idempotency-Key: {{$guid}}
+
+{"slug":"sem-csrf-{{suffix}}","name":"Nunca será criado"}
+
+###
+
+# expect: 200
+GET {{api}}/topics?limit=5
+
+###
+### PARTE 3 — mentora de exemplo e seus temas (mentor_topic)
+### Criamos uma mentora NOVA (fictícia) a cada execução, para o roteiro poder ser repetido.
+
+# @name createMentor
+# expect: 201
+POST {{api}}/admin/mentors
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"email":"mentora-{{suffix}}@example.invalid","displayName":"Mentora Exemplo {{suffix}}","trajectory":"Trajetória fictícia para o manual.","specialties":["dados","design"],"availability":"Sábados de manhã (fictício).","legacyCapacity":3,"consent":true}
+
+###
+### Vincular o tema à mentora na posição 1 (cada mentora tem NO MÁXIMO 2 temas: posições 1 e 2).
+
+# @name link1
+# expect: 201
+POST {{api}}/mentors/{{createMentor.response.body.$.data.id}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"topicId":"{{createTopic.response.body.$.data.id}}","position":1}
+
+###
+
+# @name link2
+# expect: 201
+POST {{api}}/mentors/{{createMentor.response.body.$.data.id}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"topicId":"{{createTopic2.response.body.$.data.id}}","position":2}
+
+###
+### Um terceiro tema é recusado (limite de 2).
+
+# expect: 409
+# expect-code: TOPIC_LIMIT
+POST {{api}}/mentors/{{createMentor.response.body.$.data.id}}/topics
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"topicId":"{{createTopic3.response.body.$.data.id}}","position":1}
+
+###
+### Trocar a ordem dos dois temas numa operação só (atômica). A lista é a NOVA ordem:
+### firstId passa a ser a posição 1 e secondId a posição 2 (aqui, o 2º tema vira o 1º).
+
+# expect: 200
+POST {{api}}/mentors/{{createMentor.response.body.$.data.id}}/topics/reorder
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"firstId":"{{link2.response.body.$.data.id}}","secondId":"{{link1.response.body.$.data.id}}"}
+
+###
+
+# expect: 200
+GET {{api}}/mentors/{{createMentor.response.body.$.data.id}}/topics
+
+###
+### PARTE 4 — turmas (cohort)
+### Datas: RFC 3339 COM fuso (-03:00 = Recife). Sem fuso, o servidor recusa (422).
+### O horário de início de uma turma "open" precisa estar no futuro: ajuste o ano/dia se esta data já passou.
+
+# @name createCohort
+# expect: 201
+POST {{api}}/mentor-topics/{{link1.response.body.$.data.id}}/cohorts
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"startsAt":"2026-11-14T09:00:00-03:00","endsAt":"2026-11-14T10:00:00-03:00","capacity":20,"status":"open"}
+
+###
+### Sem fuso: 422.
+
+# expect: 422
+# expect-code: INVALID_INPUT
+POST {{api}}/mentor-topics/{{link1.response.body.$.data.id}}/cohorts
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"startsAt":"2026-11-14T09:00:00","endsAt":"2026-11-14T10:00:00","capacity":20,"status":"open"}
+
+###
+### Capacidade máxima é 20: 21 é recusado.
+
+# expect: 422
+# expect-code: INVALID_INPUT
+POST {{api}}/mentor-topics/{{link1.response.body.$.data.id}}/cohorts
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"startsAt":"2026-11-14T11:00:00-03:00","endsAt":"2026-11-14T12:00:00-03:00","capacity":21,"status":"open"}
+
+###
+### Sobreposição: a MESMA mentora não pode ter duas turmas no mesmo intervalo (mesmo em outro tema).
+### Aqui 09:30–10:30 cruza com 09:00–10:00.
+
+# expect: 409
+# expect-code: SCHEDULE_CONFLICT
+POST {{api}}/mentor-topics/{{link2.response.body.$.data.id}}/cohorts
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"startsAt":"2026-11-14T09:30:00-03:00","endsAt":"2026-11-14T10:30:00-03:00","capacity":10,"status":"open"}
+
+###
+### Horários colados (10:00 termina, 10:00 começa) NÃO se sobrepõem: o fim é exclusivo.
+
+# @name createCohort2
+# expect: 201
+POST {{api}}/mentor-topics/{{link2.response.body.$.data.id}}/cohorts
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"startsAt":"2026-11-14T10:00:00-03:00","endsAt":"2026-11-14T11:00:00-03:00","capacity":2,"status":"draft"}
+
+###
+### A resposta mostra os horários em UTC ("Z"): 09:00 em Recife = 12:00Z.
+
+# expect: 200
+GET {{api}}/cohorts/{{createCohort.response.body.$.data.id}}
+
+###
+
+# expect: 200
+GET {{api}}/mentor-topics/{{link1.response.body.$.data.id}}/cohorts
+
+###
+### PARTE 5 — reservar como participante (sem aprovação humana)
+### Precisa de uma participante ativa. No ambiente local o e-mail é apenas simulado (a senha
+### temporária é descartada), então: (1) rode o bloco abaixo UMA vez (ele devolve 201; nas
+### próximas vezes, 409, o que é normal); (2) faça o "atalho local" do manual (capítulo 7) que
+### dá à conta fictícia a senha PARTICIPANT_PASSWORD do seu .env; (3) siga para o login.
+### (Você ainda está logada como administradora do SITE nesta altura.)
+
+# @name createParticipant
+# expect: 201,409
+POST {{api}}/admin/participants
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"email":"{{participantEmail}}","goal":"growth","moment":"working","interests":["dados","design"],"skills":["analise"],"area":"dados","consent":true}
+
+###
+### Agora entre como a participante.
+
+# @name participantLogin
+# expect: 200
+POST {{api}}/auth/login
+Content-Type: application/json
+Origin: {{baseUrl}}
+
+{"email":"{{participantEmail}}","password":"{{participantPassword}}"}
+
+###
+
+# @name pcsrf
+# expect: 200
+GET {{api}}/auth/csrf
+
+###
+### Mentoras elegíveis (têm turma aberta futura com vaga) e recomendações com explicação.
+
+# expect: 200
+GET {{api}}/mentors?eligible=true&limit=100
+
+###
+
+# expect: 200
+GET {{api}}/me/recommendations
+
+###
+
+# expect: 200
+GET {{api}}/mentors/{{createMentor.response.body.$.data.id}}/cohorts
+
+###
+### Reservar: o corpo só tem cohortId; quem reserva vem da sessão.
+
+# @name enroll
+# expect: 201
+POST {{api}}/me/enrollments
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{pcsrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"cohortId":"{{createCohort.response.body.$.data.id}}"}
+
+###
+### Reservar de novo a mesma turma com outra chave: já existe reserva ativa.
+
+# expect: 409
+# expect-code: ALREADY_ENROLLED
+POST {{api}}/me/enrollments
+Content-Type: application/json
+Origin: {{baseUrl}}
+X-CSRF-Token: {{pcsrf.response.body.$.data.csrfToken}}
+Idempotency-Key: {{$guid}}
+
+{"cohortId":"{{createCohort.response.body.$.data.id}}"}
+
+###
+
+# expect: 200
+GET {{api}}/me/enrollments
+
+###
+### Cancelar a própria reserva (limpa o exemplo; a vaga volta).
+
+# expect: 200
+DELETE {{api}}/me/enrollments/{{enroll.response.body.$.data.id}}
+Origin: {{baseUrl}}
+X-CSRF-Token: {{pcsrf.response.body.$.data.csrfToken}}
+
+###
+### Sair (apaga a sessão).
+
+# expect: 204
+POST {{api}}/auth/logout
+Origin: {{baseUrl}}
+X-CSRF-Token: {{pcsrf.response.body.$.data.csrfToken}}
