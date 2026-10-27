@@ -173,11 +173,15 @@ class State:
         lines = journal.read_bytes().splitlines(keepends=True) if journal.exists() else []
         return _sha256(lines[-1]) if lines else ZERO
 
-    def _commit(self, data, previous_phase, now):
+    def _commit(self, data, previous_phase, now, expected_state=None):
         state_bytes = _dump(data)
         entry = {'seq': data['seq'], 'phase': data['phase'], 'from': previous_phase, 'at': now,
                  'state_sha256': _sha256(state_bytes), 'prev_entry_sha256': data['prev_sha256']}
         with exclusive(self.dir):
+            # Compare-and-swap under the SAME lock as the write, after long schema operations.
+            # Ownership was checked by the command; reload still checks the entire journal/marker consistency.
+            if expected_state is not None and State.load(self.dir, UNCHECKED).data != expected_state:
+                raise StateError(66, 'state changed during schema-upgrade; no marker changes; retry after diagnosis')
             # Write-ahead: the journal entry is durable before the state is replaced. A crash or error in
             # between leaves the two disagreeing, and load() then fails closed (exit 70).
             with open(self.dir / 'journal.jsonl', 'ab') as journal:
@@ -225,11 +229,11 @@ class State:
         _check_journal(entries, raw_lines, data, state_bytes)
         return cls(directory, data)
 
-    def transition(self, target, now, **updates):
+    def transition(self, target, now, expected_state=None, **updates):
         if (self.phase, target) not in TRANSITIONS:
             raise StateError(75, 'transition %s -> %s is not allowed' % (self.phase, target))
         data = dict(self.data, seq=self.seq + 1, prev_sha256=self._last_entry_sha(), phase=target, **updates)
-        self._commit(data, self.phase, now)
+        self._commit(data, self.phase, now, expected_state=expected_state)
 
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -803,6 +807,115 @@ def cmd_rebind(paths, flags):
     print(json.dumps({'phase': 'pg_write_open', 'candidate_sha256': digest}))
 
 
+CATALOG_SQL = ("select coalesce(json_agg(json_build_array(name,checksum) order by name COLLATE \"C\"), '[]'::json) "
+               "from internal.schema_migration")
+
+
+def _schema_catalog(paths):
+    hostops = _sibling('hostops')
+    try:
+        raw = _sibling('recover').Pg(paths).query(CATALOG_SQL)
+        data = json.loads(raw)
+        if type(data) is not list or any(type(row) is not list or len(row) != 2
+                                        or type(row[0]) is not str or not _is_hex64(row[1]) for row in data):
+            raise ValueError()
+        return [{'name': row[0], 'sha256': row[1]} for row in data]
+    except (hostops.HostError, ValueError):
+        raise StateError(83, 'cannot read the complete internal.schema_migration catalogue')
+
+
+@contextlib.contextmanager
+def _schema_deploy_lock(paths):
+    import fcntl
+    with open(paths['TW_LOCK_FILE'], 'a+b') as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise StateError(66, 'another operation holds the deploy lock')
+        yield
+
+
+def cmd_schema_upgrade(paths, flags):
+    """Append-only schema upgrade, never a cutover replay. Keep deploy out until the marker commits."""
+    image = flags.get('image', '')
+    if not re.fullmatch(r'ghcr\.io/dellanio/tech-woman@sha256:[0-9a-f]{64}', image):
+        raise StateError(64, '--image must be an immutable tech-woman repository reference')
+    with _schema_deploy_lock(paths):
+        _schema_upgrade_locked(paths, image)
+
+
+def _schema_upgrade_locked(paths, image):
+    manifest = _manifest()
+    state = State.load(paths['TW_STATE_DIR'], _policy(paths))
+    if state.phase != 'pg_write_open':
+        raise StateError(75, 'schema-upgrade needs phase pg_write_open')
+    candidate = _sealed_candidate(paths, manifest)
+    now = _now()
+    window = candidate['window']
+    if not window['authorized_at'] <= now < window['expires_at']:
+        raise StateError(73, 'outside the authorised window')
+    sealed = _sha256((pathlib.Path(paths['TW_STATE_DIR']) / 'candidate.json').read_bytes())
+    migrations = candidate['migrations']
+    files = migrations['files']
+    aggregate = (state.data.get('schema_migrations') or {}).get('aggregate_sha256')
+    # Host markers store only an aggregate. Discover N by the EXACT manifest algorithm, not by a count hint.
+    prefixes = [n for n in range(1, len(files) + 1) if manifest._aggregate(files[:n]) == aggregate]
+    if len(prefixes) != 1:
+        raise StateError(72, 'the recorded schema is not an unchanged prefix of the candidate')
+    count = prefixes[0]
+    if count == len(files) and sealed != state.candidate_sha256:
+        raise StateError(72, 'no new migrations: use rebind for a code-only candidate')
+    catalog = _schema_catalog(paths)
+    if catalog != files[:count] and catalog != files:
+        raise StateError(72, 'database catalogue is neither the recorded prefix nor the full candidate')
+    if count == len(files):
+        print(json.dumps({'schema_upgrade': 'already-applied', 'phase': state.phase, 'candidate_sha256': sealed}))
+        return
+    resumed = catalog == files
+    backup = None
+    applied = []
+    if not resumed:
+        import subprocess, uuid
+        hostops = _sibling('hostops')
+        runner = hostops.Runner(paths)
+        # verify-image checks the revision of the tested head AND hashes SQL extracted from the immutable image.
+        done = subprocess.run([paths['TW_BASH'], str(HERE / 'verify-image.sh'), image, candidate['tested_head'],
+                               migrations['aggregate_sha256'], str(migrations['count'])],
+                              capture_output=True, text=True)
+        if done.returncode:
+            raise StateError(done.returncode, 'candidate image verification failed')
+        directory = pathlib.Path(paths['TW_BACKUP_DIR'])
+        backup = 'pre-schema-upgrade-' + now.replace('-', '').replace(':', '') + '-' + uuid.uuid4().hex + '.dump'
+        target = directory / backup
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            runner.run(['docker', 'exec', paths['TW_PG_CONTAINER'], 'pg_dump', '-Fc', '-U',
+                        paths['TW_PG_DUMP_USER'], paths['TW_PG_DB']], stdout_path=target)
+            if target.stat().st_size == 0:
+                raise OSError('empty backup')
+            with open(target, 'rb') as handle:
+                os.fsync(handle.fileno())
+            _fsync_directory(directory)
+        except (OSError, hostops.HostError):
+            if target.exists():
+                target.rename(str(target) + '.failed')
+            raise StateError(79, 'pre-schema-upgrade backup failed; no migrations or marker changes')
+        try:
+            runner.run(_migrator_argv(paths, image), error='candidate migrations failed')
+        except hostops.HostError:
+            raise StateError(83, 'migrator failed; marker unchanged; backup: ' + backup)
+        applied = [f['name'] for f in files[count:]]
+    # Full catalogue, including names and checksums, not just row count. A committed migration may be resumed here.
+    if _schema_catalog(paths) != files:
+        raise StateError(72, 'database catalogue after migration differs from the full candidate; marker unchanged')
+    # Both identities change in ONE existing state transition. Image registration remains register-release's job.
+    state.transition('pg_write_open', _now(), candidate_sha256=sealed, expected_state=state.data,
+                     schema_migrations={'aggregate_sha256': migrations['aggregate_sha256']})
+    print(json.dumps({'schema_upgrade': 'verified', 'phase': state.phase, 'candidate_sha256': sealed,
+                      'aggregate_sha256': migrations['aggregate_sha256'], 'applied': applied,
+                      'resumed': resumed, 'backup': backup}))
+
+
 RELEASE_ATTESTATION_KEYS = sorted(ATTESTATION_KEYS + ['previous_container', 'backup'])
 RELEASE_ATTESTATION_KEYS.remove('phase')
 
@@ -1050,12 +1163,13 @@ COMMANDS = {
     'open-writes': cmd_open_writes,
     'release-check': cmd_release_check,
     'rebind': cmd_rebind,
+    'schema-upgrade': cmd_schema_upgrade,
     'register-release': cmd_register_release,
     'record-first-write': cmd_record_first_write,
     'recover': cmd_recover,
 }
 FLAG_NAMES = {'freeze': ['quiet-seconds'], 'abort': ['reason'], 'release-check': ['previous-image'],
-              'recover': ['mode', 'dump']}
+              'schema-upgrade': ['image'], 'recover': ['mode', 'dump']}
 
 
 def main(argv):
