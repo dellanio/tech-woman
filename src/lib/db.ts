@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes, scrypt, timingSafeEqual, createHash } from 'node:crypto';
 import * as schema from './schema';
+import { logPoolErrors } from './pool-errors';
 export * from './schema';
 
 let pool: Pool | undefined;
@@ -12,7 +13,7 @@ export function getDb() {
     const connectionString=process.env.DATABASE_URL;
     if(!connectionString) throw new Error('Configure DATABASE_URL para PostgreSQL.');
     // Margem para cold start em host compartilhado; aquisição continua limitada a 10 s (FIX-T01).
-    pool=new Pool({connectionString,max:5,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000});
+    pool=logPoolErrors(new Pool({connectionString,max:5,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,statement_timeout:15000,lock_timeout:5000,idle_in_transaction_session_timeout:15000}),'web');
     database=drizzle(pool,{schema});
   }
   return database;

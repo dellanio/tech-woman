@@ -1,6 +1,7 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
+import { logPoolErrors } from './pool-errors';
 import { getDb, emailAttempts, choiceEmailAttempts, hashPassword, tokenDigest } from './db';
 import { generateResetToken, generateTemporaryPassword } from './identity';
 import { eq } from 'drizzle-orm';
@@ -74,7 +75,7 @@ function mailerPool(): Pool {
     const connectionString = process.env.MAILER_DATABASE_URL ?? process.env.DATABASE_URL;
     if (!connectionString) throw new Error('Configure MAILER_DATABASE_URL.');
     // Mesmo orçamento finito de conexão do web, sem repetir SQL nem envio (FIX-T01).
-    pool = new Pool({ connectionString, max: 2, connectionTimeoutMillis: 10000, statement_timeout: 15000, lock_timeout: 5000, idle_in_transaction_session_timeout: 15000 });
+    pool = logPoolErrors(new Pool({ connectionString, max: 2, connectionTimeoutMillis: 10000, statement_timeout: 15000, lock_timeout: 5000, idle_in_transaction_session_timeout: 15000 }), 'mailer');
   }
   return pool;
 }

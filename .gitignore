@@ -1,4 +1,8 @@
 node_modules
+.task-runtime/
+.pool-runtime/
+.schema-upg-runtime/
+.tools-smoke/
 .next
 .env
 .env.local

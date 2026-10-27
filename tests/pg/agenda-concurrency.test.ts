@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import type {Client} from 'pg';
-import {withDb,withClients,connect,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,pgFails,pidOf,waitLocked,EDITOR} from './agenda-harness';
+import {withDb,withClients,connect,addUser,addTopic,addMentor,addParticipant,addMentorTopic,addCohort,pgFails,pidOf,waitLocked,EDITOR,DIRECT_SQL,editorWriteDenied} from './agenda-harness';
+// D-048: a editora é somente leitura; o SQL direto concorrente destas corridas é do dono do banco (DIRECT_SQL). A editora só lê e recebe 42501.
 
 const enrollSql="insert into enrollment(participant_id,cohort_id,status) values($1,$2,'active') returning id::text";
 const counts=async(db:Client|{query:Client['query']},cohort:string)=>(await db.query(`select (select count(*)::int from enrollment where cohort_id=$1 and status='active') active,
@@ -15,18 +16,19 @@ async function race(control:{query:Client['query']},a:Client,b:Client,first:(c:C
  return pending;
 }
 
-test('última vaga em READ COMMITTED: B espera o guard e, após o commit de A, a consulta pós-lock vê a vaga tomada (SQL editora × outro cliente)', ()=>withDb(async ({db,url})=>{
+test('última vaga em READ COMMITTED: B espera o guard e, após o commit de A, a consulta pós-lock vê a vaga tomada (SQL direto do dono × outro cliente; editora somente leitura negada)', ()=>withDb(async ({db,url})=>{
  const c=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0,capacity:1});const [p,q]=[await addParticipant(db),await addParticipant(db)];
- await withClients(url,[undefined,EDITOR],async (a,b)=>{
+ await withClients(url,[undefined,DIRECT_SQL],async (a,b)=>{
   await pgFails(race(db,a,b,x=>x.query(enrollSql,[p,c]),x=>x.query(enrollSql,[q,c])),'23514','agenda_capacity_exceeded');
  });
+ await editorWriteDenied(url,enrollSql,[q,c]);
  assert.deepEqual(await counts(db,c),{active:1,matches:1,jobs:1});
 }));
 
 test('limite 20: 21 clientes simultâneos na mesma turma → exatamente 20 sucessos e 1 recusa por capacidade, efeitos só dos vencedores', ()=>withDb(async ({db,url})=>{
  const c=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0,capacity:20});
  const people=await Promise.all(Array.from({length:21},()=>addParticipant(db)));
- const clients=await Promise.all(people.map((_,i)=>connect(url,i%2?EDITOR:undefined)));
+ const clients=await Promise.all(people.map(()=>connect(url,DIRECT_SQL)));
  try{
   await Promise.all(clients.map(x=>x.query('begin')));
   const results=await Promise.allSettled(clients.map((x,i)=>x.query(enrollSql,[people[i],c]).then(()=>x.query('commit')).catch(async e=>{await x.query('rollback');throw e;})));
@@ -39,7 +41,7 @@ test('limite 20: 21 clientes simultâneos na mesma turma → exatamente 20 suces
 
 test('duplicata simultânea da mesma participante na mesma turma: uma reserva, a outra recusada por enrollment_active_unique', ()=>withDb(async ({db,url})=>{
  const c=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0,capacity:5});const p=await addParticipant(db);
- await withClients(url,[EDITOR,undefined],async (a,b)=>{
+ await withClients(url,[DIRECT_SQL,undefined],async (a,b)=>{
   await pgFails(race(db,a,b,x=>x.query(enrollSql,[p,c]),x=>x.query(enrollSql,[p,c])),'23505','enrollment_active_unique');
  });
  assert.deepEqual(await counts(db,c),{active:1,matches:1,jobs:1});
@@ -48,7 +50,7 @@ test('duplicata simultânea da mesma participante na mesma turma: uma reserva, a
 test('mesma participante em mentoras diferentes com horários sobrepostos, simultâneo: só uma reserva', ()=>withDb(async ({db,url})=>{
  const x=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0}),y=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0.5});
  const p=await addParticipant(db);
- await withClients(url,[undefined,EDITOR],async (a,b)=>{
+ await withClients(url,[undefined,DIRECT_SQL],async (a,b)=>{
   await pgFails(race(db,a,b,k=>k.query(enrollSql,[p,x]),k=>k.query(enrollSql,[p,y])),'23514','agenda_participant_overlap');
  });
  assert.equal((await db.query("select count(*)::int n from enrollment where participant_id=$1 and status='active'",[p])).rows[0].n,1);
@@ -56,7 +58,7 @@ test('mesma participante em mentoras diferentes com horários sobrepostos, simul
 
 test('REPEATABLE READ: snapshot anterior a uma reserva concorrente falha com 40001; nova tentativa integral revalida e respeita a vaga', ()=>withDb(async ({db,url})=>{
  const c=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0,capacity:1});const [p,q]=[await addParticipant(db),await addParticipant(db)];
- await withClients(url,[EDITOR,undefined],async (a,b)=>{
+ await withClients(url,[DIRECT_SQL,undefined],async (a,b)=>{
   await a.query('begin isolation level repeatable read');
   assert.equal((await a.query("select count(*)::int n from enrollment where cohort_id=$1 and status='active'",[c])).rows[0].n,0);
   await b.query(enrollSql,[q,c]);
@@ -72,7 +74,7 @@ test('redução de capacidade × reserva simultâneas, nas duas ordens: ocupaç�
  const c1=await addCohort(db,mt,{from:0,capacity:2}),c2=await addCohort(db,mt,{from:2,capacity:2});
  const [p,q,r,s]=await Promise.all([0,1,2,3].map(()=>addParticipant(db)));
  await db.query(enrollSql,[p,c1]);await db.query(enrollSql,[r,c2]);
- await withClients(url,[EDITOR,undefined],async (a,b)=>{
+ await withClients(url,[DIRECT_SQL,undefined],async (a,b)=>{
   await pgFails(race(db,a,b,k=>k.query('update cohort set capacity=1 where id=$1',[c1]),k=>k.query(enrollSql,[q,c1])),'23514','agenda_capacity_exceeded');
   await pgFails(race(db,a,b,k=>k.query(enrollSql,[s,c2]),k=>k.query('update cohort set capacity=1 where id=$1',[c2])),'23514','agenda_capacity_exceeded');
  });
@@ -86,7 +88,7 @@ test('realocação atômica em transação SQL: cancelar origem + reservar desti
  const e=(await db.query(enrollSql,[p,origin])).rows[0].id;await db.query(enrollSql,[q,target]);
  const snapshot=async()=>(await db.query("select string_agg(x,'|' order by x) s from (select e::text x from enrollment e union all select m::text from match m union all select j.status||j.dedupe_key from email_job j) t")).rows[0].s;
  const before=await snapshot();
- await withClients(url,[EDITOR],async b=>{
+ await withClients(url,[DIRECT_SQL],async b=>{
   await b.query('begin');await b.query("update enrollment set status='cancelled' where id=$1",[e]);
   await pgFails(b.query(enrollSql,[p,target]),'23514','agenda_capacity_exceeded');await b.query('rollback');
   assert.equal(await snapshot(),before,'falha no destino mantém a reserva anterior intacta');
@@ -99,18 +101,19 @@ test('realocação atômica em transação SQL: cancelar origem + reservar desti
 test('linhas ocultas sob concorrência: reserva de participante protegida (invisível à editora) em andamento bloqueia a última vaga corretamente', ()=>withDb(async ({db,url})=>{
  const admin=await addUser(db,{roles:['admin','participant']});const hidden=await addParticipant(db,{userId:admin.id,email:admin.email});
  const c=await addCohort(db,await addMentorTopic(db,await addMentor(db),await addTopic(db)),{from:0,capacity:1});const p=await addParticipant(db);
- await withClients(url,[undefined,EDITOR],async (a,b)=>{
+ await withClients(url,[undefined,DIRECT_SQL,EDITOR],async (a,b,editor)=>{
   await pgFails(race(db,a,b,k=>k.query(enrollSql,[hidden,c]),k=>k.query(enrollSql,[p,c])),'23514','agenda_capacity_exceeded');
-  assert.equal((await b.query('select count(*)::int n from enrollment where cohort_id=$1',[c])).rows[0].n,0,'editora não vê a reserva protegida');
+  assert.equal((await editor.query('select count(*)::int n from enrollment where cohort_id=$1',[c])).rows[0].n,0,'editora não vê a reserva protegida');
+  await pgFails(editor.query(enrollSql,[p,c]),'42501');
  });
  assert.deepEqual(await counts(db,c),{active:1,matches:1,jobs:1});
 }));
 
-test('ordem de locks API (app_user → guard) × SQL editora (guard → FK do job no app_user): FOR UPDATE gera deadlock finito (40P01, um lado refaz); FOR NO KEY UPDATE não conflita', ()=>withDb(async ({db,url})=>{
+test('ordem de locks API (app_user → guard) × SQL direto do dono (guard → FK do job no app_user): FOR UPDATE gera deadlock finito (40P01, um lado refaz); FOR NO KEY UPDATE não conflita', ()=>withDb(async ({db,url})=>{
  const user=await addUser(db,{roles:['participant']});const p=await addParticipant(db,{userId:user.id,email:user.email});
  const mt=await addMentorTopic(db,await addMentor(db),await addTopic(db));const c1=await addCohort(db,mt,{from:0}),c2=await addCohort(db,mt,{from:2});
  for(const [mode,cohort] of [['for update',c1],['for no key update',c2]] as const){
-  await withClients(url,[undefined,EDITOR],async (api,b)=>{
+  await withClients(url,[undefined,DIRECT_SQL],async (api,b)=>{
    await api.query('begin');await api.query(`select 1 from app_user where id=$1 ${mode}`,[user.id]);
    await b.query('begin');const bp=await pidOf(b);
    const editor=b.query(enrollSql,[p,cohort]).then(()=>b.query('commit')).catch(async e=>{await b.query('rollback');throw e;});editor.catch(()=>undefined);

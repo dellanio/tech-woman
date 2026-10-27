@@ -15,7 +15,7 @@
 6. [Git, branches, testes, Pull Request e CI (sem editar a `main`)](#6-git-branches-testes-pull-request-e-ci-sem-editar-a-main)
 7. [Regras do negócio (dicionário)](#7-regras-do-negócio-dicionário)
 8. [A API de Agenda (`/api/v1`) passo a passo](#8-a-api-de-agenda-apiv1-passo-a-passo)
-9. [Conferir e editar dados pelo pgAdmin](#9-conferir-e-editar-dados-pelo-pgadmin)
+9. [Consultar dados pelo pgAdmin](#9-consultar-dados-pelo-pgadmin)
 10. [E-mails: o que cada estado significa](#10-e-mails-o-que-cada-estado-significa)
 11. [Quando algo dá errado](#11-quando-algo-dá-errado)
 12. [O que foi testado e o que ainda depende de outras pessoas](#12-o-que-foi-testado-e-o-que-ainda-depende-de-outras-pessoas)
@@ -31,8 +31,8 @@ Três coisas diferentes, que as pessoas costumam misturar. Guarde esta tabela:
 
 | | **SITE** | **PostgreSQL** | **pgAdmin** |
 |---|---|---|---|
-| O que é | O aplicativo que as pessoas abrem no navegador (`/`, `/inscricao`, `/mentora`, `/login`, `/conta`, `/admin`). | O **banco de dados**: onde tudo fica guardado (contas, mentoras, temas, turmas, reservas). | Um **programa de visualização e edição** do banco, que abre no navegador. |
-| Analogia | O balcão de atendimento. | O arquivo/estoque atrás do balcão. | A chave para entrar no estoque e mexer direto nas prateleiras. |
+| O que é | O aplicativo que as pessoas abrem no navegador (`/`, `/inscricao`, `/mentora`, `/login`, `/conta`, `/admin`). | O **banco de dados**: onde tudo fica guardado (contas, mentoras, temas, turmas, reservas). | Um **programa de consulta** do banco para a Beatriz, que abre no navegador. |
+| Analogia | O balcão de atendimento. | O arquivo/estoque atrás do balcão. | Uma janela para consultar as prateleiras, sem modificar o estoque. |
 | Quem usa | Participantes, mentoras, equipe e administradoras. | Só o site (e o enviador de e-mails) falam com ele. | Pessoas autorizadas, em último caso. |
 | Login | E-mail e senha da **conta do site**. | Papéis (roles) do banco: `techwoman_runtime`, `techwoman_migrator`… | Uma conta **própria** do pgAdmin + um papel do banco com permissão limitada. |
 
@@ -52,7 +52,7 @@ Uma mesma pessoa (um e-mail) pode ter mais de um papel (ex.: mentora **e** parti
 - **Dados do dia a dia** (cadastros, mentoras, participantes): pelo painel `/admin`.
 - **Temas, turmas e reservas (a Agenda):** **não existe tela de cadastro de Agenda**. A Agenda é cadastrada pela **API** (capítulo 8) por quem tem permissão. A participante apenas **escolhe** mentora e horário numa tela do site.
 - **Estrutura do banco** (criar tabela/coluna): só por **código** (Drizzle + migration, capítulo 5), com revisão num Pull Request.
-- **Edição direta no pgAdmin:** só campos permitidos e sempre sob as travas do banco (capítulo 9).
+- **pgAdmin da Beatriz:** somente consulta dos campos permitidos (capítulo 9). Para incluir, alterar ou excluir dados, peça à pessoa administradora responsável pelo site.
 
 > **A regra de ouro:** o site é o caminho principal. O pgAdmin é a ferramenta de exceção e **nunca** é um atalho para contornar uma regra.
 
@@ -545,18 +545,20 @@ curl -s -b cookies.txt -H 'Content-Type: application/json' -H 'Origin: http://lo
 
 ---
 
-## 9. Conferir e editar dados pelo pgAdmin
+## 9. Consultar dados pelo pgAdmin
 
 O pgAdmin é a **exceção**, não o caminho normal. Em produção ele é configurado **pela pessoa que cuida do servidor** (com login próprio do pgAdmin e uma conta separada do site). Este manual não traz endereços nem senhas; peça-os pelo canal combinado, nunca por e-mail com senha.
 
 O que muda para você ao usar o pgAdmin:
 
-- Sua conta do banco (`techwoman_beatriz`) **não cria nem apaga tabelas**, não vira "superusuária" e **não vê** contas, senhas, sessões, fila de e-mails nem o arquivo da migração.
-- Você enxerga **visões seguras** de participantes e mentoras (`participant_editor`, `mentor_editor`), sem e-mail nem token, e pode editar **só as colunas permitidas** de temas, vínculos, turmas, reservas e perfis.
-- As **mesmas travas** do site valem: o banco recusa sobreposição de horário, vaga acima da capacidade e mudança de turma com reservas. Se der erro de gatilho, **o banco está protegendo você** — não tente contornar.
+- Sua conta do banco (`techwoman_beatriz`) é **somente leitura**: não inclui, altera ou exclui dados, não cria nem apaga tabelas e não vira "superusuária".
+- Você consulta **visões seguras** de participantes e mentoras (`participant_editor`, `mentor_editor`) e as colunas autorizadas de temas, vínculos, turmas e reservas, sem e-mail nem token. Contas, senhas, sessões, fila de e-mails e o arquivo da migração não ficam disponíveis.
 - Registros ligados a contas de administradora ficam invisíveis para você.
-- **Não apague linhas**: para "tirar do ar", marque `active = false` (ou `status = 'cancelled'`). Todas as ligações são `ON DELETE RESTRICT` de propósito.
-- Cuidado com transações abertas: o banco derruba sessões paradas depois de 30 s para não travar o site.
+- Para incluir, alterar ou excluir dados, **peça à pessoa administradora responsável pelo site**; não tente habilitar edição no pgAdmin.
+- Toda conexão nova começa com `default_transaction_read_only=on`; além disso, os privilégios de escrita e de uso das sequences foram revogados. Mesmo desligar o modo de transação não concede escrita.
+- Cuidado com transações abertas: o banco encerra transações ociosas depois de 30 s para não travar o site.
+
+Para consultar: abra a conexão autorizada no pgAdmin, escolha uma visão segura e use a visualização de dados. No Query Tool, use somente `SELECT` com as colunas permitidas (não `SELECT *` de tabelas com colunas protegidas). A consulta `SHOW transaction_read_only;` deve mostrar `on`. Mensagens de permissão negada ou transação somente leitura são proteções esperadas, não instruções para trocar de conta.
 
 Para estudar o banco sem risco, use o PostgreSQL **do seu computador** (capítulo 4) e o `DER.md`.
 
@@ -659,7 +661,7 @@ Este manual foi conferido contra o código integrado (revisão `e9d1e32`). Evid�
 | **Migration** | Arquivo `.sql` que muda o banco de forma versionada. |
 | **Overlap** | Dois horários que se cruzam. |
 | **PostgreSQL** | O banco de dados. |
-| **pgAdmin** | Programa para olhar/editar o PostgreSQL. |
+| **pgAdmin** | Programa para acessar o PostgreSQL; a conta da Beatriz é somente consulta. |
 | **PR (Pull Request)** | Pedido para juntar o seu branch à `main`, onde o CI roda. |
 | **Seed** | Dados de demonstração criados de propósito (fictícios). |
 | **SITE** | O aplicativo que as pessoas usam no navegador. |

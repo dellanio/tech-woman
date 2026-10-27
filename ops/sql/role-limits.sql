@@ -5,6 +5,8 @@
 -- Idempotent. Values may be overridden with -v name=value (e.g. -v beatriz_idle=45s); each must be a finite
 -- interval > 0 and <= 1 hour, otherwise nothing is changed. Values arrive as psql literals (:'x'), never as SQL.
 -- Login settings apply to NEW login sessions only: restart the web/mailer pools after applying.
+-- D-048: techwoman_beatriz is read-only; default_transaction_read_only = on is FIXED here (no -v override), in the same place
+-- as her timeouts, and PF-ROLE-LIMITS demands it. It is a first layer only: SET ROLE does not load it, the privileges do the denying.
 \set ON_ERROR_STOP on
 \if :{?runtime_lock}   \else \set runtime_lock 5s \endif
 \if :{?runtime_statement} \else \set runtime_statement 15s \endif
@@ -28,7 +30,8 @@ INSERT INTO tw_role_limits VALUES
  ('techwoman_mailer', 'idle_in_transaction_session_timeout', :'mailer_idle'),
  ('techwoman_beatriz', 'lock_timeout', :'beatriz_lock'),
  ('techwoman_beatriz', 'statement_timeout', :'beatriz_statement'),
- ('techwoman_beatriz', 'idle_in_transaction_session_timeout', :'beatriz_idle');
+ ('techwoman_beatriz', 'idle_in_transaction_session_timeout', :'beatriz_idle'),
+ ('techwoman_beatriz', 'default_transaction_read_only', 'on');
 DO $$
 DECLARE r record;
 BEGIN
@@ -36,7 +39,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r.role) THEN
    RAISE EXCEPTION 'role-limits: role % does not exist', r.role;
   END IF;
-  IF r.value !~ '^[0-9]{1,6}(ms|s|min|h)$' OR r.value::interval <= interval '0' OR r.value::interval > interval '1 hour' THEN
+  IF r.setting = 'default_transaction_read_only' THEN
+   IF r.value <> 'on' THEN RAISE EXCEPTION 'role-limits: read-only must be on'; END IF;
+  ELSIF r.value !~ '^[0-9]{1,6}(ms|s|min|h)$' OR r.value::interval <= interval '0' OR r.value::interval > interval '1 hour' THEN
    RAISE EXCEPTION 'role-limits: % for % must be a finite interval > 0 and <= 1h', r.setting, r.role;
   END IF;
  END LOOP;

@@ -90,11 +90,13 @@ case "$sub" in
         exit "$(rc_of pgdump.rc 0)"
       fi
     done
-    [[ -f "$d/exec.out" ]] && cat "$d/exec.out"
-    [[ -f "$d/exec.err" ]] && cat "$d/exec.err" >&2
-    # per-container sequence (exec-<name>.rc.N): e.g. a new web failing its smoke, then the restored one passing
+    # per-container sequence (exec-<name>.rc.N, exec-<name>.out.N): e.g. a new web failing its smoke, then the
+    # restored one passing; or the migration catalogue read before and after the migrator
     target=${1:-}; [[ "$target" == -i ]] && target=${2:-}
     m=$(cat "$d/exec-$target.count" 2>/dev/null || echo 0); m=$((m + 1)); echo "$m" > "$d/exec-$target.count"
+    if [[ -f "$d/exec-$target.out.$m" ]]; then cat "$d/exec-$target.out.$m"
+    elif [[ -f "$d/exec.out" ]]; then cat "$d/exec.out"; fi
+    [[ -f "$d/exec.err" ]] && cat "$d/exec.err" >&2
     if [[ -f "$d/exec-$target.rc.$m" ]]; then exit "$(cat "$d/exec-$target.rc.$m")"; fi
     exit "$(rc_of exec.rc 0)" ;;
   login) cat > "$d/login.stdin"; exit "$(rc_of login.rc 0)" ;;

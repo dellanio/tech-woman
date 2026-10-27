@@ -221,7 +221,7 @@ Tabelas sem linha no desenho (não têm chave estrangeira): `event_content`, `de
 - **Nada se apaga**: todas as chaves estrangeiras são `ON DELETE RESTRICT`. O site **desativa** (`active = false`, `status = 'cancelled'`) em vez de apagar, para preservar o histórico.
 - **Proteções no banco** (gatilhos `agenda_*`): impedem *overlap* de horários da mesma mentora, *overlap* de reservas da mesma participante, reserva acima da capacidade e transições de status inválidas — **mesmo que alguém edite pelo pgAdmin**.
 - **Schemas**: tabelas do site em `public`; `internal` guarda a trava da Agenda e o registro de migrations; `legacy_snapshot` é um arquivo privado com a cópia bruta do SQLite (não é lido pelo site).
-- **Papéis do PostgreSQL** (quem acessa o banco; não confundir com os papéis do site): `techwoman_migrator` (aplica migrations), `techwoman_runtime` (o site), `techwoman_mailer` (o enviador de e-mails), `techwoman_owner` (dono, não faz login) e `techwoman_beatriz` (edição direta pelo pgAdmin, só em colunas permitidas).
+- **Papéis do PostgreSQL** (quem acessa o banco; não confundir com os papéis do site): `techwoman_migrator` (aplica migrations), `techwoman_runtime` (o site), `techwoman_mailer` (o enviador de e-mails), `techwoman_owner` (dono, não faz login) e `techwoman_beatriz` (consulta pelo pgAdmin, **somente leitura** e só nas colunas permitidas — D-048; mudanças de dados são feitas pelo administrador).
 
 
 ## 5. Dicionário — contas e acesso (quem consegue entrar no site)

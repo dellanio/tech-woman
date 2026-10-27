@@ -29,6 +29,13 @@
       "when": 1792710395000,
       "tag": "20261022230635_wp001_archive_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793023200000,
+      "tag": "20261026140000_beatriz_read_only",
+      "breakpoints": true
     }
   ]
 }

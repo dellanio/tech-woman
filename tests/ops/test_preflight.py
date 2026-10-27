@@ -48,7 +48,7 @@ FILES = {'PF-PG-PORT': ['ss-ltn.txt'], 'PF-PGADMIN-TLS': ['pgadmin-headers.txt']
 SQL_OK = json.dumps(dict({cid: {'bad': 0} for cid in ['PF-ROLE-FLAGS', 'PF-ROLE-MEMBER', 'PF-PUBLIC-SCHEMA',
                                                        'PF-PUBLIC-FUNC', 'PF-DEFPRIV', 'PF-ROLE-LIMITS', 'PF-HBA']},
                          **{'PF-OTHER-DB': {'databases': []}}))  # connection attempts: tests/ops/pg (PG16 real)
-MATRIX_OK = 'psql:<stdin>:317: NOTICE:  MATRIX OK: 581 negações por privilégio executadas, 18 execuções permitidas, 46 verificações de catálogo/efeito\n'
+MATRIX_OK = 'psql:<stdin>:349: NOTICE:  MATRIX OK: 792 negações por privilégio executadas, 10 execuções permitidas, 48 verificações de catálogo/efeito\n'
 
 
 class PreflightHostTestCase(unittest.TestCase):
@@ -104,6 +104,25 @@ class PendingByDefaultTests(PreflightHostTestCase):
         self.assertNotIn(COOKIE_SECRET, done.stdout + done.stderr)
         self.assertNotIn('dellanio.conf', done.stdout + done.stderr)
         self.assertNotIn(str(self.host.state_dir), done.stdout + done.stderr)
+
+
+class ReadOnlyEditorTests(PreflightHostTestCase):
+    def test_a_matrix_or_role_limits_of_a_writing_editor_fail_closed(self):
+        """D-048: the pre-read-only matrix (editor writes allowed: 581/18/46) and a missing editor read-only setting
+        (PF-ROLE-LIMITS bad > 0, as preflight.sql counts it) are failures, never a pass."""
+        self.register()
+        (self.host.ops.fake / 'exec.err').write_bytes(MATRIX_OK.replace('792', '581').replace(' 10 ', ' 18 ').replace('48', '46').encode())
+        done = self.preflight()
+        self.assertEqual(done.returncode, 87, done.stderr)
+        report = {c['id']: c for c in json.loads(done.stdout)['checks']}
+        self.assertEqual(report['PF-COLGRANT'], {'id': 'PF-COLGRANT', 'status': 'fail',
+                                                 'detail': '581 denied, 18 allowed, 46 checked (expected 792/10/48)'})
+        (self.host.ops.fake / 'exec.err').write_bytes(MATRIX_OK.encode())
+        (self.host.ops.fake / 'exec.out').write_bytes(json.dumps(dict(json.loads(SQL_OK), **{'PF-ROLE-LIMITS': {'bad': 1}})).encode())
+        done = self.preflight()
+        self.assertEqual(done.returncode, 87, done.stderr)
+        self.assertEqual(self.statuses(done)['PF-ROLE-LIMITS'], 'fail')
+        self.assertEqual(self.statuses(done)['PF-COLGRANT'], 'pass')
 
 
 class EvidenceIntegrityTests(PreflightHostTestCase):

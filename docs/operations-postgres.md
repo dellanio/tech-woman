@@ -14,7 +14,7 @@ por ele. Tudo aqui foi ensaiado localmente com fakes de host (docker, registry, 
 | `ops/verify-image.sh` | verificação read-only da imagem (`--network none`) | não |
 | `ops/freeze.py`, `ops/snapshot.py`, `ops/recover.py`, `ops/hostops.py` | bibliotecas do CLI | não |
 | `ops/preflight.py` + `ops/sql/preflight.sql` + `ops/sql/agenda-grants-matrix.sql` | preflight T12/T18 | não (cria só a base isolada do PF-RESTORE) |
-| `ops/sql/role-limits.sql` | timeouts finitos por role **IN DATABASE** | sim (configuração das 3 roles na base techwoman) |
+| `ops/sql/role-limits.sql` | timeouts finitos por role **IN DATABASE** + `default_transaction_read_only=on` fixo da editora (D-048) | sim (configuração das 3 roles na base techwoman) |
 | `ops/nginx/*.conf` | redação de tokens só no vhost Tech Woman | — |
 | `ops/paths.env` | caminhos e nomes fixos do host (parte do pacote hasheado) | — |
 
@@ -47,10 +47,22 @@ hash do pacote (`ops_package`). Alterar qualquer arquivo de `ops/` muda o hash e
   (padrões: runtime/mailer lock 5s, statement 15s, idle-tx 10s; editora 10s/60s/30s; sobrescreva com
   `-v runtime_lock=...` etc.). Só `ALTER ROLE ... IN DATABASE techwoman`: bases vizinhas não mudam. Vale para
   **novas** sessões de login — reinicie os pools do web/mailer depois. Valor zero, negativo, > 1h ou não-intervalo
-  aborta sem mudar nada.
+  aborta sem mudar nada. O mesmo script fixa `default_transaction_read_only = on` da editora (sem `-v` para mudar;
+  `scripts/migration/agenda-privileges.sql` grava o mesmo valor).
+- **Editora somente leitura (D-048)**: `techwoman_beatriz` só consulta. A migration
+  `drizzle/20261026140000_beatriz_read_only.sql` revoga INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER em tabelas e
+  views (inclusive os grants por coluna do WP-003) e todo privilégio nas sequences de agenda; ficam SELECT (agenda e
+  views inteiras, perfil por coluna), USAGE de `public`/`internal` e EXECUTE de `internal.agenda_editor_visible`; as
+  policies `agenda_editor` são recriadas `FOR SELECT` com o mesmo USING. No host já revogado à mão a migration só
+  reafirma (REVOKE ausente é no-op) e recria as policies, sem ampliar nada. Um grant por coluna feito por **outro
+  grantor** sobrevive ao REVOKE do dono: a migration confere o catálogo inteiro (qualquer grantor, efetivo via PUBLIC,
+  default ACL) e **aborta sem aplicar nada** se sobrar escrita — o operador remove o grant estranho
+  (`REVOKE ... GRANTED BY`) e reaplica. O setting read-only vale só para sessões **LOGIN novas** da editora: `SET ROLE`
+  não o carrega, por isso a barreira é o privilégio (o pgAdmin deve entrar como `techwoman_beatriz`; a matriz roda por
+  SET ROLE e prova as negações por privilégio). Mudanças de dados pedidas pela Beatriz são feitas pelo administrador.
 - **USAGE em `public`**: o preflight exige que `PUBLIC` não tenha USAGE/CREATE em `public`, `internal` e
   `legacy_snapshot`. Com o bootstrap de produção, owner e editora dependem de PUBLIC; a remediação **provada** (matriz
-  581/18/46 verde depois dela) é:
+  verde depois dela: 581/18/46 antes do D-048, 792/10/48 com a editora somente leitura) é:
   `REVOKE USAGE ON SCHEMA public FROM PUBLIC; GRANT USAGE ON SCHEMA public TO techwoman_runtime, techwoman_mailer,
   techwoman_migrator, techwoman_owner, techwoman_beatriz;` — revogar sem os GRANTs quebra `internal.validate_agenda_state`.
 - **Outras bases (D-040)**: **nunca** alterar a ACL de bases de outros serviços (`portal_glosas`, `postgres`, …):
@@ -99,6 +111,53 @@ Qualquer outra transição sai 75. **Nenhuma** transição volta de uma fase pó
 | 11 | `cutover.py open-writes` | janela | baseline durável (`pg_write_opening`) **antes** de expor; tráfego no web PG (mesmo IP/alias), mailer depois, smoke ⇒ `pg_write_open`; falha ⇒ repetir (idempotente) ou `recover` |
 | 12 | `cutover.py record-first-write` | `pg_write_opening` ou `pg_write_open` | tipo+hora do 1º write auditado acima do baseline (sem PII) |
 | 13 | release de código: novo `seal` (mesmo schema) → `cutover.py rebind` → (GitHub) `deploy.sh` **release** → `cutover.py register-release < atestado.json` | schema igual, imagem atestada | backup `pg_dump` antes de qualquer efeito; troca no lugar; rollback só para `last_good_pg_image` |
+| 14 | release com migrations acrescentadas (D-049): novo `seal` → `preflight.py run` → `cutover.py schema-upgrade --image ghcr.io/dellanio/tech-woman@sha256:<digest>` → (GitHub) `deploy.sh` **release** → `cutover.py register-release < atestado.json` | `pg_write_open`, janela vigente, candidato CI verde, imagem imutável já puxada | valida prefixo e catálogo; verifica imagem e SQL; `pg_dump`; migradora one-shot; confere catálogo inteiro; grava aggregate + candidato numa transição |
+
+### Upgrade de schema após o corte (D-049)
+
+No host, depois de instalar **o pacote ops novo completo** e selar o candidato testado, puxar a imagem exata
+produzida para ele. O comando operacional (root) é:
+
+```bash
+sudo python3 /usr/local/lib/tech-woman/cutover.py schema-upgrade \
+  --image "ghcr.io/dellanio/tech-woman@sha256:<digest-da-imagem-do-candidato>"
+```
+
+Substituir o digest pelo artefato real do candidato (não usar tag). O `verify-image.sh` confere plataforma/revision
+contra `tested_head` e extrai `/tools/drizzle` para recalcular o aggregate selado; o `seal` vincula esse head ao
+`tested_tree`. Labels sozinhos não autorizam SQL. O comando usa `migrator.env`, rede e limites do migrador existente,
+sem mount de código local. Antes dele: `sudo python3 /usr/local/lib/tech-woman/preflight.py run` deve passar com
+as evidências do candidato novo. O comando não substitui o preflight nem provisiona roles.
+
+O state antigo guarda **somente o aggregate**: o comando encontra o prefixo cujo hash é idêntico pelo algoritmo
+`manifest.py`, e compara **todas** as linhas `name, checksum` de `internal.schema_migration` (não existe
+`__drizzle_migrations` neste projeto). Migration editada/removida/inserida antes do prefixo ou candidato sem migration
+nova ⇒ 72. `rebind` continua recusando schema diferente; `gate` só aceita o aggregate registrado.
+
+O backup segue o mecanismo pré-release (`docker exec … pg_dump -Fc -U backup_techwoman techwoman`), em
+`TW_BACKUP_DIR/pre-schema-upgrade-<UTC>-<id>.dump`, 0600, sem sobrescrita; falha ou dump vazio ⇒ 79, sem migrar.
+A imagem deve estar local (o comando não faz pull). O lock de deploy é mantido até a gravação do marker.
+A transição compara o estado original sob o lock de escrita do marker: outro comando que o tenha atualizado
+no intervalo causa 66 sem sobrescrever/corromper o journal. Diagnosticar e repetir conforme a fase atual.
+Na retomada e na repetição sem efeitos, a imagem não é executada nem reverificada: o catálogo completo prova o SQL.
+A janela é conferida no início (como no `rebind`); reservar tempo suficiente e não executar comandos concorrentes
+nem substituir `candidate.json` durante a operação.
+Depois do migrador, o catálogo inteiro deve ser igual ao candidato: divergência ⇒ 72, marker antigo preservado,
+**sem restore automático**; a migration pode já ter commitado. Falha no migrador ⇒ 83 com nome do backup,
+sem atualizar o marker. O migrador existente aplica em transação; não há alteração parcial em erro SQL.
+
+Se morrer **depois do commit SQL e antes da transição do marker**, repetir o mesmo comando: banco já igual ao
+candidato completo + prefixo antigo válido ⇒ só confere e grava (sem repetir backup/migrador). Se o marker já foi
+atualizado, repetir confere o catálogo e não grava nada. A consistência journal/marker continua fail-closed;
+um crash dentro da própria escrita do journal exige diagnóstico do operador (70), não reparo automático.
+Nunca repetir `open-writes`, voltar a `prepared`, importar nem tocar SQLite. Upgrade não registra uma imagem como
+`last_good`; isso continua exclusivo de `register-release` após deploy. Migrations novas precisam ser compatíveis
+com o web anterior que permanece rodando durante este passo; este comando não oferece rollback de schema.
+
+Para D-048, o estado manual do host (DML da `techwoman_beatriz` revogado e `default_transaction_read_only=on`)
+é compatível. Setting de role fica no provisionamento do operador, não no upgrade. Grants de outro grantor ou
+default ACL que ainda permitam escrita nos schemas `public`, `internal`, `legacy_snapshot` mantêm o abort
+fail-closed da migration; o operador diagnostica e corrige antes de repetir.
 
 Release (passo 13), ordem garantida pelo `deploy.sh`: gate → login/pull/verify → `release-check` (a web em execução tem de
 ser **exatamente** a `last_good_pg_image`, senão 76) → `pg_dump` (79) → `docker stop tech-woman-mailer` **e** prova
@@ -134,7 +193,7 @@ maintenance page kept”); no `abort` a fase não muda e o SQLite continua prote
 | 66 | outra operação em curso (`flock`) | nenhum |
 | 70 | marker/candidato/inventário ausente, ilegível, mal-possuído ou inconsistente | nenhum |
 | 71 | árvore do release ≠ árvore testada | nenhum |
-| 72 | migrations divergem do candidato / schema mudou desde o corte | nenhum |
+| 72 | migrations divergem do candidato / schema mudou desde o corte | no schema-upgrade, marker intacto; se catálogo divergir após o migrador, SQL pode já estar commitado (sem restore) |
 | 73 | fora da janela autorizada | nenhum |
 | 74 | imagem inválida (arch, label, entrypoints, env files) ou registry | nenhum |
 | 75 | fase não permite o comando | nenhum |
@@ -186,9 +245,11 @@ original fica intacto.
 `python3 /usr/local/lib/tech-woman/preflight.py run [--restore-dump <nome.dump>]` — saída JSON
 `{candidate_sha256, overall, checks[{id,status,detail}]}`; exit 0/87/88.
 
-- **SQL (T12)**: `PF-ROLE-FLAGS`, `PF-ROLE-MEMBER`, `PF-PUBLIC-SCHEMA`, `PF-PUBLIC-FUNC`, `PF-DEFPRIV`, `PF-ROLE-LIMITS`,
+- **SQL (T12)**: `PF-ROLE-FLAGS`, `PF-ROLE-MEMBER`, `PF-PUBLIC-SCHEMA`, `PF-PUBLIC-FUNC`, `PF-DEFPRIV`, `PF-ROLE-LIMITS`
+  (três timeouts finitos por role **e** `default_transaction_read_only=on` da editora nesta base; ausente ou `off` = fail),
   `PF-OTHER-DB`, `PF-HBA` (uma consulta READ ONLY) e `PF-COLGRANT` (a matriz do WP-003, cópia byte-idêntica, exige
-  exatamente 581 negações / 18 permitidas / 46 verificações; ela roda numa transação que desfaz as fixtures). Base
+  exatamente 792 negações / 10 permitidas / 48 verificações — medidas em PG16 com a editora somente leitura, D-048; toda
+  escrita da editora é uma negação executada; ela roda numa transação que desfaz as fixtures). Base
   ilegível ⇒ todos **fail**.
 - **Host (T18)**: `PF-PG-PORT`, `PF-PGADMIN-TLS/-COOKIE/-RATE/-CONN`, `PF-BACKUP-DAILY`, `PF-NGINX-REDACT`,
   `PF-NO-SHARED-TOUCH` ficam **pending** até o operador registrar readback em
@@ -234,4 +295,4 @@ base vazia, web só com a credencial runtime, mailer só com a sua, cadastro 202
 (`pnpm test:e2e` = `tests/pg/e2e-v1.ts`); o transporte fake NÃO atesta entrega SES. Continua NÃO provado: CI remoto no runner ARM (o job `check` não rodou: abrir PR dispara
 o fluxo de merge, fora do escopo da integração); host OCI, pgAdmin, nginx
 real, backup diário real, troca de tráfego pelo alias `app` no nginx compartilhado; importador contra o SQLite de
-produção; caminho positivo real da Beatriz. Preflight de host só passa com evidência real coletada pelo operador.
+produção; leitura real da Beatriz pelo pgAdmin do host (somente leitura, D-048). Preflight de host só passa com evidência real coletada pelo operador.

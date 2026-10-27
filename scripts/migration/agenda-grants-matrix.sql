@@ -7,6 +7,7 @@
 -- (efetivo, com herança); o teste PG também tenta SET ROLE numa sessão LOGIN real. Acesso a outras bases, pg_hba, rede, pgAdmin e host NÃO são
 -- atestados por esta matriz: são do OPS no host. O runtime não tem DML nem SELECT direto de domínio (participant/mentor/match/tentativas legadas),
 -- nem policy RLS: tudo passa pelas operações SQL do owner; só lê event_content/demo_seed_state (home). Vale também depois de grants-local.sql.
+-- D-048: a editora (techwoman_beatriz) é SOMENTE LEITURA; toda escrita dela é uma negação executada; DML direto de agenda é do dono/operador.
 \set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -134,10 +135,41 @@ BEGIN
   set_config('matrix.mt_free', v_mt_free::text, true), set_config('matrix.mt_admin', v_mt_admin::text, true), set_config('matrix.c_free', v_c_free::text, true), set_config('matrix.c_admin', v_c_admin::text, true);
 END $$;
 
--- 3. Editora (Beatriz/pgAdmin).
+-- 3. DML direto do dono (operador/administrador; a editora não escreve mais) = efeitos da API: match current selected com ranking,
+-- job reservation, auditoria com ator NULL no SQL direto.
+DO $$
+DECLARE e bigint;
+BEGIN
+ INSERT INTO public.enrollment(participant_id, cohort_id, status) VALUES (current_setting('matrix.p_free')::bigint, current_setting('matrix.c_free')::bigint, 'active') RETURNING id INTO e;
+ PERFORM set_config('matrix.e_free', e::text, true);
+ PERFORM pg_temp.matrix_check('INSERT direto do dono cria match selected com score do ranking', EXISTS (SELECT 1 FROM public.match x WHERE x.enrollment_id = e AND x.status = 'selected' AND x.origin = 'current'
+  AND x.score = (internal.agenda_ranking(x.participant_id, x.mentor_id)).o_score));
+ PERFORM pg_temp.matrix_check('INSERT direto do dono cria job reservation queued', EXISTS (SELECT 1 FROM public.email_job j WHERE j.enrollment_id = e AND j.kind = 'reservation' AND j.status = 'queued'));
+ PERFORM pg_temp.matrix_check('INSERT direto do dono audita enrollment.create com ator NULL', EXISTS (SELECT 1 FROM public.audit_event a WHERE a.entity_type = 'enrollment' AND a.entity_id = e::text AND a.action = 'enrollment.create' AND a.actor_user_id IS NULL));
+END $$;
+
+-- 4. Editora (Beatriz/pgAdmin): SOMENTE LEITURA (D-048, 20261026140000_beatriz_read_only.sql). Lê agenda, views seguras e perfil por coluna sob R3;
+-- toda escrita (agenda, perfis, views, colunas, sequences) é negada por privilégio. Nesta matriz a role vem por SET ROLE, que não carrega
+-- default_transaction_read_only: as negações provam o privilégio; o setting (primeira camada das sessões LOGIN) é conferido no catálogo.
+DO $$ BEGIN
+ PERFORM pg_temp.matrix_check('editora: default_transaction_read_only=on nesta base (sessões LOGIN novas nascem read-only)', EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting s, unnest(s.setconfig) c
+  WHERE s.setrole = 'techwoman_beatriz'::regrole AND s.setdatabase = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database()) AND c = 'default_transaction_read_only=on'));
+ PERFORM pg_temp.matrix_check('editora: policies agenda_editor só FOR SELECT nas seis tabelas, sem WITH CHECK', (SELECT count(*) FROM pg_catalog.pg_policy p WHERE 'techwoman_beatriz'::regrole = ANY (p.polroles)) = 6
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_policy p WHERE 'techwoman_beatriz'::regrole = ANY (p.polroles) AND (p.polcmd <> 'r' OR p.polwithcheck IS NOT NULL OR p.polname <> 'agenda_editor')));
+ PERFORM pg_temp.matrix_check('editora: nenhuma ACL de escrita (tabela/view/coluna/sequence, qualquer grantor) nem default ACL', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c, aclexplode(c.relacl) a
+   WHERE c.relnamespace IN ('internal'::regnamespace, 'public'::regnamespace, 'legacy_snapshot'::regnamespace) AND a.grantee = 'techwoman_beatriz'::regrole AND (c.relkind = 'S' OR a.privilege_type <> 'SELECT'))
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute t JOIN pg_catalog.pg_class c ON c.oid = t.attrelid, aclexplode(t.attacl) a
+   WHERE c.relnamespace IN ('internal'::regnamespace, 'public'::regnamespace, 'legacy_snapshot'::regnamespace) AND a.grantee = 'techwoman_beatriz'::regrole AND a.privilege_type <> 'SELECT')
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d, aclexplode(d.defaclacl) a WHERE a.grantee = 'techwoman_beatriz'::regrole));
+ PERFORM pg_temp.matrix_check('editora: nenhuma escrita efetiva (inclusive via PUBLIC) em tabela/view/coluna/sequence', NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+   WHERE c.relnamespace IN ('internal'::regnamespace, 'public'::regnamespace, 'legacy_snapshot'::regnamespace)
+     AND ((c.relkind IN ('r','v','p','m','f') AND (has_table_privilege('techwoman_beatriz', c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+            OR has_any_column_privilege('techwoman_beatriz', c.oid, 'INSERT, UPDATE, REFERENCES')))
+       OR (c.relkind = 'S' AND has_sequence_privilege('techwoman_beatriz', c.oid, 'USAGE, UPDATE, SELECT')))));
+END $$;
 SET LOCAL ROLE techwoman_beatriz;
 DO $$
-DECLARE n integer; v bigint; q text; t text;
+DECLARE q text; t text; c record;
 BEGIN
  -- leitura permitida: agenda inteira, perfil por coluna e views seguras; R3 esconde protegidos (vinculado, e-mail de admin, candidata NULL)
  PERFORM pg_temp.matrix_allowed('editora lê agenda', 'SELECT (SELECT count(*) FROM public.topic) + (SELECT count(*) FROM public.mentor_topic) + (SELECT count(*) FROM public.cohort) + (SELECT count(*) FROM public.enrollment)');
@@ -150,26 +182,46 @@ BEGIN
  PERFORM pg_temp.matrix_check('R3: mentora vinculada a admin oculta (tabela, view, tema e turma)', (SELECT count(*) FROM public.mentor WHERE id = current_setting('matrix.m_admin')::bigint) = 0
   AND (SELECT count(*) FROM public.mentor_editor WHERE id = current_setting('matrix.m_admin')::bigint) = 0
   AND (SELECT count(*) FROM public.mentor_topic WHERE id = current_setting('matrix.mt_admin')::bigint) = 0 AND (SELECT count(*) FROM public.cohort WHERE id = current_setting('matrix.c_admin')::bigint) = 0);
- UPDATE public.participant SET goal = 'leadership' WHERE id IN (current_setting('matrix.p_cand')::bigint, current_setting('matrix.p_mail')::bigint); GET DIAGNOSTICS n = ROW_COUNT;
- PERFORM pg_temp.matrix_check('R3: UPDATE em participante protegida afeta 0 linhas', n = 0);
- UPDATE public.mentor_editor SET trajectory = 'x' WHERE id = current_setting('matrix.m_admin')::bigint; GET DIAGNOSTICS n = ROW_COUNT;
- PERFORM pg_temp.matrix_check('R3: UPDATE em mentora protegida (view) afeta 0 linhas', n = 0);
- UPDATE public.cohort SET capacity = 4 WHERE id = current_setting('matrix.c_admin')::bigint; GET DIAGNOSTICS n = ROW_COUNT;
- PERFORM pg_temp.matrix_check('R3: UPDATE em turma de mentora protegida afeta 0 linhas', n = 0);
+ PERFORM pg_temp.matrix_check('R3: reserva feita pelo dono visível para a editora (leitura de enrollment)', (SELECT count(*) FROM public.enrollment WHERE id = current_setting('matrix.e_free')::bigint) = 1);
+ -- R3: escrita em linha protegida negada (privilégio; antes do D-048 afetava 0 linhas pela RLS)
+ PERFORM pg_temp.matrix_denied('R3: UPDATE em participante protegida', format('UPDATE public.participant SET goal = %L WHERE id IN (%s, %s)', 'leadership', current_setting('matrix.p_cand'), current_setting('matrix.p_mail')));
+ PERFORM pg_temp.matrix_denied('R3: UPDATE em mentora protegida (view)', format('UPDATE public.mentor_editor SET trajectory = %L WHERE id = %s', 'x', current_setting('matrix.m_admin')));
+ PERFORM pg_temp.matrix_denied('R3: UPDATE em turma de mentora protegida', format('UPDATE public.cohort SET capacity = 4 WHERE id = %s', current_setting('matrix.c_admin')));
  PERFORM pg_temp.matrix_denied('R3: inscrição de candidata protegida', format('INSERT INTO public.enrollment(participant_id, cohort_id, status) VALUES (%s, %s, %L)', current_setting('matrix.p_cand'), current_setting('matrix.c_free'), 'active'));
  PERFORM pg_temp.matrix_denied('R3: turma em tema de mentora protegida', format('INSERT INTO public.cohort(mentor_topic_id, starts_at, ends_at, capacity, status) VALUES (%s, now() + interval %L, now() + interval %L, 2, %L)', current_setting('matrix.mt_admin'), '401 days', '401 days 1 hour', 'open'));
  PERFORM pg_temp.matrix_denied('R3: tema em mentora protegida', format('INSERT INTO public.mentor_topic(mentor_id, topic_id, position) VALUES (%s, %s, 2)', current_setting('matrix.m_admin'), current_setting('matrix.topic')));
- -- escrita permitida (por coluna, sujeita a triggers/RLS)
- PERFORM pg_temp.matrix_allowed('editora atualiza perfil pela view', format('UPDATE public.participant_editor SET goal = %L WHERE id = %s', 'leadership', current_setting('matrix.p_free')));
- PERFORM pg_temp.matrix_allowed('editora atualiza mentora pela view', format('UPDATE public.mentor_editor SET trajectory = %L, display_name = %L WHERE id = %s', 'Trajetória matriz', 'Matriz 2', current_setting('matrix.m_free')));
- PERFORM pg_temp.matrix_allowed('editora cria tema', format('INSERT INTO public.topic(slug, name, description) VALUES (%L, %L, %L)', 'matrix-b-' || current_setting('matrix.tag'), 'Matriz B', ''));
- INSERT INTO public.mentor_topic(mentor_id, topic_id, position) SELECT current_setting('matrix.m_free')::bigint, t2.id, 2 FROM public.topic t2 WHERE t2.slug = 'matrix-b-' || current_setting('matrix.tag') RETURNING id INTO v;
- PERFORM pg_temp.matrix_allowed('editora cria turma', format('INSERT INTO public.cohort(mentor_topic_id, starts_at, ends_at, capacity, status) VALUES (%s, now() + interval %L, now() + interval %L, 2, %L)', current_setting('matrix.mt_free'), '402 days', '402 days 1 hour', 'draft'));
- PERFORM pg_temp.matrix_allowed('editora altera capacidade', format('UPDATE public.cohort SET capacity = 4 WHERE id = %s', current_setting('matrix.c_free')));
- PERFORM pg_temp.matrix_allowed('editora remove vínculo de tema sem turma', format('DELETE FROM public.mentor_topic WHERE id = %s', v));
- PERFORM pg_temp.matrix_allowed('editora usa sequences de agenda', 'SELECT nextval(''public.topic_id_seq''), nextval(''public.mentor_topic_id_seq''), nextval(''public.cohort_id_seq''), nextval(''public.enrollment_id_seq'')');
- INSERT INTO public.enrollment(participant_id, cohort_id, status) VALUES (current_setting('matrix.p_free')::bigint, current_setting('matrix.c_free')::bigint, 'active') RETURNING id INTO v;
- PERFORM set_config('matrix.e_free', v::text, true);
+ -- escrita que o WP-003 concedia (perfil pelas views, agenda, sequences, reserva e cancelamento): negada em linha visível
+ PERFORM pg_temp.matrix_denied('editora somente leitura: perfil pela view', format('UPDATE public.participant_editor SET goal = %L WHERE id = %s', 'leadership', current_setting('matrix.p_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: mentora pela view', format('UPDATE public.mentor_editor SET trajectory = %L, display_name = %L WHERE id = %s', 'Trajetória matriz', 'Matriz 2', current_setting('matrix.m_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: perfil na tabela', format('UPDATE public.participant SET goal = %L WHERE id = %s', 'leadership', current_setting('matrix.p_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: mentora na tabela', format('UPDATE public.mentor SET trajectory = %L WHERE id = %s', 'x', current_setting('matrix.m_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: cria tema', format('INSERT INTO public.topic(slug, name, description) VALUES (%L, %L, %L)', 'matrix-b-' || current_setting('matrix.tag'), 'Matriz B', ''));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: altera tema', format('UPDATE public.topic SET name = %L WHERE id = %s', 'Matriz C', current_setting('matrix.topic')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: cria vínculo de tema', format('INSERT INTO public.mentor_topic(mentor_id, topic_id, position) VALUES (%s, %s, 2)', current_setting('matrix.m_free'), current_setting('matrix.topic')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: reordena vínculo de tema', format('UPDATE public.mentor_topic SET position = 2 WHERE id = %s', current_setting('matrix.mt_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: remove vínculo de tema', format('DELETE FROM public.mentor_topic WHERE id = %s', current_setting('matrix.mt_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: cria turma', format('INSERT INTO public.cohort(mentor_topic_id, starts_at, ends_at, capacity, status) VALUES (%s, now() + interval %L, now() + interval %L, 2, %L)', current_setting('matrix.mt_free'), '402 days', '402 days 1 hour', 'draft'));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: altera capacidade', format('UPDATE public.cohort SET capacity = 4 WHERE id = %s', current_setting('matrix.c_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: status de turma (nem chega à regra do banco)', format('UPDATE public.cohort SET status = %L WHERE id = %s', 'bogus', current_setting('matrix.c_free')));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: reserva', format('INSERT INTO public.enrollment(participant_id, cohort_id, status) VALUES (%s, %s, %L)', current_setting('matrix.p_free'), current_setting('matrix.c_free'), 'active'));
+ PERFORM pg_temp.matrix_denied('editora somente leitura: cancela reserva', format('UPDATE public.enrollment SET status = %L WHERE id = %s', 'cancelled', current_setting('matrix.e_free')));
+ FOREACH q IN ARRAY ARRAY['public.topic_id_seq', 'public.mentor_topic_id_seq', 'public.cohort_id_seq', 'public.enrollment_id_seq'] LOOP
+  PERFORM pg_temp.matrix_denied('editora somente leitura: sequence de agenda ' || q, format('SELECT nextval(%L)', q));
+ END LOOP;
+ -- varredura: INSERT/UPDATE de cada coluna gravável, DELETE e TRUNCATE de cada tabela/view de agenda e perfil (WHERE false: só o privilégio decide)
+ FOR c IN SELECT r.oid::regclass AS rel, r.relkind, a.attname FROM pg_catalog.pg_class r JOIN pg_catalog.pg_attribute a ON a.attrelid = r.oid
+   WHERE r.oid IN ('public.topic'::regclass, 'public.mentor_topic'::regclass, 'public.cohort'::regclass, 'public.enrollment'::regclass, 'public.participant'::regclass, 'public.mentor'::regclass,
+                   'public.participant_editor'::regclass, 'public.mentor_editor'::regclass)
+     AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = '' AND a.attidentity <> 'a' ORDER BY r.oid, a.attnum LOOP
+  PERFORM pg_temp.matrix_denied(format('editora somente leitura: UPDATE %s.%s', c.rel, c.attname), format('UPDATE %s SET %I = %I WHERE false', c.rel, c.attname, c.attname));
+  PERFORM pg_temp.matrix_denied(format('editora somente leitura: INSERT %s.%s', c.rel, c.attname), format('INSERT INTO %s(%I) SELECT NULL WHERE false', c.rel, c.attname));
+ END LOOP;
+ FOR c IN SELECT r.oid::regclass AS rel, r.relkind FROM pg_catalog.pg_class r
+   WHERE r.oid IN ('public.topic'::regclass, 'public.mentor_topic'::regclass, 'public.cohort'::regclass, 'public.enrollment'::regclass, 'public.participant'::regclass, 'public.mentor'::regclass,
+                   'public.participant_editor'::regclass, 'public.mentor_editor'::regclass) ORDER BY r.oid LOOP
+  PERFORM pg_temp.matrix_denied(format('editora somente leitura: DELETE %s', c.rel), format('DELETE FROM %s WHERE false', c.rel));
+  IF c.relkind = 'r' THEN PERFORM pg_temp.matrix_denied(format('editora somente leitura: TRUNCATE %s', c.rel), format('TRUNCATE %s', c.rel)); END IF;
+ END LOOP;
  -- DDL, TRUNCATE, DISABLE TRIGGER, RLS/policies, ownership: negados
  FOREACH q IN ARRAY ARRAY['CREATE TABLE public.matrix_forbidden(id int)', 'CREATE TABLE internal.matrix_forbidden(id int)', 'CREATE SCHEMA matrix_forbidden', 'CREATE VIEW public.matrix_forbidden AS SELECT 1',
   'CREATE FUNCTION internal.matrix_forbidden() RETURNS int LANGUAGE sql AS $f$SELECT 1$f$', 'CREATE OR REPLACE FUNCTION internal.agenda_editor_visible(p_kind text, p_id bigint) RETURNS boolean LANGUAGE sql AS $f$SELECT true$f$',
@@ -212,31 +264,19 @@ BEGIN
 END $$;
 RESET ROLE;
 
--- 4. DML direto da editora = efeitos da API (match current selected com ranking, job reservation, auditoria; ator NULL no SQL direto).
+-- 5. Cancelamento direto do dono: match cancelled, job cancelled, auditoria; status inválido de turma recusado pela regra do banco, não por privilégio.
 DO $$
 DECLARE e bigint := current_setting('matrix.e_free')::bigint;
 BEGIN
- PERFORM pg_temp.matrix_check('INSERT da editora cria match selected com score do ranking', EXISTS (SELECT 1 FROM public.match x WHERE x.enrollment_id = e AND x.status = 'selected' AND x.origin = 'current'
-  AND x.score = (internal.agenda_ranking(x.participant_id, x.mentor_id)).o_score));
- PERFORM pg_temp.matrix_check('INSERT da editora cria job reservation queued', EXISTS (SELECT 1 FROM public.email_job j WHERE j.enrollment_id = e AND j.kind = 'reservation' AND j.status = 'queued'));
- PERFORM pg_temp.matrix_check('INSERT da editora audita enrollment.create com ator NULL', EXISTS (SELECT 1 FROM public.audit_event a WHERE a.entity_type = 'enrollment' AND a.entity_id = e::text AND a.action = 'enrollment.create' AND a.actor_user_id IS NULL));
-END $$;
-SET LOCAL ROLE techwoman_beatriz;
-DO $$ BEGIN
- PERFORM pg_temp.matrix_allowed('editora cancela reserva', format('UPDATE public.enrollment SET status = %L WHERE id = %s', 'cancelled', current_setting('matrix.e_free')));
- PERFORM pg_temp.matrix_reaches('editora: status de turma inválido recusado pela regra do banco, não por privilégio', format('UPDATE public.cohort SET status = %L WHERE id = %s', 'bogus', current_setting('matrix.c_free')), '23514');
-END $$;
-RESET ROLE;
-DO $$
-DECLARE e bigint := current_setting('matrix.e_free')::bigint;
-BEGIN
- PERFORM pg_temp.matrix_check('cancelamento da editora: match cancelled, job cancelled, auditoria', EXISTS (SELECT 1 FROM public.enrollment x WHERE x.id = e AND x.status = 'cancelled' AND x.cancelled_at IS NOT NULL)
+ UPDATE public.enrollment SET status = 'cancelled' WHERE id = e;
+ PERFORM pg_temp.matrix_check('cancelamento direto do dono: match cancelled, job cancelled, auditoria', EXISTS (SELECT 1 FROM public.enrollment x WHERE x.id = e AND x.status = 'cancelled' AND x.cancelled_at IS NOT NULL)
   AND EXISTS (SELECT 1 FROM public.match x WHERE x.enrollment_id = e AND x.status = 'cancelled')
   AND EXISTS (SELECT 1 FROM public.email_job j WHERE j.enrollment_id = e AND j.status = 'cancelled')
   AND EXISTS (SELECT 1 FROM public.audit_event a WHERE a.entity_id = e::text AND a.action = 'enrollment.cancel'));
+ PERFORM pg_temp.matrix_reaches('dono: status de turma inválido recusado pela regra do banco, não por privilégio', format('UPDATE public.cohort SET status = %L WHERE id = %s', 'bogus', current_setting('matrix.c_free')), '23514');
 END $$;
 
--- 5. Runtime (web): só operações autorizadas; nenhum DML direto de Agenda, identidade, fila, auditoria, mapa/legado ou guard.
+-- 6. Runtime (web): só operações autorizadas; nenhum DML direto de Agenda, identidade, fila, auditoria, mapa/legado ou guard.
 SET LOCAL ROLE techwoman_runtime;
 DO $$
 DECLARE q text; t text;
@@ -289,7 +329,7 @@ BEGIN
 END $$;
 RESET ROLE;
 
--- 6. Worker de e-mail: só as três funções da fila; nada de identidade/fila/domínio direto.
+-- 7. Worker de e-mail: só as três funções da fila; nada de identidade/fila/domínio direto.
 SET LOCAL ROLE techwoman_mailer;
 DO $$
 DECLARE t text;

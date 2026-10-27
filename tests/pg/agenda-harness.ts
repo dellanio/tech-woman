@@ -7,6 +7,9 @@ import {roleUrl} from './identity-harness.test';
 
 export {withDb,addUser,linkFixture} from './identity-harness.test';
 export const EDITOR='techwoman_beatriz';
+/** D-048: a editora é somente leitura. DML direto de agenda nos testes (reservas, turmas, corridas no guard) é do dono do banco/migradora:
+ * conexão administrativa sem role (undefined em connect/withClients), a mesma que grava as fixtures. */
+export const DIRECT_SQL:string|undefined=undefined;
 export const OWNER='techwoman_owner';
 
 /** Instante futuro alinhado à hora (base comum + deslocamento em horas), ISO UTC. */
@@ -34,6 +37,8 @@ export async function waitLocked(control:Pool|Client,pid:number){
  for(let i=0;i<200;i++){const r=await control.query("select wait_event_type from pg_stat_activity where pid=$1",[pid]);if(r.rows[0]?.wait_event_type==='Lock')return;await new Promise(r=>setTimeout(r,25));}
  assert.fail(`backend ${pid} não bloqueou no lock`);
 }
+/** D-048: escrita da editora é negada por privilégio (42501) de imediato, sem esperar o guard nem alterar linhas. */
+export async function editorWriteDenied(url:string,sql:string,args:unknown[]=[]){await withClients(url,[EDITOR],async b=>pgFails(b.query(sql,args),'42501'));}
 export const pidOf=async(c:Client)=>(await c.query('select pg_backend_pid() pid')).rows[0].pid as number;
 
 type Q=Pool|Client;

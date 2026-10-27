@@ -115,6 +115,13 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   for(const [grant,revoke] of [
    ['grant select (email) on public.participant to techwoman_beatriz','revoke select (email) on public.participant from techwoman_beatriz'],
    ['grant truncate on public.enrollment to techwoman_beatriz','revoke truncate on public.enrollment from techwoman_beatriz'],
+   // D-048: a editora é somente leitura — qualquer escrita por coluna, sequence, PUBLIC ou policy de escrita reabre o que a matriz nega
+   ['grant update (capacity) on public.cohort to techwoman_beatriz','revoke update (capacity) on public.cohort from techwoman_beatriz'],
+   ['grant insert (slug, name) on public.topic to techwoman_beatriz','revoke insert (slug, name) on public.topic from techwoman_beatriz'],
+   ['grant usage on sequence public.topic_id_seq to techwoman_beatriz','revoke usage on sequence public.topic_id_seq from techwoman_beatriz'],
+   ['grant update on public.participant_editor to techwoman_beatriz','revoke update on public.participant_editor from techwoman_beatriz'],
+   ['grant delete on public.mentor_topic to public','revoke delete on public.mentor_topic from public'],
+   ['create policy matrix_editor_write on public.topic for insert to techwoman_beatriz with check (true)','drop policy matrix_editor_write on public.topic'],
    ['grant execute on function internal.api_guard() to techwoman_runtime','revoke execute on function internal.api_guard() from techwoman_runtime'],
    ['grant execute on function internal.domain_lock_users(text,bigint[]) to public','revoke execute on function internal.domain_lock_users(text,bigint[]) from public'],
    ['grant select on public.auth_session to techwoman_runtime','revoke select on public.auth_session from techwoman_runtime'],
@@ -132,6 +139,11 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    await migrator.query(revoke);
    assert.notEqual(r.status,0,`matriz deveria falhar com: ${grant}`);assert.match(r.out,/MATRIX FAIL/,grant);assert.doesNotMatch(r.out,/MATRIX OK/);
   }
+  // D-048: sem default_transaction_read_only=on da editora nesta base (setting de role: só a role administrativa altera) a matriz falha
+  await admin.query(`alter role techwoman_beatriz in database ${db} reset default_transaction_read_only`);
+  r=psql(urlFor(db),MATRIX);
+  await admin.query(`alter role techwoman_beatriz in database ${db} set default_transaction_read_only = on`);
+  assert.notEqual(r.status,0,'matriz deveria falhar sem o setting read-only da editora');assert.match(r.out,/MATRIX FAIL: editora: default_transaction_read_only=on/);assert.doesNotMatch(r.out,/MATRIX OK/);
   r=psql(urlFor(db),MATRIX);assert.equal(r.status,0,r.out);
   assert.equal((await admin.query("select count(*)::int n from app_user where email like 'matrix-%'")).rows[0].n,0,'fixtures da matriz desfeitas (ROLLBACK)');
  }finally{
