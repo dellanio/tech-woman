@@ -3,7 +3,7 @@
 Plataforma web do **Tech Woman**, encontro presencial para mulheres em tecnologia (14/11/2026). Conecta participantes a mentoras de acordo com trajetória e objetivos de carreira:
 
 - **Landing** (`/`) com informações do evento, agenda e palestrantes publicados pela equipe.
-- **Inscrição de participantes** (`/inscricao`): diagnóstico de carreira em etapas (objetivo, momento, interesses, habilidades), consentimento explícito e não pré-marcado, e sugestão de mentoras compatíveis com vaga. A reserva respeita a capacidade de cada mentora.
+- **Inscrição de participantes** (`/inscricao`): diagnóstico de carreira em etapas (objetivo, momento, interesses, habilidades), depois o cruzamento (só o nome das mentoras compatíveis pelo ranking, ou `(MENTORA)` sem nome de exibição, com troca livre e sem datas) e, por último, e-mail + senha definitiva + confirmação explícita. A conta nasce ativa com o cruzamento escolhido, numa única transação, sem senha temporária nem e-mail. Turmas e reservas (que respeitam a capacidade) vêm depois, na agenda.
 - **Cadastro de mentoras** (`/mentora`): trajetória, especialidades (mesmo vocabulário da inscrição), disponibilidade e capacidade. Prazo configurável por `MENTOR_DEADLINE`.
 - **Consulta individual**: cada inscrição recebe um link com token aleatório (só o hash fica no banco) que mostra o estado e o par escolhido/aprovado.
 - **Painel da equipe** (`/admin`): inscrições, mentoras, pontuação e motivos do match, vagas, aprovar/rejeitar/reatribuir; edição do evento em `/admin/evento`.
@@ -55,7 +55,7 @@ Os dados locais ficam no volume Docker `pgdata`. Para recomeçar do zero (apaga 
 | `pnpm typecheck` | Confere os tipos. |
 | `pnpm test:unit` | Testes Python (política do repositório e operação). |
 | `pnpm test:pg` | Testes contra PostgreSQL real (exige `MIGRATION_DATABASE_URL` de um PostgreSQL 16 **só de testes**). |
-| `pnpm test:e2e` | Fluxo completo cadastro → e-mail simulado → login → troca de senha (após `pnpm build`). |
+| `pnpm test:e2e` | Fluxo completo crossing → cadastro com senha definitiva (sem e-mail) → login full → restart; o worker de e-mail é exercitado com conta pendente legada (após `pnpm build`). |
 | `BUILDING=1 pnpm build` | Build de produção (não consulta o banco). |
 
 ### Build de produção sem Docker

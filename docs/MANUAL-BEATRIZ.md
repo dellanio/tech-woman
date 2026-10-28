@@ -367,7 +367,7 @@ Todo registro editável tem um número `version` que sobe a cada alteração. Ao
 
 ### 7.4 Senha e recuperação (reset)
 
-- **Cadastro de participante** → diagnóstico, depois o **cruzamento** (só o nome das mentoras compatíveis, com troca), e por último e-mail + **senha definitiva** + confirmação. A conta já nasce ativa com o cruzamento escolhido; **nenhum e-mail é enviado** e não há senha temporária. Nunca se guarda a senha — só o resultado da "conta matemática" (hash).
+- **Cadastro de participante** → diagnóstico, depois o **cruzamento** (só o nome das mentoras compatíveis, com troca; mentora sem nome de exibição aparece apenas como **(MENTORA)**), e por último e-mail + **senha definitiva** + confirmação. A conta já nasce ativa com o cruzamento escolhido; **nenhum e-mail é enviado** e não há senha temporária. Nunca se guarda a senha — só o resultado da "conta matemática" (hash).
 - **Cadastro de mentora** (e contas criadas pela equipe ou pendentes de antes) → o site **enfileira** um e-mail com uma **senha temporária** (vale 24 h, uso único).
 - **Primeiro login** com a temporária (só para quem recebeu uma) → o site pede para **trocar a senha** (sessão limitada de 10 minutos). A nova senha tem de 12 a 128 caracteres (pode colar de gerenciador, pode ter espaços).
 - **Esqueci a senha** (`/recuperar-senha`) → a resposta é **sempre a mesma** (`202`), exista a conta ou não, para ninguém descobrir quem tem cadastro. Se a conta existe, chega um link de redefinição que vale **30 minutos** e **só funciona uma vez**.
