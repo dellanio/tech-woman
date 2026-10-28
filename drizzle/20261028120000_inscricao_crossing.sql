@@ -5,7 +5,11 @@
 --    Nome público: display_name; sem display_name → literalmente '(MENTORA)' (decisão do sponsor de 28/10; demo_name nunca entra).
 -- 3. internal.registration_preview (SECURITY DEFINER, STABLE): só lê; devolve [{id,name}] ao servidor, que troca o id por referência opaca (HMAC).
 -- 4. internal.register_participant_account muda de assinatura (DROP explícito): conta active com password_hash (scrypt do app), perfil e match
---    current 'suggested' da mentora escolhida, revalidada sob lock ANTES do e-mail; anti-enumeração igual à anterior; nenhum email_job.
+--    current 'suggested' da mentora escolhida, revalidada ANTES do e-mail; anti-enumeração igual à anterior; nenhum email_job.
+--    Locks no protocolo R3 (WP-002/WP-003: app_user → internal.agenda_guard → domínio): contas que decidem a proteção da mentora
+--    (internal.domain_lock_users: dona vinculada + mesma chave de e-mail) FOR NO KEY UPDATE em ordem de UUID → guard → reconferência do
+--    conjunto (mudou = 40001) → FOR SHARE da mentora → proteção/compatibilidade. Serializa com a elevação offline (FOR UPDATE da conta) e não
+--    forma ciclo com api_admin_domain_update (guard → FOR NO KEY UPDATE da mentora).
 -- Fluxos admin create/resend, recuperação e worker: intocados.
 CREATE OR REPLACE FUNCTION internal.agenda_ranking_values(p_goal text, p_interests jsonb, p_skills jsonb, p_area text, p_mentor bigint, OUT o_score integer, OUT o_reasons jsonb)
 LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS $$
@@ -67,12 +71,18 @@ DROP FUNCTION internal.register_participant_account(text,text,text,jsonb,jsonb,t
 --> statement-breakpoint
 CREATE FUNCTION internal.register_participant_account(p_email text, p_password_hash text, p_goal text, p_moment text, p_interests jsonb, p_skills jsonb, p_area text, p_mentor bigint) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-DECLARE v_email text := btrim(p_email); v_key text := lower(btrim(p_email)); v_user uuid := gen_random_uuid(); v_ins uuid; v_participant bigint; v_match bigint; c record;
+DECLARE v_email text := btrim(p_email); v_key text := lower(btrim(p_email)); v_user uuid := gen_random_uuid(); v_ins uuid; v_participant bigint; v_match bigint; v_owners uuid[]; c record;
 BEGIN
  IF v_email IS NULL OR length(v_email) NOT BETWEEN 3 AND 254 OR v_email !~ '^[\x21-\x7e]+@[^@\s]+\.[^@\s]+$' THEN RAISE EXCEPTION 'invalid registration'; END IF;
  IF p_password_hash IS NULL OR p_password_hash !~ '^[a-f0-9]{32}:[a-f0-9]{128}$' THEN RAISE EXCEPTION 'invalid registration'; END IF;
  PERFORM internal.registration_profile_check(p_goal, p_moment, p_interests, p_skills, p_area);
- -- Crossing revalidado sob lock e ANTES do e-mail: o resultado não depende de a conta existir (sem enumeração).
+ -- Protocolo R3: contas que decidem a proteção da mentora (ordem de UUID) → guard → reconferência do conjunto → linha da mentora.
+ v_owners := internal.domain_lock_users('mentor', ARRAY[p_mentor]);
+ PERFORM internal.lock_user_set(v_owners);
+ -- Guard travado sem escrever a revisão (padrão WP-002): o caminho neutro não muda nenhuma linha; o INSERT do perfil sobe a revisão pelo trigger.
+ PERFORM 1 FROM internal.agenda_guard WHERE id = 1 FOR UPDATE;
+ IF internal.domain_lock_users('mentor', ARRAY[p_mentor]) IS DISTINCT FROM v_owners THEN RAISE EXCEPTION 'domain owner changed' USING ERRCODE = '40001'; END IF;
+ -- Crossing revalidado sob esses locks e ANTES do e-mail: o resultado não depende de a conta existir (sem enumeração).
  PERFORM 1 FROM public.mentor m WHERE m.id = p_mentor FOR SHARE;
  SELECT * INTO c FROM internal.registration_candidates(p_goal, p_interests, p_skills, p_area) x WHERE x.mentor_id = p_mentor;
  IF NOT FOUND THEN RAISE EXCEPTION 'registration_mentor_unavailable'; END IF;
