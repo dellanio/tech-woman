@@ -37,6 +37,12 @@ function participantFields(p:Record<string,unknown>):ParticipantFields{
 }
 const PARTICIPANT_KEYS=['goal','moment','interests','skills','area','otherArea','consent'];
 export function parseParticipantRegistration(value:unknown):ParticipantRegistration{const p=object(value,['email',...PARTICIPANT_KEYS]);return {email:email(p.email),...participantFields(p)};}
+/** Preview do crossing (cadastro público): só o diagnóstico, sem e-mail, credenciais nem consentimento. */
+export type ParticipantPreview=Omit<ParticipantFields,'consent'>;
+const PREVIEW_KEYS=['goal','moment','interests','skills','area','otherArea'];
+export function parseRegistrationPreview(value:unknown):ParticipantPreview{const {consent:_consent,...fields}=participantFields({...object(value,PREVIEW_KEYS),consent:true});return fields;}
+/** Item público do crossing: referência opaca e nome (ou "(MENTORA)"). Nada além disso sai do servidor. */
+export type CrossingChoice={mentor_ref:string;nome_exibicao:string};
 /** Perfil de participante da própria sessão: mesmos dados de domínio, sem email/userId/roles. */
 export function parseParticipantProfile(value:unknown):ParticipantFields{return participantFields(object(value,PARTICIPANT_KEYS));}
 export type MentorRegistration={email:string;displayName:string;trajectory:string;specialties:Tag[];availability:string;legacyCapacity:number;consent:true};
