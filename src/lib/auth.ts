@@ -114,11 +114,32 @@ export function handleWith<P>(fn: (request: Request, params: P) => Promise<Respo
 
 // ---- Requisição ----
 export const requireOrigin = (request: Request) => { if (!sameOrigin(request)) throw new HttpError('CSRF_REJECTED'); };
+/** A razão é interna: adaptadores legados preservam apenas o erro antigo de sintaxe. */
+export class JsonBodyError extends HttpError {
+  constructor(readonly reason: 'content-type' | 'too-large' | 'syntax') { super('INVALID_JSON'); }
+}
 export async function readJson(request: Request): Promise<unknown> {
-  if (!/^application\/json\s*(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new HttpError('INVALID_JSON');
-  const text = await request.text();
-  if (text.length > 65536) throw new HttpError('INVALID_JSON');
-  try { return JSON.parse(text); } catch { throw new HttpError('INVALID_JSON'); }
+  if (!/^application\/json\s*(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new JsonBodyError('content-type');
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  if (reader) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 65536) {
+          // Não aguardar cancelamento de transporte para responder; não consumir o restante.
+          void reader.cancel().catch(() => undefined);
+          throw new JsonBodyError('too-large');
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+  }
+  const text = new TextDecoder().decode(Buffer.concat(chunks, bytes));
+  try { return JSON.parse(text); } catch { throw new JsonBodyError('syntax'); }
 }
 export const idempotencyKey = (request: Request) => parseIdempotencyKey(request.headers.get('idempotency-key'));
 export const sessionTokenFromRequest = (request: Request) => sessionTokenFromCookieHeader(request.headers.get('cookie'));
