@@ -186,6 +186,6 @@ export const hourlyRules = (action: string, request: Request, email: string): Ra
 ];
 /** Preview do crossing (sem e-mail): só balde por IP; a participante pode voltar e editar respostas, por isso 60/h por padrão. */
 export const previewRules = (request: Request): RateRule[] => [{ key: bucket('registration-preview-ip', clientIp(request)), limit: envInt('RATE_PREVIEW_IP_PER_HOUR', 60), window: 3600 }];
-export const resetRules =(request: Request): RateRule[] => [{ key: bucket('reset-ip', clientIp(request)), limit: envInt('RATE_RESET_IP_PER_MIN', 10), window: 60 }];
+export const resetRules = (request: Request): RateRule[] => [{ key: bucket('reset-ip', clientIp(request)), limit: envInt('RATE_RESET_IP_PER_MIN', 10), window: 60 }];
 /** Escopo de idempotência do cadastro público: HMAC de e-mail+ação+IP. */
 export const publicIdempotencyScope = (action: string, request: Request, email: string) => bucket('idempotency', action, emailKey(email), clientIp(request));
