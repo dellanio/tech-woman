@@ -18,7 +18,7 @@ test('preview HTTP: 200 só com mentor_ref/nome_exibicao na ordem do ranking; re
  const r=await call(preview.POST,PATH,{body:DIAGNOSTIC});
  assert.equal(r.status,200);assert.equal(r.headers.get('cache-control'),'no-store');
  const data=r.json.data as Choice[];
- assert.deepEqual(data.map(c=>c.nome_exibicao),['Eva Demo','Ana Dados','(MENTORA)','Gabi Demo']);
+ assert.deepEqual(data.map(c=>c.nome_exibicao),['Eva Demo','Ana Dados','(MENTORA)','(MENTORA)']);
  for(const c of data){assert.deepEqual(Object.keys(c).sort(),['mentor_ref','nome_exibicao']);assert.match(c.mentor_ref,REF);}
  assert.deepEqual(data.map(c=>c.mentor_ref),[m.eva,m.ana,m.semNome,m.gabi].map(mentorRef),'referência = HMAC do id (resolvida no servidor)');
  assert.equal(new Set(data.map(c=>c.mentor_ref)).size,4);

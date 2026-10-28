@@ -13,7 +13,8 @@ test('preview SQL: só compatíveis (ativa, não protegida, score>0) na ordem do
  const runtime=new Client({connectionString:roleUrl(url,'techwoman_runtime')});await runtime.connect();
  try{
   const rows=(await previewSql(runtime)).rows[0].r as {id:string;name:string}[];
-  assert.deepEqual(rows,[{id:m.eva,name:'Eva Demo'},{id:m.ana,name:'Ana Dados'},{id:m.semNome,name:'(MENTORA)'},{id:m.gabi,name:'Gabi Demo'}]);
+  assert.deepEqual(rows,[{id:m.eva,name:'Eva Demo'},{id:m.ana,name:'Ana Dados'},{id:m.semNome,name:'(MENTORA)'},{id:m.gabi,name:'(MENTORA)'}]);
+  // decisão literal do sponsor (28/10): sem display_name → só (MENTORA), mesmo para mentora demo com demo_name
   // sem compatíveis: lista vazia, nunca um "match" inventado
   const none=(await previewSql(runtime,{...DIAGNOSTIC,goal:'transition',interests:['desenvolvimento'],skills:['codigo'],area:'outra: Biotecnologia'})).rows[0].r;
   assert.deepEqual(none,[]);

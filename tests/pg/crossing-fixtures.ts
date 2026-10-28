@@ -32,7 +32,7 @@ export async function crossingMentors(db:Q){
  const protegida=await mentor({email:'Chefe@Example.invalid',specialties:['dados'],display:'Protegida'});
  await db.query("insert into app_user(id,email,status) values(gen_random_uuid(),'chefe@example.invalid','active')");
  await db.query("insert into user_role(user_id,role) select id,'admin' from app_user where email='chefe@example.invalid'");
- const gabi=await mentor({email:'gabi@example.invalid',specialties:['design'],display:'  ',demo:true,demoName:'Gabi Demo'}); // 3, empate com semNome → id
+ const gabi=await mentor({email:'gabi@example.invalid',specialties:['design'],display:'  ',demo:true,demoName:'Gabi Demo'}); // 3, empate com semNome → id; display vazio → (MENTORA), demo_name nunca entra
  // turma aberta só da Ana: compatibilidade não depende de turma/capacidade
  const topic=(await db.query("insert into topic(slug,name) values('crossing','Tema') returning id")).rows[0].id;
  const mt=(await db.query('insert into mentor_topic(mentor_id,topic_id,position) values($1,$2,1) returning id',[ana,topic])).rows[0].id;

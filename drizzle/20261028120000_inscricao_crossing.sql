@@ -2,7 +2,7 @@
 -- 1. Ranking legado por VALORES (internal.agenda_ranking_values): mesmo corpo/semântica de internal.agenda_ranking, que passa a delegar a ele
 --    (CREATE OR REPLACE preserva owner/ACL). O preview calcula o ranking sem criar perfil temporário.
 -- 2. internal.registration_candidates: compatíveis = mentora ativa, não protegida e score > 0; independe de turma/capacidade; ordem score desc, id.
---    Nome público: display_name → demo_name (só demo) → '(MENTORA)'.
+--    Nome público: display_name; sem display_name → literalmente '(MENTORA)' (decisão do sponsor de 28/10; demo_name nunca entra).
 -- 3. internal.registration_preview (SECURITY DEFINER, STABLE): só lê; devolve [{id,name}] ao servidor, que troca o id por referência opaca (HMAC).
 -- 4. internal.register_participant_account muda de assinatura (DROP explícito): conta active com password_hash (scrypt do app), perfil e match
 --    current 'suggested' da mentora escolhida, revalidada sob lock ANTES do e-mail; anti-enumeração igual à anterior; nenhum email_job.
@@ -50,7 +50,7 @@ RETURNS TABLE(mentor_id bigint, score integer, reasons jsonb, label text)
 LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
  SELECT s.id, (s.r).o_score, (s.r).o_reasons, s.label FROM (
   SELECT m.id, internal.agenda_ranking_values(p_goal, p_interests, p_skills, p_area, m.id) AS r,
-   coalesce(nullif(btrim(m.display_name), ''), CASE WHEN m.demo THEN nullif(btrim(m.demo_name), '') END, '(MENTORA)') AS label
+   coalesce(nullif(btrim(m.display_name), ''), '(MENTORA)') AS label
   FROM public.mentor m WHERE m.active AND NOT internal.domain_protected('mentor', m.id)) s
  WHERE (s.r).o_score > 0 ORDER BY (s.r).o_score DESC, s.id;
 $$;
