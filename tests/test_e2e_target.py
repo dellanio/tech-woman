@@ -1,4 +1,5 @@
-"""INT-005 (R-008): `pnpm test:e2e` aponta para o e2e atual da API v1 (cadastro 202 → job → worker → login/troca), não para o legado."""
+"""INT-005 (R-008) + AJUSTE-INSCRICAO: `pnpm test:e2e` aponta para o e2e atual da API v1 (crossing → cadastro definitivo 202 → login full →
+restart, sem senha temporária no caminho normal; entrypoint real do mailer com job legado), não para o legado."""
 import json
 import pathlib
 import unittest
@@ -14,11 +15,13 @@ class E2eTargetTests(unittest.TestCase):
 
     def test_flow_covers_v1_contract_and_separated_credentials(self):
         source = (ROOT / 'tests/pg/e2e-v1.ts').read_text(encoding='utf-8')
-        for needle in ('/api/v1/registrations/participants', '202', '/api/v1/auth/login', 'password_change_required',
-                       '/api/v1/auth/password/change', 'scripts/email-worker.ts', 'scripts/migration/migrate.ts',
-                       'bootstrap-local.sql', 'MAILER_DATABASE_URL', 'restart'):
+        for needle in ('/api/v1/registrations/participants/preview', '/api/v1/registrations/participants', '202',
+                       "next:'login'", '/api/v1/auth/login', "{state:'authenticated'}", 'passwordConfirmation',
+                       'scripts/email-worker.ts', 'scripts/migration/migrate.ts', 'bootstrap-local.sql', 'MAILER_DATABASE_URL', 'restart'):
             self.assertIn(needle, source, needle)
         self.assertNotIn('/api/participant', source, 'sem API legada')
+        self.assertNotIn('/api/v1/auth/password/change', source, 'cadastro definitivo: sem troca de senha temporária no caminho normal')
+        self.assertNotIn('password_change_required', source, 'login direto em sessão full')
 
 
 if __name__ == '__main__':

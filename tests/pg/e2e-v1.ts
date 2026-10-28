@@ -1,7 +1,8 @@
 /**
- * E2E atual (API v1, substitui o legado obsoleto): base vazia → bootstrap de roles → migradora (processo próprio) → web standalone só com a
- * credencial runtime → cadastro 202 → job → worker fake em memória (credencial mailer) → login com temporária → troca → reinício do web →
- * sessão e nova senha preservadas; mais o entrypoint real do mailer (`scripts/email-worker.ts --once`, transporte descartável) consumindo um job.
+ * E2E atual (API v1, AJUSTE-INSCRICAO): base vazia → bootstrap de roles → migradora (processo próprio) → web standalone só com a credencial
+ * runtime → crossing (preview sem persistência) → cadastro definitivo 202 com a senha escolhida (nenhum job: worker em memória não reivindica
+ * nada) → login full direto → reinício do web → sessão e senha preservadas; mais o entrypoint real do mailer (`scripts/email-worker.ts --once`,
+ * transporte descartável) consumindo o job de uma conta pendente legada (fixture do cadastro anterior à migration 31).
  * Dados e credenciais exclusivamente sintéticos, gerados aqui e nunca impressos. Nenhum e-mail real (fake não atesta entrega SES).
  *
  * Modo padrão (CI): exige MIGRATION_DATABASE_URL (admin de PG16 descartável), `pnpm build` feito e `psql` no PATH.
@@ -16,8 +17,9 @@ import {cpSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync,existsSyn
 import {resolve} from 'node:path';
 import {createServer} from 'node:net';
 import {Client,Pool} from 'pg';
+import {pendingParticipant} from './pending-participant';
 
-const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
+const diagnostic={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados'};
 type Reply={status:number;json:any;cookie:string|null};
 const synthetic=()=>'E2e-'+randomBytes(18).toString('base64url')+'!9a';
 
@@ -56,34 +58,36 @@ async function drain(mailerUrl:string){
  return {messages,result};
 }
 
-/** Cadastro → job → fake → login limitado → troca. Devolve a conta sintética e a sessão autenticada. */
-async function flowBefore(http:ReturnType<typeof client>,mailerUrl:string){
- const addr=`e2e-${randomUUID().slice(0,8)}@example.invalid`;
- const reg=await http('/api/v1/registrations/participants',{body:{email:addr,...profile},key:randomUUID()});
- assert.deepEqual([reg.status,reg.json?.data],[202,{status:'received',next:'check_email'}],'cadastro v1 responde 202');
+/** Crossing → cadastro definitivo (sem job) → login full. Devolve a conta sintética e a sessão autenticada. */
+async function flowBefore(http:ReturnType<typeof client>,mailerUrl:string,admin:Pool|Client){
+ const tag=randomUUID().slice(0,8);const mentorName=`Mentora E2E ${tag}`;
+ await admin.query("insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values($1,'Trajetória sintética','[\"dados\"]','No evento',2,$2)",[`e2e-m-${tag}@example.invalid`,mentorName]);
+ const preview=await http('/api/v1/registrations/participants/preview',{body:diagnostic});
+ assert.equal(preview.status,200,'preview do crossing');
+ const choice=(preview.json?.data as {mentor_ref:string;nome_exibicao:string}[]).find(c=>c.nome_exibicao===mentorName);
+ assert.ok(choice,'mentora compatível no crossing (sem turma)');assert.deepEqual(Object.keys(choice).sort(),['mentor_ref','nome_exibicao']);
+ const addr=`e2e-${tag}@example.invalid`;const fresh=synthetic();
+ const reg=await http('/api/v1/registrations/participants',{body:{email:addr,...diagnostic,consent:true,mentor_ref:choice.mentor_ref,password:fresh,passwordConfirmation:fresh},key:randomUUID()});
+ assert.deepEqual([reg.status,reg.json?.data],[202,{status:'received',next:'login'}],'cadastro definitivo responde 202');
  const {messages,result}=await drain(mailerUrl);
- assert.equal(result.claimed,1,'job de acesso reivindicado pelo worker');assert.equal(messages.length,1);assert.equal(messages[0].to,addr);
- const temp=messages[0].secret;
- const limited=await http('/api/v1/auth/login',{body:{email:addr,password:temp}});
- assert.deepEqual([limited.status,limited.json?.data],[200,{state:'password_change_required'}],'login com temporária');
- assert.ok(limited.cookie,'cookie de sessão limitada');
- const csrf=await http('/api/v1/auth/csrf',{cookie:limited.cookie!});assert.equal(csrf.status,200);
- const fresh=synthetic();
- const changed=await http('/api/v1/auth/password/change',{body:{currentPassword:temp,newPassword:fresh},cookie:limited.cookie!,csrf:String(csrf.json.data.csrfToken)});
- assert.deepEqual([changed.status,changed.json?.data],[200,{state:'authenticated'}],'troca de senha');assert.ok(changed.cookie);
- const who=await http('/api/v1/auth/session',{cookie:changed.cookie!});
+ assert.deepEqual([result.claimed,messages.length],[0,0],'cadastro não enfileira e-mail nem senha temporária');
+ const logged=await http('/api/v1/auth/login',{body:{email:addr,password:fresh}});
+ assert.deepEqual([logged.status,logged.json?.data],[200,{state:'authenticated'}],'login full com a senha definitiva');
+ assert.ok(logged.cookie,'cookie de sessão full');
+ const who=await http('/api/v1/auth/session',{cookie:logged.cookie!});
  assert.deepEqual([who.status,who.json?.data?.state,who.json?.data?.user?.roles],[200,'authenticated',['participant']]);
- // segundo cadastro: fica na fila para o entrypoint real do mailer
- const reg2=await http('/api/v1/registrations/participants',{body:{email:`e2e-q-${randomUUID().slice(0,8)}@example.invalid`,...profile},key:randomUUID()});
- assert.equal(reg2.status,202);
- return {addr,temp,fresh,session:changed.cookie!};
+ // conta pendente legada (anterior à migration 31): o job fica na fila para o entrypoint real do mailer
+ assert.ok(await pendingParticipant(admin,`e2e-q-${tag}@example.invalid`),'fixture de conta pendente legada');
+ return {addr,fresh,session:logged.cookie!};
 }
-async function flowAfter(http:ReturnType<typeof client>,s:{addr:string;temp:string;fresh:string;session:string},admin:Pool|Client){
+async function flowAfter(http:ReturnType<typeof client>,s:{addr:string;fresh:string;session:string},admin:Pool|Client){
  const who=await http('/api/v1/auth/session',{cookie:s.session});
  assert.deepEqual([who.status,who.json?.data?.state],[200,'authenticated'],'sessão sobrevive ao restart');
- assert.equal((await http('/api/v1/auth/login',{body:{email:s.addr,password:s.temp}})).status,401,'temporária consumida');
+ assert.equal((await http('/api/v1/auth/login',{body:{email:s.addr,password:s.fresh+'x'}})).status,401,'senha errada recusada');
  const again=await http('/api/v1/auth/login',{body:{email:s.addr,password:s.fresh}});
- assert.deepEqual([again.status,again.json?.data],[200,{state:'authenticated'}],'nova senha após restart');
+ assert.deepEqual([again.status,again.json?.data],[200,{state:'authenticated'}],'senha definitiva após restart');
+ const account=(await admin.query("select u.status,u.temporary_password_hash is null nt,u.must_change_password m,(select count(*)::int from match x join participant p on p.id=x.participant_id where p.user_id=u.id and x.origin='current') matches from app_user u where u.email_key=lower($1)",[s.addr])).rows[0];
+ assert.deepEqual(account,{status:'active',nt:true,m:false,matches:1},'conta definitiva com o cruzamento escolhido');
  const pending=(await admin.query("select count(*)::int n from email_job where status in ('queued','sending')")).rows[0].n;
  return {pendingJobs:pending,pg:(await admin.query('show server_version')).rows[0].server_version as string};
 }
@@ -122,7 +126,7 @@ async function selfManaged(){
    try{await waitUp(origin,web);}catch(error){throw new Error(`${(error as Error).message} (porta ${port}): ${hide(webErr)}`);}};
   await start();
   const http=client(origin);const mailerUrl=urlFor('techwoman_mailer',pw.MAILER_PASSWORD);
-  const state=await flowBefore(http,mailerUrl);
+  const state=await flowBefore(http,mailerUrl,admin);
   // entrypoint real do mailer: só MAILER_DATABASE_URL, transporte descartável
   const worker=runNode(['scripts/email-worker.ts','--once'],{PATH:process.env.PATH,MAILER_DATABASE_URL:mailerUrl,EMAIL_MODE:'fake',SES_SEND_ENABLED:'0'});
   assert.equal(worker.status,0,'email-worker: '+hide(worker.out));
@@ -130,7 +134,7 @@ async function selfManaged(){
   assert.equal(line.claimed,1,'mailer consumiu o job enfileirado');assert.equal(line.failed,0);
   await stop();await start(); // restart do web
   const after=await flowAfter(http,state,admin);assert.equal(after.pendingJobs,0,'fila vazia');
-  const out={mode:'self-managed',flow:'cadastro202→job→fake→login→troca→restart',mailerEntrypoint:{claimed:line.claimed,transport:line.transport},migrations:files,pg:after.pg,webHasMigrationCredential:false,realEmailSent:false};
+  const out={mode:'self-managed',flow:'crossing→cadastro definitivo 202 (sem job)→login full→restart',mailerEntrypoint:{claimed:line.claimed,transport:line.transport},migrations:files,pg:after.pg,webHasMigrationCredential:false,realEmailSent:false};
   if(evidence)writeFileSync(resolve(evidence,'e2e-v1-result.json'),JSON.stringify(out,null,2));
   console.log(JSON.stringify(out));
  }finally{
@@ -149,7 +153,7 @@ async function external(){
  const origin=process.env.E2E_WEB_ORIGIN,adminUrl=process.env.E2E_ADMIN_URL,mailerUrl=process.env.E2E_MAILER_URL,stateFile=process.env.E2E_STATE,phase=process.env.E2E_PHASE;
  assert.ok(origin&&adminUrl&&mailerUrl&&stateFile&&(phase==='before'||phase==='after'),'E2E_WEB_ORIGIN/E2E_ADMIN_URL/E2E_MAILER_URL/E2E_STATE/E2E_PHASE');
  const http=client(origin);await waitUp(origin);
- if(phase==='before'){const s=await flowBefore(http,mailerUrl);writeFileSync(stateFile,JSON.stringify(s),{mode:0o600});console.log(JSON.stringify({phase,ok:true}));return;}
+ if(phase==='before'){const admin=new Pool({connectionString:adminUrl});let s;try{s=await flowBefore(http,mailerUrl,admin);}finally{await admin.end();}writeFileSync(stateFile,JSON.stringify(s),{mode:0o600});console.log(JSON.stringify({phase,ok:true}));return;}
  assert.ok(existsSync(stateFile));const s=JSON.parse(readFileSync(stateFile,'utf8'));rmSync(stateFile);
  const admin=new Pool({connectionString:adminUrl});
  try{const after=await flowAfter(http,s,admin);assert.equal(after.pendingJobs,0,'mailer da imagem esvaziou a fila');console.log(JSON.stringify({phase,ok:true,...after}));}
