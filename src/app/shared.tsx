@@ -111,6 +111,7 @@ export function safeNext(raw: unknown, fallback = DEFAULT_AFTER_LOGIN): string {
   if (typeof raw !== 'string' || raw.length > 512 || !raw.startsWith('/') || raw.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(raw)) return fallback;
   try {
     const url = new URL(raw, 'http://destino.invalid');
+    if (url.pathname.startsWith('//') || url.pathname.startsWith('/\\')) return fallback;
     if (url.origin !== 'http://destino.invalid' || url.pathname.startsWith('/api/') || AUTH_PAGES.includes(url.pathname)) return fallback;
     return url.pathname + url.search + url.hash;
   } catch { return fallback; }
