@@ -80,7 +80,8 @@ class SchemaUpgradePgTests(unittest.TestCase):
         (self.tools / 'drizzle').mkdir()
         for name in ('scripts', 'node_modules'):
             (self.tools / name).symlink_to(ROOT / name, target_is_directory=True)
-        self.real = sorted((ROOT / 'drizzle').glob('*.sql'))
+        # the rehearsal is the 29 -> 30 release (PR #7); later migrations (31, AJUSTE-INSCRICAO) belong to their own release
+        self.real = sorted(p for p in (ROOT / 'drizzle').glob('*.sql') if p.name <= READ_ONLY)
         self.assertEqual((len(self.real), self.real[-1].name), (30, READ_ONLY))
         for path in self.real[:29]:
             (self.tools / 'drizzle' / path.name).write_bytes(path.read_bytes())
