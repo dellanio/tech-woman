@@ -9,7 +9,7 @@ const previewSql=(db:Q,d:Record<string,unknown>=DIAGNOSTIC)=>db.query('select in
 
 test('preview SQL: só compatíveis (ativa, não protegida, score>0) na ordem do ranking, nome ou (MENTORA), sem turma exigida e sem escrita',async()=>withDb(async({db,url})=>{
  const m=await crossingMentors(db);
- const before=await fullSnapshot(db);
+ const before=await fullSnapshot(db,{sequences:true});
  const runtime=new Client({connectionString:roleUrl(url,'techwoman_runtime')});await runtime.connect();
  try{
   const rows=(await previewSql(runtime)).rows[0].r as {id:string;name:string}[];
@@ -20,7 +20,7 @@ test('preview SQL: só compatíveis (ativa, não protegida, score>0) na ordem do
   for(const bad of [{...DIAGNOSTIC,goal:'x'},{...DIAGNOSTIC,moment:'x'},{...DIAGNOSTIC,interests:'dados'},{...DIAGNOSTIC,area:''}])
    await assert.rejects(previewSql(runtime,bad),(e:{code?:string})=>e.code==='P0001','diagnóstico inválido recusado no banco');
  }finally{await runtime.end();}
- assert.deepEqual(await fullSnapshot(db),before,'preview não grava nada (nem sequence)');
+ assert.deepEqual(await fullSnapshot(db,{sequences:true}),before,'preview não grava nada (nem sequence)');
 }));
 
 test('ranking por valores = ranking legado por participante (uma só implementação)',async()=>withDb(async({db})=>{

@@ -1,5 +1,5 @@
 /** Crossing do cadastro público (AJUSTE-INSCRICAO): mentoras compatíveis com o diagnóstico, sem persistência, com referência opaca. */
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { getDb } from './db';
 import { parseRegistrationPreview, type CrossingChoice, type ParticipantPreview } from './contracts';
@@ -24,4 +24,10 @@ export async function crossingCandidates(db: Db, p: ParticipantPreview): Promise
 export async function previewCrossing(input: unknown): Promise<CrossingChoice[]> {
   const p = parseRegistrationPreview(input);
   return (await crossingCandidates(getDb(), p)).map(c => ({ mentor_ref: mentorRef(c.id), nome_exibicao: c.name }));
+}
+/** Resolve a referência entre as compatíveis DESTE diagnóstico (comparação em tempo constante). Fora da lista → null; o banco revalida sob lock. */
+export async function resolveMentorRef(db: Db, p: ParticipantPreview, ref: string): Promise<string | null> {
+  const wanted = Buffer.from(ref);
+  for (const c of await crossingCandidates(db, p)) { const mine = Buffer.from(mentorRef(c.id)); if (mine.length === wanted.length && timingSafeEqual(mine, wanted)) return c.id; }
+  return null;
 }

@@ -1,13 +1,14 @@
 import { sql } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
-import { getDb, tokenDigest } from './db';
+import { createHash, createHmac } from 'node:crypto';
+import { getDb, hashPassword, tokenDigest } from './db';
 import { isSessionToken } from './identity';
-import { parseParticipantRegistration, parseMentorRegistration, parseParticipantProfile, parseMentorProfile, parseLegacyMentorRegistration, registrationReceived, canonicalHash, type RegistrationReceived } from './contracts';
+import { participantArea, resolveMentorRef } from './crossing';
+import { parseParticipantSignup, parseMentorRegistration, parseParticipantProfile, parseMentorProfile, parseLegacyMentorRegistration, registrationReceived, participantSignupReceived, canonicalHash, ContractError, type RegistrationReceived, type ParticipantSignup, type ParticipantSignupReceived } from './contracts';
 
 export class RegistrationClosedError extends Error { readonly code = 'REGISTRATION_CLOSED'; readonly status = 403; constructor() { super('Cadastro de mentoras encerrado.'); } }
 /** Mesmo default e semântica de service.ts (MENTOR_DEADLINE), lido a cada chamada. */
 export const mentorRegistrationOpen = (now = Date.now()) => { const deadline = Date.parse(process.env.MENTOR_DEADLINE || '2026-10-31T02:59:59.999Z'); return !Number.isNaN(deadline) && now <= deadline; };
-export const participantArea = (area: string, otherArea?: string) => area === 'outra' ? `outra: ${otherArea}` : area;
+export { participantArea };
 const received = (): RegistrationReceived => ({ ...registrationReceived });
 
 export class IdempotencyConflictError extends Error { readonly code = 'IDEMPOTENCY_CONFLICT'; readonly status = 409; constructor() { super('Chave de idempotência já usada com outro corpo.'); } }
@@ -26,11 +27,28 @@ async function withIdempotency(idem: PublicIdempotency | undefined, path: string
   });
 }
 
-/** Sempre `received`: nova conta, duplicada, existente, privilegiada ou legado protegido são indistinguíveis. DTO inválido → ContractError (422). */
-export async function registerParticipant(input: unknown, idem?: PublicIdempotency): Promise<RegistrationReceived> {
-  const p = parseParticipantRegistration(input);
-  await withIdempotency(idem, '/api/v1/registrations/participants', p, db => db.execute(sql`select internal.register_participant_account(${p.email},${p.goal},${p.moment},${JSON.stringify(p.interests)}::jsonb,${JSON.stringify(p.skills)}::jsonb,${participantArea(p.area, p.otherArea)})`));
-  return received();
+const secret = () => { const value = process.env.SESSION_SECRET; if (!value || value.length < 32 || value.startsWith('replace-')) throw new Error('Configure SESSION_SECRET em .env'); return value; };
+/** Impressão da senha para o corpo canônico da idempotência: HMAC com chave própria (estável no replay, sem senha crua e sem duplo scrypt). */
+export const passwordFingerprint = (password: string) => createHmac('sha256', createHmac('sha256', secret()).update('tw:signup-idempotency:v1').digest()).update(password, 'utf8').digest('base64url');
+/** Corpo canônico do cadastro: a senha vira impressão; a confirmação (já igual) fica fora. */
+export const signupCanonical = (p: ParticipantSignup) => { const { password, passwordConfirmation: _confirmation, ...rest } = p; return { ...rest, passwordFingerprint: passwordFingerprint(password) }; };
+const mentorUnavailable = (error: unknown) => { for (let current: unknown = error, depth = 0; current && typeof current === 'object' && depth < 4; depth++) { if ((current as { message?: unknown }).message === 'registration_mentor_unavailable') return true; current = (current as { cause?: unknown }).cause; } return false; };
+
+/**
+ * Sempre `received`/`login`: conta nova, e-mail existente, privilegiado ou legado protegido são indistinguíveis. A mentora é resolvida entre as
+ * compatíveis do diagnóstico e revalidada sob lock no banco ANTES do e-mail; fora da lista → 422 `mentor_ref` sem gravar nada (independe do e-mail).
+ * Conta active com o hash scrypt (calculado uma vez, fora da transação), perfil e match numa única função SQL; nenhum e-mail enfileirado.
+ */
+export async function registerParticipant(input: unknown, idem?: PublicIdempotency): Promise<ParticipantSignupReceived> {
+  const p = parseParticipantSignup(input);
+  const hash = await hashPassword(p.password);
+  await withIdempotency(idem, '/api/v1/registrations/participants', signupCanonical(p), async db => {
+    const mentor = await resolveMentorRef(db, p, p.mentor_ref);
+    if (!mentor) throw new ContractError(['mentor_ref']);
+    try { await db.execute(sql`select internal.register_participant_account(${p.email},${hash},${p.goal},${p.moment},${JSON.stringify(p.interests)}::jsonb,${JSON.stringify(p.skills)}::jsonb,${participantArea(p.area, p.otherArea)},${mentor}::bigint)`); }
+    catch (error) { if (mentorUnavailable(error)) throw new ContractError(['mentor_ref']); throw error; }
+  });
+  return { ...participantSignupReceived };
 }
 /** Prazo verificado antes de qualquer consulta; fechado → RegistrationClosedError (403) sem tocar conta. */
 export async function registerMentor(input: unknown, idem?: PublicIdempotency): Promise<RegistrationReceived> {

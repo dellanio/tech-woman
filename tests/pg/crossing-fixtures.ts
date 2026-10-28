@@ -4,11 +4,16 @@ import type {Client,Pool} from 'pg';
 export type Q=Pool|Client;
 export const DIAGNOSTIC={goal:'growth',moment:'working',interests:['dados','design'],skills:['analise','gestao'],area:'dados'};
 
-/** Conteúdo integral de todas as tabelas da aplicação (exceto baldes de rate): qualquer escrita muda o snapshot. */
-export async function fullSnapshot(db:Q):Promise<Record<string,string>>{
- const tables=(await db.query("select schemaname||'.'||tablename t from pg_tables where schemaname in ('public','internal','legacy_snapshot') and tablename<>'auth_rate_bucket' order by 1")).rows.map(r=>String(r.t));
+/**
+ * Conteúdo integral de todas as tabelas da aplicação (exceto baldes de rate e as tabelas em `skip`): qualquer escrita muda o snapshot.
+ * `sequences` inclui match/participant: só serve onde nada deveria nem tentar inserir (sequences do PG não voltam no ROLLBACK).
+ */
+export async function fullSnapshot(db:Q,o:{sequences?:boolean;skip?:string[]}={}):Promise<Record<string,string>>{
+ const skip=['public.auth_rate_bucket',...(o.skip??[])];
+ const tables=(await db.query("select schemaname||'.'||tablename t from pg_tables where schemaname in ('public','internal','legacy_snapshot') order by 1")).rows.map(r=>String(r.t)).filter(t=>!skip.includes(t));
  const out:Record<string,string>={};
  for(const t of tables)out[t]=String((await db.query(`select count(*)::text||':'||md5(coalesce(string_agg(x::text,'|' order by x::text),'')) s from ${t} x`)).rows[0].s);
+ if(!o.sequences)return out;
  out['seq:match']=String((await db.query('select last_value::text||is_called::text v from public.match_id_seq')).rows[0].v);
  out['seq:participant']=String((await db.query('select last_value::text||is_called::text v from public.participant_id_seq')).rows[0].v);
  return out;

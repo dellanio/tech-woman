@@ -14,7 +14,7 @@ type Choice={mentor_ref:string;nome_exibicao:string};
 
 test('preview HTTP: 200 só com mentor_ref/nome_exibicao na ordem do ranking; referência opaca, estável e dependente do segredo; nada gravado',async()=>withDb(async({db})=>{
  const m=await crossingMentors(db);
- const before=await fullSnapshot(db);
+ const before=await fullSnapshot(db,{sequences:true});
  const r=await call(preview.POST,PATH,{body:DIAGNOSTIC});
  assert.equal(r.status,200);assert.equal(r.headers.get('cache-control'),'no-store');
  const data=r.json.data as Choice[];
@@ -31,7 +31,7 @@ test('preview HTTP: 200 só com mentor_ref/nome_exibicao na ordem do ranking; re
  finally{process.env.SESSION_SECRET=previous;}
  const none=await call(preview.POST,PATH,{body:{...DIAGNOSTIC,goal:'transition',interests:['desenvolvimento'],skills:['codigo'],area:'outra',otherArea:'Biotecnologia'}});
  assert.deepEqual([none.status,none.json.data],[200,[]],'sem compatíveis: lista vazia, sem match inventado');
- assert.deepEqual(await fullSnapshot(db),before,'preview não cria app_user/participant/match nem nada além do balde de rate');
+ assert.deepEqual(await fullSnapshot(db,{sequences:true}),before,'preview não cria app_user/participant/match nem nada além do balde de rate');
 }));
 
 test('preview HTTP: origem verificada, JSON ≤ 64 KiB, DTO fechado sem e-mail/credenciais/consentimento',async()=>withDb(async({db})=>{
