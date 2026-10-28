@@ -114,11 +114,18 @@ export function handleWith<P>(fn: (request: Request, params: P) => Promise<Respo
 
 // ---- Requisição ----
 export const requireOrigin = (request: Request) => { if (!sameOrigin(request)) throw new HttpError('CSRF_REJECTED'); };
+/** A razão é interna: adaptadores legados preservam apenas o erro antigo de sintaxe. */
+export class JsonBodyError extends HttpError {
+  constructor(readonly reason: 'content-type' | 'too-large' | 'syntax') { super('INVALID_JSON'); }
+}
 export async function readJson(request: Request): Promise<unknown> {
-  if (!/^application\/json\s*(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new HttpError('INVALID_JSON');
-  const text = await request.text();
-  if (text.length > 65536) throw new HttpError('INVALID_JSON');
-  try { return JSON.parse(text); } catch { throw new HttpError('INVALID_JSON'); }
+  if (!/^application\/json\s*(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new JsonBodyError('content-type');
+  // Consumir o corpo como antes: cancelar o stream do Next pode destruir o
+  // socket keep-alive e impedir a entrega do próprio INVALID_JSON.
+  const body = await request.arrayBuffer();
+  if (body.byteLength > 65536) throw new JsonBodyError('too-large');
+  const text = new TextDecoder().decode(body);
+  try { return JSON.parse(text); } catch { throw new JsonBodyError('syntax'); }
 }
 export const idempotencyKey = (request: Request) => parseIdempotencyKey(request.headers.get('idempotency-key'));
 export const sessionTokenFromRequest = (request: Request) => sessionTokenFromCookieHeader(request.headers.get('cookie'));

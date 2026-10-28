@@ -1,4 +1,4 @@
-import { enforceRate, HttpError, loginRules, sameOrigin, sessionCookieFor } from '@/lib/auth';
+import { enforceRate, errorResponse, HttpError, JsonBodyError, loginRules, readJson, sameOrigin, sessionCookieFor } from '@/lib/auth';
 import { identitySession, login, logout } from '@/lib/identity';
 export const runtime = 'nodejs';
 const denied = () => Response.json({ error: 'Credenciais inválidas.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } });
@@ -8,7 +8,11 @@ const denied = () => Response.json({ error: 'Credenciais inválidas.' }, { statu
  */
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return Response.json({ error: 'Origem não autorizada.' }, { status: 403 });
-  const input: unknown = await request.json().catch(() => null);
+  let input: unknown;
+  try { input = await readJson(request); } catch (error) {
+    if (error instanceof JsonBodyError && error.reason !== 'syntax') return errorResponse(error);
+    return denied();
+  }
   if (!input || typeof input !== 'object' || !('email' in input) || !('password' in input) || typeof input.email !== 'string' || typeof input.password !== 'string') return denied();
   try {
     await enforceRate(loginRules(request, input.email));
