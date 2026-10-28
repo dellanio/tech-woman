@@ -10,15 +10,14 @@ import * as csrf from '../../src/app/api/v1/auth/csrf/route';
 import * as change from '../../src/app/api/v1/auth/password/change/route';
 import * as forgot from '../../src/app/api/v1/auth/password/forgot/route';
 import * as reset from '../../src/app/api/v1/auth/password/reset/route';
-import * as participants from '../../src/app/api/v1/registrations/participants/route';
 import * as profileParticipant from '../../src/app/api/v1/me/profiles/participant/route';
 import * as profileMentor from '../../src/app/api/v1/me/profiles/mentor/route';
 import {withDb,addUser,sessionFor,synthetic,participantRow} from './identity-harness.test';
 import {call,code,sessionCookie,captureOutput,has,type Reply} from './identity-http-kit.test';
+import {pendingParticipant} from './pending-participant';
 
 const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
 const mentorProfile={displayName:'Mentora Fictícia',trajectory:'Trajetória de teste',specialties:['produto'],availability:'Quartas',legacyCapacity:3,consent:true};
-const dto=(addr:string)=>({email:addr,...profile});
 const csrfFor=async(token:string)=>{const r=await call(csrf.GET,'/api/v1/auth/csrf',{cookie:token});assert.equal(r.status,200);return String(r.json.data.csrfToken);};
 /** Esvazia a fila com o worker em memória e devolve as mensagens (segredos só aqui, em memória do teste). */
 const drain=async()=>{const messages:email.EmailMessage[]=[];await email.runEmailWorkerOnce(email.createMemoryTransport(m=>{messages.push(m);}));return messages;};
@@ -29,12 +28,12 @@ const leaked=async(db:Pool,secrets:string[])=>{
 };
 const sessionRoles=async(token:string)=>(await call(session.GET,'/api/v1/auth/session',{cookie:token})).json?.data?.user?.roles;
 
-test('fluxo HTTP: cadastro → worker em memória → login limitado → troca → perfil próprio → logout → esqueci → reset; sem segredo em tabelas nem logs',async()=>withDb(async({db})=>{
+test('fluxo HTTP: conta pendente (cadastro legado/admin) → worker em memória → login limitado → troca → perfil próprio → logout → esqueci → reset; sem segredo em tabelas nem logs',async()=>withDb(async({db})=>{
  const logs=captureOutput();const secrets:string[]=[];
  try{
   const addr='Fluxo.Http@Example.invalid';
-  const reg=await call(participants.POST,'/api/v1/registrations/participants',{body:dto(addr),key:randomUUID()});
-  assert.deepEqual([reg.status,reg.json.data],[202,{status:'received',next:'check_email'}]);
+  // conta pendente anterior à migration 31 (o cadastro público atual já cria a conta com senha definitiva e não envia e-mail)
+  assert.ok(await pendingParticipant(db,addr,profile));
   const sent=await drain();assert.equal(sent.length,1);const temp=sent[0].secret;secrets.push(temp);
   // login com o temporário: sessão limitada de 10 min, token só no cookie
   const limited=await call(login.POST,'/api/v1/auth/login',{body:{email:addr.toLowerCase(),password:temp}});

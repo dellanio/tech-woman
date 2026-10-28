@@ -13,7 +13,7 @@ export const synthetic=()=>`pw-${randomBytes(12).toString('base64url')}`;
 export const roleUrl=(url:string,role:string)=>{const u=new URL(url);u.searchParams.set('options',`-c role=${role} -c jit=off`);return u.toString();};
 /** Espera os backends encerrarem antes do DROP: derrubar socket ainda fechando gera erro assíncrono após o teste. */
 const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await control.query('select 1 from pg_stat_activity where datname=$1',[name])).rowCount)return;await new Promise(r=>setTimeout(r,50));}};
-const ENV_KEYS=['DATABASE_URL','MAILER_DATABASE_URL','RATE_LOGIN_PAIR_PER_MIN','RATE_EMAIL_PER_HOUR','EMAIL_MODE','MENTOR_DEADLINE','SESSION_SECRET','APP_ORIGIN','TRUST_PROXY','RATE_LIMIT_SECRET','NODE_ENV','ALLOW_LOCAL_HTTP'] as const;
+const ENV_KEYS=['DATABASE_URL','MAILER_DATABASE_URL','RATE_LOGIN_PAIR_PER_MIN','RATE_EMAIL_PER_HOUR','EMAIL_MODE','MENTOR_DEADLINE','SESSION_SECRET','APP_ORIGIN','TRUST_PROXY','RATE_LIMIT_SECRET','NODE_ENV','ALLOW_LOCAL_HTTP','RATE_PREVIEW_IP_PER_HOUR','RATE_IP_PER_HOUR'] as const;
 
 export async function withDb(fn:(ctx:Ctx)=>Promise<void>,env:Partial<Record<typeof ENV_KEYS[number],string>>={}){
  assert.ok(base,'MIGRATION_DATABASE_URL');const control=new Pool({connectionString:base});const name='tw_acc_'+randomUUID().replace(/-/g,'');

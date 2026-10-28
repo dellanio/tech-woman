@@ -36,6 +36,13 @@
       "when": 1793023200000,
       "tag": "20261026140000_beatriz_read_only",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793188800000,
+      "tag": "20261028120000_inscricao_crossing",
+      "breakpoints": true
     }
   ]
 }

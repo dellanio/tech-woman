@@ -18,6 +18,7 @@ import * as v1Mentors from '../../src/app/api/v1/registrations/mentors/route';
 import * as legacyParticipant from '../../src/app/api/participant/route';
 import * as legacyMentor from '../../src/app/api/mentor/route';
 import {call,type Reply} from './identity-http-kit.test';
+import {mentorRef} from '../../src/lib/crossing';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 const LOGIN_ROLES=['techwoman_migrator','techwoman_runtime','techwoman_mailer'] as const;
@@ -26,7 +27,9 @@ const settled=async(control:Pool,name:string)=>{for(let i=0;i<80;i++){if(!(await
 const urlFor=(db:string,user?:string,password?:string)=>{const u=new URL(String(base));u.pathname='/'+db;if(user){u.username=user;u.password=password??'';}return u.toString();};
 const redact=(text:string,secrets:string[])=>secrets.reduce((t,s)=>t.split(s).join('<redacted>'),text);
 
-const participantBody=(addr:string)=>({email:addr,goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true});
+/** Cadastro de participante atual (migration 31): mentora fixture compatível escolhida no crossing + senha definitiva; não enfileira e-mail. */
+let REF='';
+const participantBody=(addr:string)=>({email:addr,goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true,mentor_ref:REF,password:'Recife-senha-definitiva-1',passwordConfirmation:'Recife-senha-definitiva-1'});
 const v1MentorBody=(addr:string)=>({email:addr,displayName:'Mentora Fictícia',trajectory:'Trajetória sintética',specialties:['dados'],availability:'Quartas',legacyCapacity:3,consent:true});
 const legacyMentorBody=(addr:string)=>({email:addr,trajectory:'Trajetória sintética',specialties:['dados'],availability:'Quartas',capacity:3,consent:true});
 const ENTRIES:{name:string;send:(addr:string)=>Promise<Reply>}[]=[
@@ -57,6 +60,7 @@ before(async()=>{
  Object.assign(process.env,{DATABASE_URL:urlFor(dbName,'techwoman_runtime',secrets.RUNTIME_PASSWORD),MAILER_DATABASE_URL:urlFor(dbName,'techwoman_mailer',secrets.MAILER_PASSWORD),
   SESSION_SECRET:randomBytes(48).toString('hex'),APP_ORIGIN:'http://app.example.invalid',EMAIL_MODE:'fake',SES_SEND_ENABLED:'0',MENTOR_DEADLINE:'2999-12-31T23:59:59.000Z',RATE_IP_PER_HOUR:'1000'});
  Reflect.deleteProperty(process.env,'TRUST_PROXY');
+ REF=mentorRef(String((await admin.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('base.mentora@example.invalid','t','["dados"]','a',2,'Mentora Base') returning id`)).rows[0].id));
 });
 
 after(async()=>{
@@ -80,7 +84,7 @@ const snapshot=async()=>JSON.stringify((await admin.query(`select
  (select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from participant x) participants,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from mentor x) mentors,
  (select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from email_job x) jobs,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from email_delivery_attempt x) attempts,
  (select coalesce(jsonb_agg(to_jsonb(x) order by token_hash),'[]') from password_reset_token x) resets,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from auth_session x) sessions,
- (select coalesce(jsonb_agg(to_jsonb(x) order by source_table,source_key),'[]') from migration_identity_link x) links,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from migration_issue x) issues`)).rows[0]);
+ (select coalesce(jsonb_agg(to_jsonb(x) order by source_table,source_key),'[]') from migration_identity_link x) links,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from match x) matches,(select coalesce(jsonb_agg(to_jsonb(x) order by id),'[]') from migration_issue x) issues`)).rows[0]);
 const keyRows=async(key:string)=>(await admin.query(`select (select count(*)::int from app_user where email_key=$1) users,(select count(*)::int from participant where lower(btrim(email))=$1) participants,
  (select count(*)::int from mentor where lower(btrim(email))=$1) mentors,(select count(*)::int from email_job j join app_user u on u.id=j.user_id where u.email_key=$1) jobs`,[key])).rows[0];
 const comparable=(r:Reply)=>JSON.stringify({status:r.status,body:r.json?.data??r.json,cache:r.headers.get('cache-control'),type:r.headers.get('content-type')});
@@ -102,7 +106,7 @@ test('cadastro público em chave protegida só pelo mapa: 202 idêntico ao livre
   const freeKey=`livre.${entry.name}.${tag}@example.invalid`;freeKeys.push(freeKey);
   const free=await entry.send(`  ${freeKey.replace('livre','Livre')} `.trim());
   assert.equal(free.status,202,`${entry.name}: cadastro livre aceito`);
-  assert.equal((await keyRows(freeKey)).users,1,`${entry.name}: controle livre cria a conta pendente (o caminho realmente escreve)`);
+  assert.equal((await keyRows(freeKey)).users,1,`${entry.name}: controle livre cria a conta (o caminho realmente escreve)`);
   for(const kind of KINDS){
    const key=`${kind.replace('_','-')}.${entry.name}.${tag}@example.invalid`;
    const beforeSnap=await snapshot();
@@ -118,8 +122,9 @@ test('cadastro público em chave protegida só pelo mapa: 202 idêntico ao livre
  const protectedCredentials=(await admin.query('select count(*)::int n from app_user where email_key=any($1) and (temporary_password_hash is not null or password_hash is not null)',[protectedKeys])).rows[0].n;
  console.log(JSON.stringify({results,worker:{simulated:worker.simulated,accepted:worker.accepted},memory_messages:messages,protected_sent:protectedSent,protected_credentials:protectedCredentials}));
  assert.equal(worker.accepted,0,'transporte em memória: nada aceito por provedor real');
- assert.equal(messages,freeKeys.length,'só os cadastros livres geram mensagem (em memória)');
- assert.deepEqual([...recipients].sort(),[...freeKeys].sort());
+ const mentorFree=freeKeys.filter(k=>k.includes('mentor'));
+ assert.equal(messages,mentorFree.length,'só os cadastros livres de mentora geram mensagem (participante não enfileira e-mail)');
+ assert.deepEqual([...recipients].sort(),[...mentorFree].sort());
  for(const r of results)assert.deepEqual(r,{...r,status:202,identical_to_free:true,unchanged:true,users:0,participants:0,mentors:0,jobs:0},`MUST T07/D-037: ${r.entry} × ${r.kind}`);
  assert.equal(protectedSent,0);assert.equal(protectedCredentials,0);
 });

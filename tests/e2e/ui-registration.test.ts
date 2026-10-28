@@ -1,13 +1,14 @@
-/** UI real (Chromium + Next dev + PG16): diagnóstico/cadastro público 202 neutro, cadastro de mentora e anexo de perfil pela conta. Segredos só em memória. */
+/** UI real (Chromium + Next dev + PG16): diagnóstico → crossing → e-mail + senha definitiva (202 neutro), cadastro de mentora e anexo de perfil pela conta. Segredos só em memória. */
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
-import type {Page,Request} from 'playwright';
+import {mkdirSync} from 'node:fs';
+import type {Page,Request,Route} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 
 let ui:Ui;
 // Next dev compila cada rota no primeiro acesso (~30 s nesta máquina): aquece antes dos testes para que o timeout de navegação meça a UI.
-before(async()=>{ui=await startUi('ui-registration');for(const route of ['/inscricao','/mentora','/login','/troca-senha'])await fetch(ui.origin+route);},{timeout:420_000});
+before(async()=>{ui=await startUi('ui-registration');mkdirSync(`${ui.evidence}/screenshots`,{recursive:true});for(const route of ['/inscricao','/mentora','/login','/troca-senha'])await fetch(ui.origin+route);},{timeout:420_000});
 after(async()=>{await ui?.stop();});
 
 const unique=(label:string)=>`ui-${label}-${randomBytes(4).toString('hex')}@example.invalid`;
@@ -31,113 +32,184 @@ async function stepOne(page:Page){
  await page.getByRole('button',{name:/Continuar/}).click();
  await page.getByRole('group',{name:/O que faz parte da sua trajetória/}).waitFor();
 }
-/** Etapa 2 com três interesses, quatro habilidades e área conhecida. */
-async function stepTwo(page:Page,email?:string){
+/** Etapa 2 com três interesses, quatro habilidades e área conhecida. Consentimento só no anexo de perfil da conta autenticada. */
+async function stepTwo(page:Page,o:{consent?:boolean}={}){
  for(const t of ['Dados','Produto','Design'])await page.getByRole('group',{name:/O que faz parte/}).getByLabel(t,{exact:true}).check();
  for(const s of ['Comunicação','Análise','Programação','Gestão'])await page.getByRole('group',{name:/Quais habilidades/}).getByLabel(s,{exact:true}).check();
  await page.getByLabel('Sua área de atuação').selectOption('dados');
- if(email!==undefined)await page.getByLabel('Seu e-mail').fill(email);
- await page.getByRole('checkbox',{name:/Concordo/}).check();
+ if(o.consent??true)await page.getByRole('checkbox',{name:/Concordo/}).check();
 }
+const FINAL='O cadastro da participante na plataforma criará o seu cadastro no sistema, além de já dar carga no cruzamento escolhido por ela.';
+const shots=(name:string)=>`${ui.evidence}/screenshots/${name}.png`;
+type Choice={mentor_ref:string;nome_exibicao:string};
+/** Mentoras determinísticas do diagnóstico da etapa 2 (ranking legado): Ana 15, Bia 6, sem nome 3; inativa fora. Sem turmas. */
+async function crossingMentors(){
+ const add=(email:string,specialties:string[],name:string|null,active=true)=>ui.db.query("insert into mentor(email,trajectory,specialties,availability,capacity,active,display_name) values($1,'t',$2,'a',2,$3,$4)",[email,JSON.stringify(specialties),active,name]);
+ await add('ui-ana@example.invalid',['dados','produto'],'Ana Recife');await add('ui-bia@example.invalid',['produto'],'Bia Produto');
+ await add('ui-real@example.invalid',['design'],null);await add('ui-off@example.invalid',['dados'],'Mentora Inativa',false);
+}
+const radios=async(page:Page)=>main(page).getByRole('radiogroup',{name:/Escolha sua mentora/}).getByRole('radio').evaluateAll(els=>els.map(e=>(e.closest('label')?.querySelector('strong')?.textContent??'').trim()));
+const isPreview=(url:string)=>new URL(url).pathname==='/api/v1/registrations/participants/preview';
+const isSignup=(url:string)=>new URL(url).pathname==='/api/v1/registrations/participants';
+/** Mesma referência em route/unroute (o Playwright remove a rota por identidade da função). */
+const signupUrl=(u:URL)=>isSignup(u.toString()),previewUrl=(u:URL)=>isPreview(u.toString());
 
-test('inscrição pública: duas etapas, foco no primeiro inválido, até 4 habilidades, rede preserva escolhas e 202 neutro idêntico na duplicata',{timeout:300_000},async()=>{
- const email=unique('pub');
+test('inscrição pública: diagnóstico → crossing (só nomes, troca) → e-mail + senha definitiva + confirmação → conclusão; login full sem troca',{timeout:300_000},async()=>{
+ await crossingMentors();
+ const email=unique('pub');const password=`Recife-${randomBytes(12).toString('base64url')}`;ui.secrets.add(password);
  const {page,context}=await ui.newPage();
  try{
   await page.goto(ui.origin+'/inscricao');
-  // composição preservada: progresso de duas etapas, título e arte do Perfil 1
-  await main(page).getByText('ETAPA 01 / 02').waitFor();
+  await main(page).getByText('ETAPA 01 / 04').waitFor();
   await page.getByRole('heading',{name:/Seu próximo movimento começa aqui/}).waitFor();
   assert.ok(await page.locator('.thread-illustration picture img[src*="perfil-1"]').count()>0,'arte Perfil 1 preservada');
-  // quem já tem conta entra explicitamente e volta para cá
   assert.equal(await main(page).getByRole('link',{name:/Já tenho conta/}).getAttribute('href'),'/login?next=%2Finscricao');
-  // etapa 1: foco no primeiro inválido
   await page.getByRole('button',{name:/Continuar/}).click();
-  await alertText(page,/objetivo/);
-  assert.equal((await focused(page,{name:'goal'})).name,'goal');
-  await page.getByRole('radio',{name:/Crescimento/}).check();
-  await page.getByRole('button',{name:/Continuar/}).click();
-  await alertText(page,/momento/);
-  assert.equal((await focused(page,{name:'moment'})).name,'moment');
-  assert.equal(await page.getByRole('radio',{name:/Crescimento/}).isChecked(),true,'escolha preservada após erro');
-  await page.locator('.moment-options label',{hasText:'Em atividade'}).click();
-  await page.getByRole('button',{name:/Continuar/}).click();
-  await main(page).getByText('ETAPA 02 / 02').waitFor();
-  // etapa 2 vazia: foco no primeiro interesse
-  const submit=page.getByRole('button',{name:/Enviar inscrição/});
+  await alertText(page,/objetivo/);assert.equal((await focused(page,{name:'goal'})).name,'goal');
+  await stepOne(page);
+  await main(page).getByText('ETAPA 02 / 04').waitFor();
+  assert.equal(await page.getByLabel('Seu e-mail').count(),0,'e-mail só na última etapa');assert.equal(await page.locator('input[type=password]').count(),0);
+  const toCrossing=page.getByRole('button',{name:/Ver mentoras compatíveis/});
+  await toCrossing.click();
+  await alertText(page,/interesse/);assert.equal((await focused(page,{name:'interest'})).name,'interest');
+  await stepTwo(page,{consent:false});
+  await page.screenshot({path:shots('inscricao-02-interesses-desktop'),fullPage:true});
+  const [previewResponse]=await Promise.all([page.waitForResponse(r=>isPreview(r.url())),toCrossing.click()]);
+  assert.equal(previewResponse.status(),200);
+  assert.deepEqual(Object.keys(body(previewResponse.request())).sort(),['area','goal','interests','moment','skills'],'preview sem e-mail, senha nem consentimento');
+  const choices=((await previewResponse.json()) as {data:Choice[]}).data;
+  await main(page).getByText('ETAPA 03 / 04').waitFor();
+  await main(page).getByRole('radiogroup',{name:/Escolha sua mentora/}).waitFor();
+  assert.deepEqual(await radios(page),['Ana Recife','Bia Produto','(MENTORA)'],'todas as compatíveis, na ordem do ranking; sem nome → (MENTORA)');
+  assert.equal(await page.getByRole('radio',{name:'Ana Recife'}).isChecked(),true,'primeira do ranking pré-selecionada');
+  const panel=await main(page).locator('form').innerText();
+  assert.doesNotMatch(panel,/\d{1,2}:\d{2}|\d{1,2}h\b|vagas|turma|score|ponto/i,'só nomes: sem datas, horários, vagas ou pontuação');
+  assert.match(panel,/Datas e horários/i);
+  await page.screenshot({path:shots('inscricao-03-crossing-desktop'),fullPage:true});
+  // troca de mentora, ida e volta
+  await page.getByRole('radio',{name:'(MENTORA)'}).check();
+  await page.getByRole('button',{name:/^Continuar/}).click();
+  await main(page).getByText('ETAPA 04 / 04').waitFor();
+  await main(page).getByText(/Mentora escolhida: \(MENTORA\)/).waitFor();
+  await page.getByRole('button',{name:/Trocar mentora/}).click();
+  await main(page).getByText('ETAPA 03 / 04').waitFor();
+  assert.equal(await page.getByRole('radio',{name:'(MENTORA)'}).isChecked(),true,'escolha preservada ao voltar');
+  await page.getByRole('radio',{name:'Bia Produto'}).check();
+  await page.getByRole('button',{name:/^Continuar/}).click();
+  await main(page).getByText(/Mentora escolhida: Bia Produto/).waitFor();
+  // última etapa: e-mail, senha definitiva, confirmação e o texto final exato
+  assert.equal(await main(page).getByText(FINAL,{exact:true}).count(),1,'texto final exato');
+  const submit=page.getByRole('button',{name:/Concluir cadastro/});
   await submit.click();
-  await alertText(page,/interesse/);
-  assert.equal((await focused(page,{name:'interest'})).name,'interest');
-  // interesses: limite 3; habilidades: até 4
-  const interests=page.getByRole('group',{name:/O que faz parte/});
-  for(const t of ['Dados','Produto','Design','Desenvolvimento'])await interests.getByLabel(t,{exact:true}).click();
-  assert.equal(await interests.getByRole('checkbox',{checked:true}).count(),3);
-  assert.equal(await interests.getByLabel('Desenvolvimento',{exact:true}).isChecked(),false);
-  await submit.click();
-  await alertText(page,/habilidade/);
-  assert.equal((await focused(page,{name:'skill'})).name,'skill');
-  const skills=page.getByRole('group',{name:/Quais habilidades/});
-  for(const s of ['Comunicação','Análise','Programação','Gestão'])await skills.getByLabel(s,{exact:true}).click();
-  assert.equal(await skills.getByRole('checkbox',{checked:true}).count(),4,'quatro habilidades aceitas');
-  // área "outra" exige o texto; depois volta para área conhecida
-  await page.getByLabel('Sua área de atuação').selectOption('outra');
-  await submit.click();
-  await alertText(page,/área/);
-  assert.equal((await focused(page,{id:'other-area'})).id,'other-area');
-  await page.getByLabel('Qual área?').fill('Biotecnologia');
-  await page.getByLabel('Sua área de atuação').selectOption('dados');
-  assert.equal(await page.getByLabel('Qual área?').count(),0);
-  await page.getByLabel('Seu e-mail').fill('sem-arroba');
-  await submit.click();
-  await alertText(page,/e-mail/);
-  assert.equal((await focused(page,{id:'email'})).id,'email');
+  await alertText(page,/e-mail/);assert.equal((await focused(page,{id:'email'})).id,'email');
   await page.getByLabel('Seu e-mail').fill(email);
+  await page.getByLabel('Senha definitiva',{exact:true}).fill('curta');
   await submit.click();
-  await alertText(page,/consentimento/);
-  assert.equal((await focused(page,{type:'checkbox'})).type,'checkbox');
-  await page.getByRole('checkbox',{name:/Concordo/}).check();
-  // falha de transporte (injeção só nesta tentativa): mensagem segura e nada se perde
+  await alertText(page,/12 a 128/);assert.equal((await focused(page,{id:'password'})).id,'password');
+  await page.getByLabel('Senha definitiva',{exact:true}).fill(password);
+  await page.getByLabel('Confirme a senha').fill(password+'x');
+  await submit.click();
+  await alertText(page,/não conferem/);assert.equal((await focused(page,{id:'password-confirmation'})).id,'password-confirmation');
+  await page.getByLabel('Confirme a senha').fill(password);
+  await submit.click();
+  await alertText(page,/Confirme/);assert.equal((await focused(page,{type:'checkbox'})).type,'checkbox');
+  await page.getByRole('checkbox',{name:FINAL}).check();
+  await page.screenshot({path:shots('inscricao-04-acesso-desktop'),fullPage:true});
+  // falha de transporte: nada se perde e o reenvio usa a mesma chave
   const keys:string[]=[];
-  await page.route('**/api/v1/registrations/participants',async r=>{keys.push(r.request().headers()['idempotency-key']??'');await r.abort('internetdisconnected');});
+  await page.route(signupUrl,async r=>{keys.push(r.request().headers()['idempotency-key']??'');await r.abort('internetdisconnected');});
   await submit.click();
-  const offline=await alertText(page,/Sem conexão/);
-  assert.doesNotMatch(offline,/TypeError|Failed to fetch|stack/i);
-  assert.equal(await interests.getByRole('checkbox',{checked:true}).count(),3);
-  assert.equal(await skills.getByRole('checkbox',{checked:true}).count(),4);
+  assert.doesNotMatch(await alertText(page,/Sem conexão/),/TypeError|Failed to fetch|stack/i);
   assert.equal(await page.getByLabel('Seu e-mail').inputValue(),email);
-  assert.equal(await page.getByLabel('Sua área de atuação').inputValue(),'dados');
-  await page.unroute('**/api/v1/registrations/participants');
-  // reenvio real (PG): mesma chave de idempotência, DTO fechado sem otherArea
-  const [response]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/registrations/participants')),submit.click()]);
+  await page.unroute(signupUrl);
+  // envio em andamento (barreira na rota, sem espera por tempo): trocar mentora e voltar ficam desabilitados, a escolha exibida é a enviada
+  let release=()=>{};const gate=new Promise<void>(r=>{release=r;});
+  const held=async(r:Route)=>{await gate;try{await r.continue();}catch{/* página fechada */}};
+  await page.route(signupUrl,held);
+  const responded=page.waitForResponse(r=>isSignup(r.url()));responded.catch(()=>{/* asserção abaixo reprova primeiro */});
+  await submit.click();
+  await page.getByRole('button',{name:/Enviando/}).waitFor();
+  assert.deepEqual([await page.getByRole('button',{name:/Trocar mentora/}).isDisabled(),await page.getByRole('button',{name:/Voltar/}).isDisabled()],[true,true],'sem troca de mentora nem volta durante o POST');
+  release();const response=await responded;await page.unroute(signupUrl,held);
   assert.equal(response.status(),202);
   const sent=body(response.request());
-  assert.deepEqual(Object.keys(sent).sort(),['area','consent','email','goal','interests','moment','skills']);
-  assert.deepEqual(sent,{email,goal:'growth',moment:'working',interests:['dados','produto','design'],skills:['comunicacao','analise','codigo','gestao'],area:'dados',consent:true});
-  const key=response.request().headers()['idempotency-key']??'';
-  assert.match(key,UUID);assert.deepEqual(keys,[key],'reenvio após falha de rede reutiliza a chave');
-  assert.deepEqual(((await response.json()) as {data:Record<string,unknown>}).data,{status:'received',next:'check_email'});
-  const status=main(page).getByRole('status').filter({hasText:/Inscrição recebida/});await status.waitFor();
+  assert.deepEqual(Object.keys(sent).sort(),['area','consent','email','goal','interests','mentor_ref','moment','password','passwordConfirmation','skills']);
+  assert.equal(sent.mentor_ref,choices.find(c=>c.nome_exibicao==='Bia Produto')?.mentor_ref,'mentora trocada é a enviada');
+  const key=response.request().headers()['idempotency-key']??'';assert.match(key,UUID);assert.deepEqual(keys,[key]);
+  assert.deepEqual(((await response.json()) as {data:Record<string,unknown>}).data,{status:'received',next:'login'});
+  const status=main(page).getByRole('status').filter({hasText:/Cadastro concluído/});await status.waitFor();
   const first=(await status.innerText()).trim();
-  assert.equal(first.includes(email),false,'não ecoa o e-mail');
-  assert.match(first,/não confirma envio nem entrega/);assert.match(first,/NÃO ENVIADA/);
-  assert.doesNotMatch(first,NO_PROMISE);
-  // /conta é o destino padrão do login (DEFAULT_AFTER_LOGIN): o link não precisa de ?next; ui-auth prova login → /conta
+  assert.equal(await status.getByText(FINAL,{exact:true}).count(),1,'confirmação de sucesso mantém o texto exato do sponsor');
+  assert.equal(first.includes(email),false,'não ecoa o e-mail');assert.doesNotMatch(first,/temporária|verifique sua caixa|enviamos/i);
   assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login');
-  const row=await ui.db.query<{skills:string[];area:string}>('select p.skills,p.area from participant p join app_user u on u.id=p.user_id where u.email=$1',[email]);
-  assert.deepEqual(row.rows,[{skills:['comunicacao','analise','codigo','gestao'],area:'dados'}]);
-  // duplicata: mesma resposta visual, nenhuma conta nova
+  await page.screenshot({path:shots('inscricao-05-concluido-desktop'),fullPage:true});
+  const row=(await ui.db.query("select u.status,u.temporary_password_hash is null nt,m.display_name mentor,(select count(*)::int from email_job j where j.user_id=u.id) jobs from app_user u join participant p on p.user_id=u.id join match x on x.participant_id=p.id join mentor m on m.id=x.mentor_id where u.email=$1",[email])).rows;
+  assert.deepEqual(row,[{status:'active',nt:true,mentor:'Bia Produto',jobs:0}]);
+  // login com a senha definitiva: sessão full direto em Sua conta, sem troca obrigatória
+  await main(page).getByRole('link',{name:/Entrar na conta/}).click();
+  await page.waitForURL(u=>u.pathname==='/login');
+  await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(password);await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  await page.waitForURL(u=>u.pathname==='/conta');
+  assert.deepEqual(await sessionRoles(page),{state:'authenticated',roles:['participant']});
+  // duplicata: mesma tela final, nenhuma conta nova
   const again=await ui.newPage();
   try{
-   await again.page.goto(ui.origin+'/inscricao');await stepOne(again.page);await stepTwo(again.page,email);
-   const [dup]=await Promise.all([again.page.waitForResponse(r=>r.url().endsWith('/api/v1/registrations/participants')),again.page.getByRole('button',{name:/Enviar inscrição/}).click()]);
+   await again.page.goto(ui.origin+'/inscricao');await stepOne(again.page);await stepTwo(again.page,{consent:false});
+   await again.page.getByRole('button',{name:/Ver mentoras compatíveis/}).click();
+   await again.page.getByRole('radio',{name:'Ana Recife'}).waitFor();await again.page.getByRole('button',{name:/^Continuar/}).click();
+   const other=`Recife-${randomBytes(12).toString('base64url')}`;ui.secrets.add(other);
+   await again.page.getByLabel('Seu e-mail').fill(email);await again.page.getByLabel('Senha definitiva',{exact:true}).fill(other);await again.page.getByLabel('Confirme a senha').fill(other);
+   await again.page.getByRole('checkbox',{name:FINAL}).check();
+   const [dup]=await Promise.all([again.page.waitForResponse(r=>isSignup(r.url())),again.page.getByRole('button',{name:/Concluir cadastro/}).click()]);
    assert.equal(dup.status(),202);
-   const second=main(again.page).getByRole('status').filter({hasText:/Inscrição recebida/});await second.waitFor();
+   const second=main(again.page).getByRole('status').filter({hasText:/Cadastro concluído/});await second.waitFor();
    assert.equal((await second.innerText()).trim(),first,'duplicata indistinguível');
   }finally{await again.context.close();}
   assert.equal((await ui.db.query('select 1 from app_user where email_key=lower($1)',[email])).rowCount,1);
-  const mail=await ui.drain();
-  for(const m of mail)assert.equal((await page.content()).includes(m.secret),false);
+  assert.equal((await ui.drain()).length,0,'nenhum e-mail no caminho normal');
+  assert.equal((await page.content()).includes(password),false);
   ui.assertNoLeak();
+ }finally{await context.close();}
+});
+
+test('crossing: sem compatíveis explica e permite editar; resposta atrasada de preview antigo é ignorada; mobile',{timeout:300_000},async()=>{
+ const {page,context}=await ui.newPage({viewport:{width:390,height:844}});
+ try{
+  await page.goto(ui.origin+'/inscricao');await stepOne(page);
+  const group=(name:RegExp)=>page.getByRole('group',{name});
+  await group(/O que faz parte/).getByLabel('Desenvolvimento',{exact:true}).check();
+  await group(/Quais habilidades/).getByLabel('Programação',{exact:true}).check();
+  await page.getByLabel('Sua área de atuação').selectOption('outra');await page.getByLabel('Qual área?').fill('Biotecnologia');
+  await page.getByRole('button',{name:/Ver mentoras compatíveis/}).click();
+  const empty=main(page).getByRole('status').filter({hasText:/Nenhuma mentora compatível/});await empty.waitFor();
+  assert.match(await empty.innerText(),/editar suas respostas/i);assert.doesNotMatch(await empty.innerText(),/cadastro concluído|sucesso/i);
+  assert.equal(await page.getByRole('radio').count(),0,'nenhum match inventado');
+  assert.equal(await page.getByRole('button',{name:/^Continuar/}).count(),0,'não avança sem mentora');
+  await page.screenshot({path:shots('inscricao-03-sem-compativeis-mobile'),fullPage:true});
+  await main(page).getByRole('button',{name:/Editar respostas/}).first().click();
+  await main(page).getByText('ETAPA 02 / 04').waitFor();
+  assert.equal(await group(/O que faz parte/).getByLabel('Desenvolvimento',{exact:true}).isChecked(),true,'respostas preservadas');
+  // corrida: o preview das respostas antigas responde DEPOIS do preview das respostas editadas e não pode sobrescrever a tela
+  let calls=0;let releaseSlow:()=>void=()=>undefined;const slowGate=new Promise<void>(r=>{releaseSlow=r;});
+  await page.route(previewUrl,async r=>{calls++;if(calls===1)await slowGate;try{await r.continue();}catch{/* requisição já abortada pela tela */}});
+  // respostas mudam (área "outra" diferente, ainda sem compatíveis): o cruzamento é recalculado — e fica preso na rede
+  await page.getByLabel('Qual área?').fill('Biotec');
+  await page.getByRole('button',{name:/Ver mentoras compatíveis/}).click();
+  await main(page).getByText(/Calculando/).waitFor();
+  await main(page).getByRole('button',{name:/Editar respostas/}).first().click();
+  await group(/O que faz parte/).getByLabel('Dados',{exact:true}).check();
+  await page.getByRole('button',{name:/Ver mentoras compatíveis/}).click();
+  await page.getByRole('radio',{name:'Ana Recife'}).waitFor();
+  releaseSlow();await page.waitForTimeout(1500);
+  assert.equal(calls,2);
+  assert.equal(await page.getByRole('radio',{name:'Ana Recife'}).isChecked(),true,'resposta atrasada ignorada');
+  assert.equal(await main(page).getByText(/Nenhuma mentora compatível/).count(),0);
+  await page.unroute(previewUrl);
+  await page.screenshot({path:shots('inscricao-03-crossing-mobile'),fullPage:true});
+  await page.getByRole('button',{name:/^Continuar/}).click();
+  await main(page).getByText(/Mentora escolhida: Ana Recife/).waitFor();
+  await page.screenshot({path:shots('inscricao-04-acesso-mobile'),fullPage:true});
+  const overflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);assert.ok(overflow<=1,`sem rolagem horizontal no mobile (${overflow})`);
  }finally{await context.close();}
 });
 

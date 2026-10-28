@@ -36,7 +36,26 @@ function participantFields(p:Record<string,unknown>):ParticipantFields{
  return {goal:enumeration(p.goal,['transition','growth','leadership'],'goal'),moment:enumeration(p.moment,['starting','working','returning'],'moment'),interests:list(p.interests,tags,3,'interests'),skills:list(p.skills,skills,4,'skills'),area,...(area==='outra'?{otherArea:text(p.otherArea,'otherArea',1,80)}:{}),consent:consent(p.consent)};
 }
 const PARTICIPANT_KEYS=['goal','moment','interests','skills','area','otherArea','consent'];
+/** DTO do POST administrativo de participante (/api/v1/admin/participants). O cadastro público usa parseParticipantSignup. */
 export function parseParticipantRegistration(value:unknown):ParticipantRegistration{const p=object(value,['email',...PARTICIPANT_KEYS]);return {email:email(p.email),...participantFields(p)};}
+/** Cadastro público de participante (AJUSTE-INSCRICAO): diagnóstico + mentora escolhida no crossing + e-mail + senha definitiva + confirmação. */
+export type ParticipantSignup=ParticipantRegistration&{mentor_ref:string;password:string;passwordConfirmation:string};
+const MENTOR_REF=/^[A-Za-z0-9_-]{43}$/;
+/** Mesma regra das demais senhas novas (12..128 code points); confirmação idêntica; sem cadastro sem credenciais nem crossing. */
+export function parseParticipantSignup(value:unknown):ParticipantSignup{
+ const p=object(value,['email','mentor_ref','password','passwordConfirmation',...PARTICIPANT_KEYS]);
+ const out={email:email(p.email),...participantFields(p)};
+ if(typeof p.mentor_ref!=='string'||!MENTOR_REF.test(p.mentor_ref))throw new ContractError(['mentor_ref']);
+ if(typeof p.password!=='string'||[...p.password].length<12||[...p.password].length>128)throw new ContractError(['password']);
+ if(p.passwordConfirmation!==p.password)throw new ContractError(['passwordConfirmation']);
+ return {...out,mentor_ref:p.mentor_ref,password:p.password,passwordConfirmation:p.passwordConfirmation};
+}
+/** Preview do crossing (cadastro público): só o diagnóstico, sem e-mail, credenciais nem consentimento. */
+export type ParticipantPreview=Omit<ParticipantFields,'consent'>;
+const PREVIEW_KEYS=['goal','moment','interests','skills','area','otherArea'];
+export function parseRegistrationPreview(value:unknown):ParticipantPreview{const {consent:_consent,...fields}=participantFields({...object(value,PREVIEW_KEYS),consent:true});return fields;}
+/** Item público do crossing: referência opaca e nome (ou "(MENTORA)"). Nada além disso sai do servidor. */
+export type CrossingChoice={mentor_ref:string;nome_exibicao:string};
 /** Perfil de participante da própria sessão: mesmos dados de domínio, sem email/userId/roles. */
 export function parseParticipantProfile(value:unknown):ParticipantFields{return participantFields(object(value,PARTICIPANT_KEYS));}
 export type MentorRegistration={email:string;displayName:string;trajectory:string;specialties:Tag[];availability:string;legacyCapacity:number;consent:true};
@@ -62,6 +81,9 @@ export type LoginState={state:'authenticated'|'password_change_required'};
 export type SessionDto={user:{id:string;email:string;roles:Role[]};state:'authenticated'|'password_change_required';expiresAt:string};
 export type LegacyMatchDto={id:SqlId;mentorId:SqlId;status:string;origin:'legacy';enrollmentId:null};
 export const registrationReceived:RegistrationReceived={status:'received',next:'check_email'};
+/** Cadastro de participante: conta nova ou e-mail indisponível são indistinguíveis; quem acabou de criar a conta entra com a senha escolhida. */
+export type ParticipantSignupReceived={status:'received';next:'login'};
+export const participantSignupReceived:ParticipantSignupReceived={status:'received',next:'login'};
 export type ForgotReceived={status:'received'};
 export const forgotReceived:ForgotReceived={status:'received'};
 export type TemporaryPasswordQueued={jobId:string;status:'queued'};

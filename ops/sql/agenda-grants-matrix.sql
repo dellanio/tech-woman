@@ -286,12 +286,15 @@ DECLARE q text; t text;
   'api_legacy_overview','api_legacy_state','api_match_create','api_match_get','api_match_list','api_match_update','api_mentor_topic_create','api_mentor_topic_delete','api_mentor_topic_get','api_mentor_topic_list',
   'api_mentor_topic_reorder','api_mentor_topic_update','api_my_enrollment_cancel','api_my_enrollments','api_recommendations','api_topic_create','api_topic_get','api_topic_list','api_topic_update','consume_reset_token',
   'idem_abort','idem_begin','idem_finish','identity_change_begin','identity_change_finish','identity_login_begin','identity_login_finish','identity_logout','identity_session_get',
-  'rate_hit','register_mentor_account','register_participant_account','request_password_forgot'];
+  'rate_hit','register_mentor_account','register_participant_account','registration_preview','request_password_forgot'];
 BEGIN
  PERFORM pg_temp.matrix_reaches('runtime executa operação de Agenda (sessão inválida → AUTH_REQUIRED)', 'SELECT internal.api_topic_list(NULL, NULL, 20)', 'P0001');
  PERFORM pg_temp.matrix_reaches('runtime executa adaptador legado (sessão inválida → AUTH_REQUIRED)', 'SELECT internal.api_legacy_overview(NULL)', 'P0001');
  PERFORM pg_temp.matrix_reaches('runtime consulta estado legado só pelo hash', 'SELECT internal.api_legacy_state(NULL)', NULL);
  PERFORM pg_temp.matrix_reaches('runtime valida sessão por função', 'SELECT * FROM internal.identity_session_get(NULL)', NULL);
+ -- AJUSTE-INSCRICAO: preview do crossing (só leitura) e cadastro com senha definitiva chegam à regra do banco (diagnóstico inválido → P0001)
+ PERFORM pg_temp.matrix_reaches('runtime executa preview do crossing', 'SELECT internal.registration_preview(NULL, NULL, NULL, NULL, NULL)', 'P0001');
+ PERFORM pg_temp.matrix_reaches('runtime executa cadastro com crossing', 'SELECT internal.register_participant_account(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)', 'P0001');
  PERFORM pg_temp.matrix_check('runtime: funções fora da lista autorizada negadas', pg_temp.matrix_functions_denied(v_allowed) > 0);
  FOREACH t IN ARRAY ARRAY['public.app_user', 'public.user_role', 'public.auth_session', 'public.password_reset_token', 'public.email_job', 'public.email_delivery_attempt', 'public.api_idempotency', 'public.auth_rate_bucket',
   'public.audit_event', 'public.migration_run', 'public.migration_identity_link', 'public.migration_issue', 'legacy_snapshot.source_table', 'legacy_snapshot.source_row', 'internal.agenda_guard', 'internal.api_context',

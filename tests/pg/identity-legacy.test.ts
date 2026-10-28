@@ -16,10 +16,13 @@ import * as email from '../../src/lib/email';
 import {withDb,addUser,sessionFor,synthetic,linkFixture} from './identity-harness.test';
 import {runPrivilegedAccount} from '../../scripts/privileged-account';
 import {call,sessionCookie,type Reply} from './identity-http-kit.test';
+import {mentorRef} from '../../src/lib/crossing';
 
 const LOGIN='/api/admin/login',LOGOUT='/api/admin/logout';
 const doLogin=(emailAddr:string,password:string,extra:Parameters<typeof call>[2]={})=>call(legacyLogin.POST,LOGIN,{body:{email:emailAddr,password},...extra});
 const participantBody=(addr:string,extra:Record<string,unknown>={})=>({email:addr,goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true,...extra});
+/** Corpo atual (migration 31): o adapter antigo exige o mesmo DTO do v1 — mentora do crossing + senha definitiva + confirmação. */
+const signupBody=(ref:string,addr:string,extra:Record<string,unknown>={})=>participantBody(addr,{mentor_ref:ref,password:'Recife-senha-definitiva-1',passwordConfirmation:'Recife-senha-definitiva-1',...extra});
 const mentorBody=(addr:string,extra:Record<string,unknown>={})=>({email:addr,trajectory:'Trajetória sintética',specialties:['dados'],availability:'Sem horário',capacity:4,consent:true,...extra});
 const useOwnerPool=async(url:string)=>{await closeDb();Reflect.set(process.env,'DATABASE_URL',url);};
 const cookieNames=(r:Reply)=>(r.headers.getSetCookie?.()??[]).map(c=>c.split('=')[0]);
@@ -65,26 +68,30 @@ test('adapter /api/admin/logout: revoga a sessão, limpa tw_session e o antigo t
  assert.equal((await db.query('select count(*)::int n from auth_session where revoked_at is null')).rows[0].n,0);
 }));
 
-test('adapters /api/participant e /api/mentor: 202 neutro sem token/protocolo, conta nova pendente, admin/duplicado sem mutação, limite e prazo preservados',async()=>withDb(async({db})=>{
+test('adapters /api/participant e /api/mentor: 202 neutro sem token/protocolo; participante só com crossing+senha (corpo antigo 400), mentora pendente; admin/duplicado sem mutação, limite e prazo preservados',async()=>withDb(async({db})=>{
  const pw=synthetic();const admin=await addUser(db,{email:'adm@example.invalid',password:pw,roles:['admin']});
+ const ref=mentorRef(String((await db.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('base.mentora@example.invalid','t','["dados"]','a',2,'Mentora Base') returning id`)).rows[0].id));
+ const total=async()=>JSON.stringify((await db.query("select (select count(*)::int from app_user) u,(select count(*)::int from participant) p,(select count(*)::int from mentor) m,(select count(*)::int from email_job) j,(select count(*)::int from user_role) r,(select count(*)::int from match) x")).rows[0]);
+ const empty=await total();
  let r=await call(legacyParticipant.POST,'/api/participant',{body:participantBody('Nova.Legada@Example.invalid')});
- assert.deepEqual([r.status,r.json],[202,{status:'received',next:'check_email'}]);assert.equal(r.headers.get('cache-control'),'no-store');
- assert.deepEqual((await db.query("select u.status,(select count(*)::int from participant p where p.user_id=u.id) p,(select count(*)::int from email_job j where j.user_id=u.id and j.kind='registration') j from app_user u where email_key='nova.legada@example.invalid'")).rows,[{status:'pending_activation',p:1,j:1}]);
+ assert.equal(r.status,400,'corpo antigo (sem crossing nem senha) recusado');assert.equal(typeof r.json.error,'string');assert.equal(await total(),empty,'nenhum participante sem credenciais');
+ r=await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,'Nova.Legada@Example.invalid')});
+ assert.deepEqual([r.status,r.json],[202,{status:'received',next:'login'}]);assert.equal(r.headers.get('cache-control'),'no-store');
+ assert.deepEqual((await db.query("select u.status,u.password_hash is not null ph,(select count(*)::int from participant p where p.user_id=u.id) p,(select count(*)::int from email_job j where j.user_id=u.id) j from app_user u where email_key='nova.legada@example.invalid'")).rows,[{status:'active',ph:true,p:1,j:0}]);
  r=await call(legacyMentor.POST,'/api/mentor',{body:mentorBody('mentora.legada@example.invalid')});
  assert.deepEqual([r.status,r.json],[202,{status:'received',next:'check_email'}]);
  assert.deepEqual((await db.query("select m.display_name,m.capacity,m.active,m.demo,u.status from mentor m join app_user u on u.id=m.user_id where m.email='mentora.legada@example.invalid'")).rows,[{display_name:null,capacity:4,active:true,demo:false,status:'pending_activation'}]);
- const before=JSON.stringify((await db.query("select (select count(*)::int from app_user) u,(select count(*)::int from participant) p,(select count(*)::int from mentor) m,(select count(*)::int from email_job) j,(select count(*)::int from user_role) r")).rows[0]);
+ const before=await total();
  for(const addr of ['adm@example.invalid','ADM@example.invalid ','nova.legada@example.invalid']){
-  r=await call(legacyParticipant.POST,'/api/participant',{body:participantBody(addr,{goal:'leadership'})});assert.deepEqual([r.status,r.json],[202,{status:'received',next:'check_email'}]);
+  r=await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,addr,{goal:'transition'})});assert.deepEqual([r.status,r.json],[202,{status:'received',next:'login'}]);
   r=await call(legacyMentor.POST,'/api/mentor',{body:mentorBody(addr)});assert.deepEqual([r.status,r.json],[202,{status:'received',next:'check_email'}]);
  }
- const after=JSON.stringify((await db.query("select (select count(*)::int from app_user) u,(select count(*)::int from participant) p,(select count(*)::int from mentor) m,(select count(*)::int from email_job) j,(select count(*)::int from user_role) r")).rows[0]);
- assert.equal(after,before,'admin e duplicados: nada muda');
- r=await call(legacyParticipant.POST,'/api/participant',{body:participantBody('x@example.invalid',{userId:'9',roles:['admin']})});assert.equal(r.status,400);assert.equal(typeof r.json.error,'string');
- r=await call(legacyParticipant.POST,'/api/participant',{body:participantBody('y@example.invalid'),headers:{Origin:null}});assert.deepEqual([r.status,r.json],[403,{error:'Origem não autorizada.'}]);
+ assert.equal(await total(),before,'admin e duplicados: nada muda');
+ r=await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,'x@example.invalid',{userId:'9',roles:['admin']})});assert.equal(r.status,400);assert.equal(typeof r.json.error,'string');
+ r=await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,'y@example.invalid'),headers:{Origin:null}});assert.deepEqual([r.status,r.json],[403,{error:'Origem não autorizada.'}]);
  r=await call(legacyParticipant.POST,'/api/participant',{raw:'{'});assert.equal(r.status,400);
- for(let i=0;i<3;i++)await call(legacyParticipant.POST,'/api/participant',{body:participantBody('limite@example.invalid')});
- r=await call(legacyParticipant.POST,'/api/participant',{body:participantBody('limite@example.invalid')});assert.equal(r.status,429,'o caminho antigo usa os mesmos limites');
+ for(let i=0;i<3;i++)await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,'limite@example.invalid')});
+ r=await call(legacyParticipant.POST,'/api/participant',{body:signupBody(ref,'limite@example.invalid')});assert.equal(r.status,429,'o caminho antigo usa os mesmos limites');
  const open=await call(legacyMentor.GET,'/api/mentor');assert.equal(typeof open.json.open,'boolean');
  Reflect.set(process.env,'MENTOR_DEADLINE','2020-01-01T00:00:00.000Z');
  await closeDb();Reflect.set(process.env,'DATABASE_URL','postgres://nobody@127.0.0.1:1/none');

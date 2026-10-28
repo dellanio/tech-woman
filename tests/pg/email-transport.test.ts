@@ -6,7 +6,7 @@ import {randomUUID} from 'node:crypto';
 import {SESClient} from '@aws-sdk/client-ses';
 import {migrate} from '../../scripts/migration/migrate';
 import {closeDb} from '../../src/lib/db';
-import * as registration from '../../src/lib/registration';
+import {pendingParticipant} from './pending-participant';
 import * as email from '../../src/lib/email';
 
 const base=process.env.MIGRATION_DATABASE_URL;
@@ -88,7 +88,7 @@ const run=(args:string[],env:Record<string,string|undefined>)=>new Promise<{code
  let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);child.on('close',c=>resolve({code:c,out,err}));});
 
 test('CLI do worker: --once usa só MAILER_DATABASE_URL, fake descarta segredo e imprime apenas contagens',async()=>withDb(async({db,url})=>{
- await registration.registerParticipant({email:'Cli@Example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['codigo'],area:'dados',consent:true});
+ await pendingParticipant(db,'Cli@Example.invalid');
  const env={MAILER_DATABASE_URL:roleUrl(url,'techwoman_mailer'),DATABASE_URL:'postgres://web:web-pw-sintetica@127.0.0.1:1/none',MIGRATION_DATABASE_URL:'postgres://mig:mig-pw-sintetica@127.0.0.1:1/none',SESSION_SECRET:'s'.repeat(40)};
  const first=await run(['--once'],env);
  assert.equal(first.code,0);assert.equal(first.err,'');
@@ -103,7 +103,7 @@ test('CLI do worker: --once usa só MAILER_DATABASE_URL, fake descarta segredo e
 }));
 
 test('CLI em modo ses sem flags/allowlist recusa sem enviar: job failed, nada de rede',async()=>withDb(async({db,url})=>{
- await registration.registerParticipant({email:'ses@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['codigo'],area:'dados',consent:true});
+ await pendingParticipant(db,'ses@example.invalid');
  const r=await run(['--once'],{MAILER_DATABASE_URL:roleUrl(url,'techwoman_mailer'),EMAIL_MODE:'ses'});
  assert.equal(r.code,0);const parsed=JSON.parse(r.out.trim());assert.deepEqual([parsed.transport,parsed.claimed,parsed.failed,parsed.accepted],['ses',1,1,0]);
  assert.deepEqual((await db.query('select a.status,a.error_code from email_delivery_attempt a')).rows,[{status:'failed',error_code:'TRANSPORT_DISABLED'}]);
