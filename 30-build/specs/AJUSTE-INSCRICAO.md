@@ -209,3 +209,18 @@ existentes), `tests/e2e/ui-registration.test.ts`.
 - [x] F4 (baixa) RED Playwright: POST retido por barreira na rota, "Trocar mentora"/"← Voltar" habilitados. GREEN: `disabled={busy}`.
 - [x] F5 cobertura: F2/F3 com duas conexões reais e barreira por `pg_stat_activity` (backend esperando lock), sem sleeps de duração fixa.
 - [x] Ensaio ops 29→30 (`test_schema_upgrade_pg`) filtra as migrations até a read-only (a 31 é outro release).
+
+## Task 10 — Retomada: falso positivo da asserção de referência opaca (PR #8)
+
+**Escopo**: somente `tests/pg/registration-crossing-http.test.ts`; produto e migrations intactos.
+**Plano incremental (writing-plans → executing-plans)**:
+- [x] Fixar chave sintética no primeiro teste HTTP: `synthetic-crossing-ref-regression-162`. O HMAC de id=1 contém `Mw`, base64url de id=3, por coincidência.
+- [x] RED: executar o teste com a asserção original; falha exata `id sequencial não exposto`, actual=true. As outras duas verificações HTTP passam.
+- [x] Trocar busca de substring por desigualdade integral do ID cru/codificado e dos bytes decodificados. Manter todos os outros asserts, inclusive formato, HMAC, estabilidade, segredo e snapshot sem escrita.
+- [x] GREEN: testes HTTP, SQL crossing, signup e concorrência 14/14; HTTP final com assert de colisão 3/3; `pnpm exec tsc --noEmit` exit0. Revisão independente read-only (Claude Opus) sem bloqueadores; diff revisado para commit na mesma branch.
+- [ ] Operador publica commit novo no PR #8 e verifica CI verde no HEAD exato. Sem merge/deploy/seal/schema-upgrade.
+
+**Evidências**: `40-verificacao/t_e5584a38/logs/ci-fix-*`. Primeira execução inválida por porta padrão do PG (5432) preservada em `ci-fix-red.log`; servidor próprio reiniciado explicitamente na porta55438 e RED válido em `ci-fix-red-deterministic.log`. GREEN em `ci-fix-green.log`, HTTP final em `ci-fix-final-http.log`, revisão em `ci-fix-review.log`.
+
+**Ruling:** somente testes/documentação mudaram; não recompilar nem repetir UI/e2e integral, pois o artefato de produto anterior permanece idêntico. CI completo no novo HEAD continua obrigatório.
+**Minors diferidos da revisão:** checks explícitos são redundantes com regex/HMAC, mas documentam o contrato pedido; fixture depende dos IDs e da ordem atual e falha deterministicamente se estes mudarem; comentário da chave poderia ficar mais próximo do assert. Sem efeito no produto e sem mudança extra neste passe.

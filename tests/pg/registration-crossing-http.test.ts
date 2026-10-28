@@ -22,7 +22,13 @@ test('preview HTTP: 200 só com mentor_ref/nome_exibicao na ordem do ranking; re
  for(const c of data){assert.deepEqual(Object.keys(c).sort(),['mentor_ref','nome_exibicao']);assert.match(c.mentor_ref,REF);}
  assert.deepEqual(data.map(c=>c.mentor_ref),[m.eva,m.ana,m.semNome,m.gabi].map(mentorRef),'referência = HMAC do id (resolvida no servidor)');
  assert.equal(new Set(data.map(c=>c.mentor_ref)).size,4);
- for(const id of Object.values(m))assert.equal(data.some(c=>c.mentor_ref===id||c.mentor_ref.includes(Buffer.from(id).toString('base64url'))),false,'id sequencial não exposto');
+ assert.ok(mentorRef(m.ana).includes(Buffer.from(m.zero).toString('base64url')),'fixture reproduz coincidência de substring sem expor o ID');
+ // Substrings curtas podem ocorrer por acaso no HMAC; o contrato proíbe expor o ID integral.
+ for(const id of Object.values(m))for(const c of data){
+  assert.notEqual(c.mentor_ref,id,'id sequencial bruto não exposto');
+  assert.notEqual(c.mentor_ref,Buffer.from(id).toString('base64url'),'id sequencial codificado não exposto');
+  assert.notDeepEqual(Buffer.from(c.mentor_ref,'base64url'),Buffer.from(id),'referência não decodifica para o id sequencial');
+ }
  assert.equal(/@|score|reasons|trajectory|"id"|email/i.test(r.text),false,'nada além de nome e referência');
  const again=await call(preview.POST,PATH,{body:{...DIAGNOSTIC,interests:['design','dados']}});
  assert.deepEqual(again.json.data,data,'estável entre chamadas (ordem dos interesses não importa)');
@@ -32,7 +38,8 @@ test('preview HTTP: 200 só com mentor_ref/nome_exibicao na ordem do ranking; re
  const none=await call(preview.POST,PATH,{body:{...DIAGNOSTIC,goal:'transition',interests:['desenvolvimento'],skills:['codigo'],area:'outra',otherArea:'Biotecnologia'}});
  assert.deepEqual([none.status,none.json.data],[200,[]],'sem compatíveis: lista vazia, sem match inventado');
  assert.deepEqual(await fullSnapshot(db,{sequences:true}),before,'preview não cria app_user/participant/match nem nada além do balde de rate');
-}));
+// Chave sintética: HMAC de id=1 contém "Mw" (base64url de id=3) por coincidência.
+},{SESSION_SECRET:'synthetic-crossing-ref-regression-162'}));
 
 test('preview HTTP: origem verificada, JSON ≤ 64 KiB, DTO fechado sem e-mail/credenciais/consentimento',async()=>withDb(async({db})=>{
  await crossingMentors(db);const before=await fullSnapshot(db);
