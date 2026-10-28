@@ -156,7 +156,7 @@ export function ParticipantSignup() {
         {step === 3 && !user && <CrossingStep state={crossing} chosen={chosen} notice={notice} onChoose={ref => { setChosen(ref); setNotice(''); }} onRetry={() => void loadCrossing(true)} onEdit={() => go(2)} onContinue={() => { if (chosen && chosenName) go(4); }}/>}
         {step === 4 && !user && <>
           <div className="choice-context"><p className="eyebrow">CRUZAMENTO ESCOLHIDO</p><p className="choice-context-name">Mentora escolhida: {chosenName}</p>
-            <button type="button" className="button-quiet" onClick={() => { go(3); void loadCrossing(); }}>Trocar mentora</button></div>
+            <button type="button" className="button-quiet" onClick={() => { go(3); void loadCrossing(); }} disabled={busy}>Trocar mentora</button></div>
           <label className="field-label" htmlFor={IDS.email}>Seu e-mail</label>
           <input id={IDS.email} type="email" autoComplete="email" inputMode="email" maxLength={254} value={email} onChange={e => setEmail(e.target.value)} placeholder="voce@exemplo.com" required aria-invalid={invalid.includes('email') || undefined}/>
           <label className="field-label" htmlFor={IDS.password}>Senha definitiva</label>
@@ -166,7 +166,7 @@ export function ParticipantSignup() {
           <input id={IDS.passwordConfirmation} type="password" autoComplete="new-password" maxLength={128} value={confirmation} onChange={e => setConfirmation(e.target.value)} required aria-invalid={invalid.includes('passwordConfirmation') || undefined}/>
           <label className="consent"><input id={IDS.consent} type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} aria-describedby="consent-hint" aria-invalid={invalid.includes('consent') || undefined}/><span>{FINAL_CONFIRMATION}</span></label>
           <p className="field-hint" id="consent-hint">Suas respostas e seu e-mail são usados para processar esta inscrição e comunicar o resultado do evento.</p>
-          <div className="form-actions"><button type="button" className="button-quiet" onClick={() => { go(3); void loadCrossing(); }}>← Voltar</button><button className="button-primary" type="submit" disabled={busy}>{busy ? 'Enviando…' : 'Concluir cadastro ↗'}</button></div>
+          <div className="form-actions"><button type="button" className="button-quiet" onClick={() => { go(3); void loadCrossing(); }} disabled={busy}>← Voltar</button><button className="button-primary" type="submit" disabled={busy}>{busy ? 'Enviando…' : 'Concluir cadastro ↗'}</button></div>
         </>}
         {step === 5 && user && <ProfileReady label="participante" created/>}
         {step === 5 && !user && <>

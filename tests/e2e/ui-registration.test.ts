@@ -3,7 +3,7 @@ import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
-import type {Page,Request} from 'playwright';
+import type {Page,Request,Route} from 'playwright';
 import {startUi,type Ui} from './ui-harness';
 
 let ui:Ui;
@@ -122,7 +122,15 @@ test('inscrição pública: diagnóstico → crossing (só nomes, troca) → e-m
   assert.doesNotMatch(await alertText(page,/Sem conexão/),/TypeError|Failed to fetch|stack/i);
   assert.equal(await page.getByLabel('Seu e-mail').inputValue(),email);
   await page.unroute(signupUrl);
-  const [response]=await Promise.all([page.waitForResponse(r=>isSignup(r.url())),submit.click()]);
+  // envio em andamento (barreira na rota, sem espera por tempo): trocar mentora e voltar ficam desabilitados, a escolha exibida é a enviada
+  let release=()=>{};const gate=new Promise<void>(r=>{release=r;});
+  const held=async(r:Route)=>{await gate;try{await r.continue();}catch{/* página fechada */}};
+  await page.route(signupUrl,held);
+  const responded=page.waitForResponse(r=>isSignup(r.url()));responded.catch(()=>{/* asserção abaixo reprova primeiro */});
+  await submit.click();
+  await page.getByRole('button',{name:/Enviando/}).waitFor();
+  assert.deepEqual([await page.getByRole('button',{name:/Trocar mentora/}).isDisabled(),await page.getByRole('button',{name:/Voltar/}).isDisabled()],[true,true],'sem troca de mentora nem volta durante o POST');
+  release();const response=await responded;await page.unroute(signupUrl,held);
   assert.equal(response.status(),202);
   const sent=body(response.request());
   assert.deepEqual(Object.keys(sent).sort(),['area','consent','email','goal','interests','mentor_ref','moment','password','passwordConfirmation','skills']);
