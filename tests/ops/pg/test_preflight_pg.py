@@ -110,7 +110,7 @@ class SqlChecksTests(PreflightWorld):
         self.assertEqual({i: report[i]['status'] for i in SQL_IDS}, {i: 'pass' for i in SQL_IDS})
         self.assertEqual({i: report[i]['status'] for i in HOST_IDS}, {i: 'pending' for i in HOST_IDS})
         self.assertEqual(json.loads(done.stdout)['overall'], 'pending')
-        self.assertRegex(report['PF-COLGRANT']['detail'], r'^792 denied, 10 allowed, 48 checked$')
+        self.assertRegex(report['PF-COLGRANT']['detail'], r'^803 denied, 12 allowed, 48 checked$')
         self.assertEqual(self.q(SNAPSHOT), before, 'the preflight changes nothing (the matrix rolls back)')
         for other in self.reopened:
             self.assertNotIn(other, done.stdout)  # neighbour database names never appear

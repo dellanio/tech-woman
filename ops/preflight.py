@@ -18,7 +18,7 @@ SQL_IDS = ['PF-ROLE-FLAGS', 'PF-ROLE-MEMBER', 'PF-PUBLIC-SCHEMA', 'PF-PUBLIC-FUN
            'PF-ROLE-LIMITS', 'PF-OTHER-DB', 'PF-HBA']
 HOST_IDS = ['PF-PG-PORT', 'PF-PGADMIN-TLS', 'PF-PGADMIN-COOKIE', 'PF-PGADMIN-RATE', 'PF-PGADMIN-CONN',
             'PF-BACKUP-DAILY', 'PF-RESTORE', 'PF-NGINX-REDACT', 'PF-NO-SHARED-TOUCH']
-MATRIX_EXPECTED = (792, 10, 48)  # D-048: measured on PG16 with techwoman_beatriz read-only
+MATRIX_EXPECTED = (803, 12, 48)  # AJUSTE-INSCRICAO (migration 31): measured on PG16 with techwoman_beatriz read-only
 # D-040: every techwoman role that can log in must be refused by pg_hba BEFORE authentication on every other database
 OTHER_DB_ROLES = ('techwoman_runtime', 'techwoman_mailer', 'techwoman_beatriz', 'techwoman_migrator')
 HBA_REJECTED = re.compile(r'pg_hba\.conf rejects connection|no pg_hba\.conf entry')

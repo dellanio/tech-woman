@@ -69,7 +69,7 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
   assert.ok(definers.length>=100,`catálogo de SECURITY DEFINER inspecionado: ${definers.length}`);
   assert.deepEqual(definers.filter(d=>d.o!=='techwoman_owner'||d.login).map(d=>`${d.sig} → ${d.o}`),[],'toda SECURITY DEFINER pertence a techwoman_owner NOLOGIN');
   assert.deepEqual(definers.filter(d=>!(d.cfg as string[]).some(c=>/^search_path=pg_catalog(, [a-z_]+)*, pg_temp$/.test(c))).map(d=>d.sig),[],'search_path fixo em toda SECURITY DEFINER');
-  for(const sig of ['internal.register_participant_account(text,text,text,jsonb,jsonb,text)','internal.identity_login_begin(text)','internal.email_claim(uuid)','internal.user_protected(uuid)'])
+  for(const sig of ['internal.register_participant_account(text,text,text,text,jsonb,jsonb,text,bigint)','internal.identity_login_begin(text)','internal.email_claim(uuid)','internal.user_protected(uuid)'])
    assert.equal(definers.find(d=>d.sig===sig)?.o,'techwoman_owner',sig);
   // 3. sessões LOGIN reais (não superusuárias): troca de role negada; runtime só por funções
   const runtime=await connectAs(urlFor(db,'techwoman_runtime',secrets.RUNTIME_PASSWORD)),mailer=await connectAs(urlFor(db,'techwoman_mailer',secrets.MAILER_PASSWORD)),migrator=await connectAs(migratorUrl);clients.push(runtime,mailer,migrator);
@@ -131,7 +131,9 @@ test('bootstrap local: migradora sem SUPERUSER/CREATEROLE aplica migrations (own
    ['grant execute on function internal.domain_protected(text,bigint) to techwoman_runtime','revoke execute on function internal.domain_protected(text,bigint) from techwoman_runtime'],
    ['create policy matrix_runtime on public.participant for select to techwoman_runtime using (true)','drop policy matrix_runtime on public.participant'],
    ['alter function internal.lock_user_set(uuid[]) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.lock_user_set(uuid[]) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
-   ['alter function internal.register_participant_account(text,text,text,jsonb,jsonb,text) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.register_participant_account(text,text,text,jsonb,jsonb,text) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
+   ['alter function internal.register_participant_account(text,text,text,text,jsonb,jsonb,text,bigint) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.register_participant_account(text,text,text,text,jsonb,jsonb,text,bigint) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
+   // AJUSTE-INSCRICAO: preview público com dono LOGIN reabre o que a matriz nega
+   ['alter function internal.registration_preview(text,text,jsonb,jsonb,text) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.registration_preview(text,text,jsonb,jsonb,text) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
    ['alter function internal.identity_login_begin(text) owner to techwoman_migrator','grant create on schema internal to techwoman_owner; alter function internal.identity_login_begin(text) owner to techwoman_owner; revoke create on schema internal from techwoman_owner'],
   ] as const){
    await migrator.query(grant);
