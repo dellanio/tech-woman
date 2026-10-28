@@ -367,8 +367,9 @@ Todo registro editável tem um número `version` que sobe a cada alteração. Ao
 
 ### 7.4 Senha e recuperação (reset)
 
-- **Cadastro** → o site cria a conta e **enfileira** um e-mail com uma **senha temporária** (vale 24 h, uso único). Nunca se guarda a senha — só o resultado da "conta matemática" (hash).
-- **Primeiro login** com a temporária → o site pede para **trocar a senha** (sessão limitada de 10 minutos). A nova senha tem de 12 a 128 caracteres (pode colar de gerenciador, pode ter espaços).
+- **Cadastro de participante** → diagnóstico, depois o **cruzamento** (só o nome das mentoras compatíveis, com troca), e por último e-mail + **senha definitiva** + confirmação. A conta já nasce ativa com o cruzamento escolhido; **nenhum e-mail é enviado** e não há senha temporária. Nunca se guarda a senha — só o resultado da "conta matemática" (hash).
+- **Cadastro de mentora** (e contas criadas pela equipe ou pendentes de antes) → o site **enfileira** um e-mail com uma **senha temporária** (vale 24 h, uso único).
+- **Primeiro login** com a temporária (só para quem recebeu uma) → o site pede para **trocar a senha** (sessão limitada de 10 minutos). A nova senha tem de 12 a 128 caracteres (pode colar de gerenciador, pode ter espaços).
 - **Esqueci a senha** (`/recuperar-senha`) → a resposta é **sempre a mesma** (`202`), exista a conta ou não, para ninguém descobrir quem tem cadastro. Se a conta existe, chega um link de redefinição que vale **30 minutos** e **só funciona uma vez**.
 - **Limites de tentativas** (por minuto/hora) protegem o login e os pedidos de e-mail; passou do limite → `429` com `Retry-After`.
 - Um e-mail que chega atrasado pode estar **inválido**: use sempre o acesso **mais recente**.
@@ -435,7 +436,8 @@ A tabela abaixo lista **todas** as rotas de `src/app/api/v1`. "Quem" resume a pe
 
 | Método e caminho | O que faz | Quem |
 |---|---|---|
-| `POST /api/v1/registrations/participants` | Cadastro de participante → `202` neutro; envia senha temporária. | qualquer pessoa |
+| `POST /api/v1/registrations/participants/preview` | Cruzamento antes das credenciais: recebe o diagnóstico e devolve só `[{mentor_ref, nome_exibicao}]` das mentoras compatíveis; não grava nada. | qualquer pessoa |
+| `POST /api/v1/registrations/participants` | Cadastro de participante (diagnóstico + `mentor_ref` + e-mail + senha + confirmação) → `202` neutro; conta ativa, sem e-mail. | qualquer pessoa |
 | `POST /api/v1/registrations/mentors` | Cadastro de mentora → `202` neutro (respeita `MENTOR_DEADLINE`). | qualquer pessoa |
 | `POST /api/v1/me/profiles/participant` | Adiciona o perfil de participante à **sua própria** conta. | logada |
 | `POST /api/v1/me/profiles/mentor` | Adiciona o perfil de mentora à **sua própria** conta. | logada |
