@@ -5,10 +5,10 @@ import {randomUUID,randomBytes} from 'node:crypto';
 import {migrate} from '../../scripts/migration/migrate';
 import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
 import * as identity from '../../src/lib/identity';
-import * as registration from '../../src/lib/registration';
 import * as email from '../../src/lib/email';
 import * as accounts from '../../src/lib/accounts';
 import {sessionFor} from './identity-harness.test';
+import {pendingParticipant} from './pending-participant';
 
 const base=process.env.MIGRATION_DATABASE_URL;
 type Ctx={db:Pool;url:string;mailer:Pool};
@@ -25,12 +25,14 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  await control.query(`create database ${name}`);const u=new URL(base);u.pathname='/'+name;const url=u.toString();
  const db=new Pool({connectionString:url,max:6,options:'-c jit=off'});const mailer=new Pool({connectionString:roleUrl(url,'techwoman_mailer'),max:4});
  const saved={d:process.env.DATABASE_URL,m:process.env.MAILER_DATABASE_URL};
+ fixture=db;
  try{ await migrate(url);await closeDb();await email.closeEmailPool();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');process.env.MAILER_DATABASE_URL=roleUrl(url,'techwoman_mailer');await fn({db,url,mailer}); }
  finally{ await closeDb();await email.closeEmailPool();for(const [k,v] of [['DATABASE_URL',saved.d],['MAILER_DATABASE_URL',saved.m]] as const){if(v===undefined)delete process.env[k];else process.env[k]=v;}
   await mailer.end();await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
-const dto=(addr:string)=>({email:addr,goal:'growth',moment:'working',interests:['dados'],skills:['codigo'],area:'dados',consent:true});
-const register=(addr:string)=>registration.registerParticipant(dto(addr));
+/** Conta pendente legada (cadastro anterior à migration 31): job 'registration' para o worker; o cadastro público atual não enfileira e-mail. */
+let fixture:Pool;
+const register=(addr:string)=>pendingParticipant(fixture,addr);
 const capture=()=>{const messages:email.EmailMessage[]=[];return {messages,transport:email.createMemoryTransport(m=>{messages.push(m);})};};
 const failing=(error:()=>Error)=>email.createMemoryTransport(()=>{throw error();});
 async function addUser(db:Pool,opts:{email?:string;status?:string;password?:string;roles?:string[]}={}){
@@ -266,7 +268,7 @@ test('fronteira do mailer: só funções de fila; formato de hash e posse do lea
  const as=async(role:string,sql:string,params:unknown[]=[])=>{const c=await db.connect();try{await c.query(`set role ${role}`);await c.query(sql,params);return true}catch{return false}finally{await c.query('reset role').catch(()=>undefined);c.release()}};
  assert.equal(await as('techwoman_mailer','select * from internal.email_claim(gen_random_uuid())'),true);
  await register('prv@example.invalid');const uid=await idByEmail(db,'prv@example.invalid');
- for(const sql of ['select * from app_user','update app_user set status=\'active\'','select * from user_role','select * from auth_session','select * from password_reset_token','insert into user_role(user_id,role) values(gen_random_uuid(),\'admin\')',"select internal.register_participant_account('a@example.invalid','growth','working','[]','[]','x')",'select * from internal.identity_login_begin(\'a@example.invalid\')'])
+ for(const sql of ['select * from app_user','update app_user set status=\'active\'','select * from user_role','select * from auth_session','select * from password_reset_token','insert into user_role(user_id,role) values(gen_random_uuid(),\'admin\')',"select internal.register_participant_account('a@example.invalid','x','growth','working','[]','[]','x',1)",'select * from internal.identity_login_begin(\'a@example.invalid\')'])
   assert.equal(await as('techwoman_mailer',sql),false,'mailer: '+sql);
  for(const sql of ['select * from internal.email_claim(gen_random_uuid())','select * from internal.email_emit_begin(gen_random_uuid(),gen_random_uuid(),\'x\')','select internal.email_emit_finish(gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),\'accepted\',null,null)','select * from email_job','update email_job set status=\'queued\''])
   assert.equal(await as('techwoman_runtime',sql),false,'runtime: '+sql);

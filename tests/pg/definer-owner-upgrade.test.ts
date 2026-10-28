@@ -17,6 +17,7 @@ import {migrate} from '../../scripts/migration/migrate';
 import {closeDb,hashPassword} from '../../src/lib/db';
 import * as identity from '../../src/lib/identity';
 import * as registration from '../../src/lib/registration';
+import {previewCrossing} from '../../src/lib/crossing';
 import * as email from '../../src/lib/email';
 
 const base=process.env.MIGRATION_DATABASE_URL;
@@ -30,6 +31,10 @@ const redact=(text:string,secrets:string[])=>secrets.reduce((t,s)=>t.split(s).jo
 /** EXECUTE efetivo (has_function_privilege) de cada role não-dona sobre toda função de internal/public. */
 const executeMap=async(db:Pool)=>(await db.query(`select p.oid::regprocedure::text sig,r.g grantee from pg_proc p cross join (values ('techwoman_runtime'),('techwoman_mailer'),('techwoman_beatriz'),('public')) r(g)
  where p.pronamespace in ('internal'::regnamespace,'public'::regnamespace) and has_function_privilege(r.g,p.oid,'EXECUTE') order by 1,2`)).rows.map(r=>`${r.sig} ${r.grantee}`);
+/** Delta declarado da migration 31 (AJUSTE-INSCRICAO): assinatura nova do cadastro (DROP da antiga) e preview do crossing, ambos só do runtime. */
+const M31_REMOVED=['internal.register_participant_account(text,text,text,jsonb,jsonb,text)'];
+const M31_ADDED=['internal.register_participant_account(text,text,text,text,jsonb,jsonb,text,bigint)','internal.registration_preview(text,text,jsonb,jsonb,text)'];
+const withM31=(rows:string[],suffix='')=>[...rows.filter(r=>!M31_REMOVED.some(x=>r===x+suffix)),...M31_ADDED.map(x=>x+suffix)].sort();
 const definerOwners=async(db:Pool)=>(await db.query(`select p.oid::regprocedure::text sig,pg_get_userbyid(p.proowner) o,r.rolcanlogin login,coalesce(p.proconfig,'{}') cfg from pg_proc p join pg_roles r on r.oid=p.proowner
  where p.prosecdef and p.pronamespace in ('internal'::regnamespace,'public'::regnamespace) order by 1`)).rows as {sig:string;o:string;login:boolean;cfg:string[]}[];
 
@@ -73,10 +78,10 @@ test('upgrade dd09ce5 → FIX-DB pela migradora LOGIN não superusuária: owner 
   assert.deepEqual((await admin.query('select name,checksum from internal.schema_migration order by name')).rows,checksAfter,'reaplicar é idempotente');
   Reflect.deleteProperty(process.env,'LOCAL_ROLE_SETUP');
   const after=await definerOwners(admin);
-  assert.deepEqual(after.map(d=>d.sig),before.map(d=>d.sig),'mesmo conjunto de SECURITY DEFINER');
+  assert.deepEqual(after.map(d=>d.sig).sort(),withM31(before.map(d=>d.sig)),'mesmo conjunto de SECURITY DEFINER, salvo o delta declarado da migration 31');
   assert.deepEqual(after.filter(d=>d.o!=='techwoman_owner'||d.login).map(d=>`${d.sig} → ${d.o}`),[],'toda SECURITY DEFINER pertence a techwoman_owner NOLOGIN');
   assert.deepEqual(after.filter(d=>!d.cfg.some(c=>/^search_path=pg_catalog(, [a-z_]+)*, pg_temp$/.test(c))).map(d=>d.sig),[],'search_path fixo');
-  assert.deepEqual(await executeMap(admin),execBefore,'EXECUTE de runtime/mailer/editora/PUBLIC idêntico ao de antes (nenhum acesso novo)');
+  assert.deepEqual((await executeMap(admin)).sort(),withM31(execBefore,' techwoman_runtime'),'EXECUTE de runtime/mailer/editora/PUBLIC idêntico ao de antes (só o delta da 31, ao runtime)');
   assert.deepEqual((await admin.query("select rolcanlogin,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication from pg_roles where rolname='techwoman_owner'")).rows[0],
    {rolcanlogin:false,rolsuper:false,rolbypassrls:false,rolcreaterole:false,rolcreatedb:false,rolreplication:false});
   assert.equal((await admin.query("select has_schema_privilege('techwoman_owner','internal','CREATE') c")).rows[0].c,false,'CREATE temporário do owner revogado');
@@ -87,13 +92,19 @@ test('upgrade dd09ce5 → FIX-DB pela migradora LOGIN não superusuária: owner 
   const session=await identity.login('ANTES@example.invalid ',pw);assert.ok(session,'login de conta anterior ao upgrade');
   assert.ok(await identity.identitySession(session.token),'sessão validada pelo owner');
   assert.equal(await identity.login('antes@example.invalid','senha-errada-123'),null);
-  assert.deepEqual(await registration.registerParticipant({email:'Depois@Example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true}),{status:'received',next:'check_email'});
+  // cadastro atual (migration 31): crossing + senha definitiva → conta active sem e-mail; o worker segue emitindo o reset
+  await admin.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('m-up@example.invalid','t','["dados"]','a',2,'Mentora Upgrade')`);
+  const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados'};
+  const [choice]=await previewCrossing(profile);assert.equal(choice?.nome_exibicao,'Mentora Upgrade');
+  const fresh=`Recife-${randomBytes(12).toString('base64url')}`;
+  assert.deepEqual(await registration.registerParticipant({email:'Depois@Example.invalid',...profile,consent:true,mentor_ref:choice.mentor_ref,password:fresh,passwordConfirmation:fresh}),{status:'received',next:'login'});
   assert.deepEqual(await identity.requestPasswordForgot('antes@example.invalid'),{status:'received'});
   const to:string[]=[];const worker=await email.runEmailWorkerOnce(email.createMemoryTransport(m=>{to.push(m.to.toLowerCase());}));
-  assert.deepEqual([worker.simulated,worker.accepted,worker.failed],[2,0,0],'worker emite cadastro + reset em memória');
-  assert.deepEqual(to.sort(),['antes@example.invalid','depois@example.invalid']);
-  const u=(await admin.query("select status,temporary_password_hash is not null th,must_change_password m from app_user where email_key='depois@example.invalid'")).rows[0];
-  assert.deepEqual(u,{status:'pending_activation',th:true,m:true},'emissão do temporário pelo owner gravou só o hash');
+  assert.deepEqual([worker.simulated,worker.accepted,worker.failed],[1,0,0],'worker emite o reset em memória; o cadastro não enfileira e-mail');
+  assert.deepEqual(to,['antes@example.invalid']);
+  const u=(await admin.query("select status,password_hash is not null ph,temporary_password_hash is not null th,must_change_password m from app_user where email_key='depois@example.invalid'")).rows[0];
+  assert.deepEqual(u,{status:'active',ph:true,th:false,m:false},'cadastro pelo owner gravou só o hash da senha definitiva');
+  assert.equal((await identity.login('depois@example.invalid',fresh))?.state,'authenticated');
   assert.equal((await admin.query("select count(*)::int n from password_reset_token where user_id=$1",[userId])).rows[0].n,1);
  }finally{
   process.chdir(cwd);rmSync(old,{recursive:true,force:true});

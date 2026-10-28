@@ -8,10 +8,14 @@ import * as forgot from '../../src/app/api/v1/auth/password/forgot/route';
 import * as reset from '../../src/app/api/v1/auth/password/reset/route';
 import * as participants from '../../src/app/api/v1/registrations/participants/route';
 import * as mentors from '../../src/app/api/v1/registrations/mentors/route';
+import {mentorRef} from '../../src/lib/crossing';
 import {withDb,addUser,synthetic,roleUrl} from './identity-harness.test';
 import {call,code,sameShape,type Reply} from './identity-http-kit.test';
 
-const participantDto=(email:string,extra:Record<string,unknown>={})=>({email,goal:'transition',moment:'starting',interests:['dados'],skills:['analise'],area:'dados',consent:true,...extra});
+/** Cadastro público atual (migration 31): mentora compatível do crossing + senha definitiva. `withMentor` cria a mentora fixture e a referência. */
+let REF='0'.repeat(43);const PW='Recife-senha-definitiva-1';
+const withMentor=async(db:Pool)=>{REF=mentorRef(String((await db.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('base.mentora@example.invalid','t','["dados"]','a',2,'Mentora Base') returning id`)).rows[0].id));};
+const participantDto=(email:string,extra:Record<string,unknown>={})=>({email,goal:'transition',moment:'starting',interests:['dados'],skills:['analise'],area:'dados',consent:true,mentor_ref:REF,password:PW,passwordConfirmation:PW,...extra});
 const mentorDto=(email:string,extra:Record<string,unknown>={})=>({email,displayName:'Mentora Fictícia',trajectory:'Trajetória de teste',specialties:['produto'],availability:'Quartas',legacyCapacity:3,consent:true,...extra});
 const LOGIN='/api/v1/auth/login',FORGOT='/api/v1/auth/password/forgot',RESET='/api/v1/auth/password/reset',REG_P='/api/v1/registrations/participants',REG_M='/api/v1/registrations/mentors';
 const tryLogin=(email:string,password='errada-errada-1',headers:Record<string,string|null>={})=>call(login.POST,LOGIN,{body:{email,password},headers});
@@ -54,6 +58,7 @@ test('limites no PG: login 5/min por par e 30/min por IP, também para desconhec
 }));
 
 test('limites no PG: IP 30/min no login; forgot e cadastro 3/h por e-mail+ação e 20/h por IP; reset 10/min por IP',async()=>withDb(async({db})=>{
+ await withMentor(db);
  for(let i=1;i<=30;i++){const r=await tryLogin(`ip${i}@example.invalid`);assert.equal(r.status,401,`tentativa ${i}`);}
  const ipBlocked=await tryLogin('ip31@example.invalid');assert.deepEqual([ipBlocked.status,code(ipBlocked)],[429,'RATE_LIMITED']);
  await db.query('truncate auth_rate_bucket');
@@ -107,6 +112,7 @@ test('rate_hit é atômico entre pools, tem janela fixa e expira',async()=>withD
 }));
 
 test('anti-enumeração: forgot, cadastro e login são indistinguíveis para inexistente, ativa, pendente, desativada e admin',async()=>withDb(async({db})=>{
+ await withMentor(db);
  const pw=synthetic();
  const active=await addUser(db,{email:'ativa@example.invalid',password:pw}),pending=await addUser(db,{email:'pendente@example.invalid',status:'pending_activation'});
  const disabled=await addUser(db,{email:'off@example.invalid',password:pw,status:'disabled'}),admin=await addUser(db,{email:'adm@example.invalid',password:pw,roles:['admin','mentor']});
@@ -115,10 +121,10 @@ test('anti-enumeração: forgot, cadastro e login são indistinguíveis para ine
  assert.deepEqual(forgots.map(r=>r.status),Array(5).fill(202));assert.deepEqual(forgots[0].json.data,{status:'received'});
  for(const r of forgots)assert.equal(sameShape(r,forgots[0]),true);
  const registrations=[];for(const email of emails)registrations.push(await register(email));
- assert.deepEqual(registrations.map(r=>r.status),Array(5).fill(202));assert.deepEqual(registrations[0].json.data,{status:'received',next:'check_email'});
+ assert.deepEqual(registrations.map(r=>r.status),Array(5).fill(202));assert.deepEqual(registrations[0].json.data,{status:'received',next:'login'});
  for(const r of registrations)assert.equal(sameShape(r,registrations[0]),true);
  const mentorRegs=[];for(const email of emails)mentorRegs.push(await call(mentors.POST,REG_M,{body:mentorDto(email),key:randomUUID()}));
- for(const r of mentorRegs)assert.equal(sameShape(r,registrations[0]),true);
+ for(const r of mentorRegs)assert.equal(sameShape(r,mentorRegs[0]),true);assert.deepEqual(mentorRegs[0].json.data,{status:'received',next:'check_email'});
  const attempts=[];for(const email of emails)attempts.push(await tryLogin(email,pw+'-errada'));
  attempts.push(await tryLogin(disabled.email,pw));
  for(const r of attempts){assert.equal(r.status,401);assert.equal(sameShape(r,attempts[0]),true);assert.equal(r.headers.get('set-cookie'),null);}
@@ -128,20 +134,21 @@ test('anti-enumeração: forgot, cadastro e login são indistinguíveis para ine
 }));
 
 test('idempotência do cadastro público: chave UUID obrigatória, mesmo corpo repete 202 sem duplicar, corpo diferente 409, nada sensível no cache',async()=>withDb(async({db})=>{
+ await withMentor(db);
  for(const key of [undefined,'nao-uuid','1234']){
   const r=await call(participants.POST,REG_P,{body:participantDto('k@example.invalid'),...(key?{key}:{})});assert.deepEqual([r.status,code(r)],[422,'INVALID_INPUT']);assert.ok(r.json.error.fields.includes('Idempotency-Key'));
  }
- assert.deepEqual(await counts(db),{users:0,jobs:0,participants:0,mentors:0});
+ assert.deepEqual(await counts(db),{users:0,jobs:0,participants:0,mentors:1});
  const key=randomUUID();const body=participantDto('Chave@Example.invalid');
  const first=await call(participants.POST,REG_P,{body,key}),second=await call(participants.POST,REG_P,{body,key:key.toUpperCase()});
- assert.deepEqual([first.status,second.status],[202,202]);assert.deepEqual(second.json.data,{status:'received',next:'check_email'});
- assert.deepEqual(await counts(db),{users:1,jobs:1,participants:1,mentors:0});
+ assert.deepEqual([first.status,second.status],[202,202]);assert.deepEqual(second.json.data,{status:'received',next:'login'});
+ assert.deepEqual(await counts(db),{users:1,jobs:0,participants:1,mentors:1});
  const conflict=await call(participants.POST,REG_P,{body:{...body,goal:'leadership'},key});assert.deepEqual([conflict.status,code(conflict)],[409,'IDEMPOTENCY_CONFLICT']);
  const other=await call(participants.POST,REG_P,{body:participantDto('segundo@example.invalid'),key});assert.equal(other.status,202,'outro e-mail = outro escopo');
- assert.deepEqual(await counts(db),{users:2,jobs:2,participants:2,mentors:0});
+ assert.deepEqual(await counts(db),{users:2,jobs:0,participants:2,mentors:1});
  const rows=(await db.query('select actor_key,method,path,key_hash,request_hash,resource_id,status_code from api_idempotency order by path,created_at')).rows;
  assert.equal(rows.length,2);for(const row of rows){assert.match(row.actor_key,/^[A-Za-z0-9_-]{43}$/);assert.match(row.key_hash,/^[a-f0-9]{64}$/);assert.deepEqual([row.method,row.path,row.resource_id,row.status_code],['POST',REG_P,null,202]);}
- const dump=JSON.stringify(rows);for(const raw of ['chave@example.invalid',key,'segundo@example.invalid'])assert.equal(dump.toLowerCase().includes(raw.toLowerCase()),false);
+ const dump=JSON.stringify(rows);for(const raw of ['chave@example.invalid',key,'segundo@example.invalid',PW])assert.equal(dump.toLowerCase().includes(raw.toLowerCase()),false);
 }));
 
 test('prazo de mentoras encerrado → 403 antes de qualquer consulta (nem banco nem rate limit)',async()=>withDb(async()=>{

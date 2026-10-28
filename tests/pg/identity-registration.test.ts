@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {Pool} from 'pg';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {migrate} from '../../scripts/migration/migrate';
-import {closeDb,hashPassword,tokenDigest} from '../../src/lib/db';
+import {closeDb,hashPassword,tokenDigest,verifyPassword} from '../../src/lib/db';
 import * as identity from '../../src/lib/identity';
 import * as contracts from '../../src/lib/contracts';
 import * as registration from '../../src/lib/registration';
 import * as accounts from '../../src/lib/accounts';
+import {previewCrossing} from '../../src/lib/crossing';
 import {sessionFor} from './identity-harness.test';
 
 const base=process.env.MIGRATION_DATABASE_URL;
@@ -23,12 +24,18 @@ async function withDb(fn:(ctx:Ctx)=>Promise<void>){
  const created:string[]=[];
  for(const role of ['techwoman_runtime','techwoman_mailer']){ if(!(await control.query('select 1 from pg_roles where rolname=$1',[role])).rowCount){await control.query(`create role ${role} nologin`);created.push(role);} }
  await control.query(`create database ${name}`);const u=new URL(base);u.pathname='/'+name;const url=u.toString();
- const db=new Pool({connectionString:url,max:6,options:'-c jit=off'});const previous=process.env.DATABASE_URL;const deadline=process.env.MENTOR_DEADLINE;
- try{ await migrate(url);await closeDb();process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');await fn({db,url}); }
- finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;if(deadline===undefined)delete process.env.MENTOR_DEADLINE;else process.env.MENTOR_DEADLINE=deadline;
+ const db=new Pool({connectionString:url,max:6,options:'-c jit=off'});const previous=process.env.DATABASE_URL;const deadline=process.env.MENTOR_DEADLINE;const secret=process.env.SESSION_SECRET;
+ try{ await migrate(url);await closeDb();process.env.SESSION_SECRET=randomBytes(48).toString('hex');process.env.DATABASE_URL=roleUrl(url,'techwoman_runtime');await fn({db,url}); }
+ finally{ await closeDb();if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;if(deadline===undefined)delete process.env.MENTOR_DEADLINE;else process.env.MENTOR_DEADLINE=deadline;if(secret===undefined)delete process.env.SESSION_SECRET;else process.env.SESSION_SECRET=secret;
   await db.end();await settled(control,name);await control.query(`drop database ${name} with (force)`);for(const role of created)await control.query(`drop role if exists ${role}`).catch(()=>undefined);await control.end(); }
 }
 const participantDto=(email:string,extra:Record<string,unknown>={})=>({email,goal:'transition',moment:'starting',interests:['dados','design'],skills:['analise'],area:'outra',otherArea:'Educação',consent:true,...extra});
+/** Cadastro público atual (migration 31): mentora compatível escolhida no crossing + senha definitiva. Uma mentora fixture sem conta. */
+async function crossingRef(db:Pool){
+ await db.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('base.mentora@example.invalid','t','["dados"]','a',2,'Mentora Base')`);
+ const {email:_e,consent:_c,...profile}=participantDto('x@example.invalid');const [choice]=await previewCrossing(profile);return choice.mentor_ref;
+}
+const signupDto=(email:string,ref:string,extra:Record<string,unknown>={})=>{const password=synthetic()+'-def';return {...participantDto(email,extra),mentor_ref:ref,password,passwordConfirmation:password};};
 const mentorDto=(email:string,extra:Record<string,unknown>={})=>({email,displayName:'Mentora Fictícia',trajectory:'Trajetória de teste',specialties:['produto'],availability:'Quartas à tarde',legacyCapacity:3,consent:true,...extra});
 const counts=async(db:Pool)=>(await db.query(`select (select count(*)::int from app_user) users,(select count(*)::int from user_role) roles,(select count(*)::int from participant) participants,(select count(*)::int from mentor) mentors,(select count(*)::int from email_job) jobs`)).rows[0];
 const snapshot=async(db:Pool)=>JSON.stringify((await db.query(`select (select coalesce(jsonb_agg(to_jsonb(u) order by id),'[]') from app_user u) users,(select coalesce(jsonb_agg(to_jsonb(r) order by user_id,role),'[]') from user_role r) roles,(select coalesce(jsonb_agg(to_jsonb(p) order by id),'[]') from participant p) participants,(select coalesce(jsonb_agg(to_jsonb(m) order by id),'[]') from mentor m) mentors,(select coalesce(jsonb_agg(to_jsonb(j) order by id),'[]') from email_job j) jobs`)).rows[0]);
@@ -49,19 +56,19 @@ test('contratos públicos: resposta genérica, DTOs fechados de perfil e esqueci
  assert.deepEqual(bad(()=>contracts.parsePasswordForgot({email:'sem-arroba'})),['email']);
 });
 
-test('cadastro novo de participante: usuário pendente, papel, perfil ligado e intenção de e-mail sem payload',async()=>withDb(async({db})=>{
- const out=await registration.registerParticipant(participantDto('  Nova.Pessoa@Example.invalid '));
- assert.deepEqual(out,{status:'received',next:'check_email'});
- assert.deepEqual(await counts(db),{users:1,roles:1,participants:1,mentors:0,jobs:1});
- const u=(await db.query(`select id,email,email_key,status,password_hash is null ph,temporary_password_hash is null th,must_change_password m,credential_generation::int g from app_user`)).rows[0];
- assert.deepEqual([u.email,u.email_key,u.status,u.ph,u.th,u.m,u.g],['Nova.Pessoa@Example.invalid','nova.pessoa@example.invalid','pending_activation',true,true,false,0]);
+test('cadastro novo de participante: conta active com senha definitiva, papel, perfil ligado e match; nenhuma intenção de e-mail',async()=>withDb(async({db})=>{
+ const ref=await crossingRef(db);const dto=signupDto('  Nova.Pessoa@Example.invalid ',ref);
+ const out=await registration.registerParticipant(dto);
+ assert.deepEqual(out,{status:'received',next:'login'});
+ assert.deepEqual(await counts(db),{users:1,roles:1,participants:1,mentors:1,jobs:0});
+ const u=(await db.query(`select id,email,email_key,status,password_hash,temporary_password_hash is null th,must_change_password m,credential_generation::int g from app_user`)).rows[0];
+ assert.deepEqual([u.email,u.email_key,u.status,u.th,u.m,u.g],['Nova.Pessoa@Example.invalid','nova.pessoa@example.invalid','active',true,false,0]);
+ assert.equal(await verifyPassword(dto.password,u.password_hash),true);
  assert.deepEqual((await db.query('select role from user_role where user_id=$1',[u.id])).rows,[{role:'participant'}]);
- const p=(await db.query(`select user_id,email,goal,moment,interests,skills,area,consent_version,consent_at is not null c,token_hash ~ '^[a-f0-9]{64}$' th,legacy_access_revoked_at is null ok,active from participant`)).rows[0];
+ const p=(await db.query(`select id,user_id,email,goal,moment,interests,skills,area,consent_version,consent_at is not null c,token_hash ~ '^[a-f0-9]{64}$' th,legacy_access_revoked_at is null ok,active from participant`)).rows[0];
  assert.deepEqual([p.user_id,p.email,p.goal,p.moment,p.interests,p.skills,p.area,p.consent_version,p.c,p.th,p.ok,p.active],[u.id,'Nova.Pessoa@Example.invalid','transition','starting',['dados','design'],['analise'],'outra: Educação','v1',true,true,true,true]);
- const j=(await db.query(`select user_id,kind,status,generation::int g,attempts,lease_owner is null lo,participant_id::text pid from email_job`)).rows[0];
- assert.deepEqual([j.user_id,j.kind,j.status,j.g,j.attempts,j.lo],[u.id,'registration','queued',0,0,true]);
- assert.equal(j.pid,(await db.query('select id::text from participant')).rows[0].id);
- const second=await registration.registerParticipant(participantDto('outra@example.invalid'));assert.deepEqual(second,out);
+ assert.deepEqual((await db.query(`select status,origin,enrollment_id from match where participant_id=$1`,[p.id])).rows,[{status:'suggested',origin:'current',enrollment_id:null}]);
+ const second=await registration.registerParticipant(signupDto('outra@example.invalid',ref));assert.deepEqual(second,out);
  const hashes=(await db.query('select count(distinct token_hash)::int n from participant')).rows[0].n;assert.equal(hashes,2,'token_hash aleatório e único por registro, nunca exposto');
 }));
 
@@ -80,37 +87,39 @@ test('cadastro novo de mentora: perfil ligado e prazo verificado antes de qualqu
 }));
 
 test('duplicados e colisões por caixa/espaço respondem 202 e não mutam nada',async()=>withDb(async({db})=>{
- await registration.registerParticipant(participantDto('Ana@Example.invalid'));
+ const ref=await crossingRef(db);
+ await registration.registerParticipant(signupDto('Ana@Example.invalid',ref));
  const before=await snapshot(db);
  for(const email of ['ana@example.invalid','ANA@EXAMPLE.INVALID','  Ana@Example.invalid  ']){
-  assert.deepEqual(await registration.registerParticipant(participantDto(email,{goal:'leadership',area:'produto',otherArea:undefined})),{status:'received',next:'check_email'});
+  assert.deepEqual(await registration.registerParticipant(signupDto(email,ref,{goal:'transition',area:'dados',otherArea:undefined})),{status:'received',next:'login'});
   assert.deepEqual(await registration.registerMentor(mentorDto(email)),{status:'received',next:'check_email'});
  }
  assert.equal(same(await snapshot(db),before),true,'nenhuma linha mudou: sem papel novo, sem perfil de mentora, sem job, sem rotação');
- const concurrent=await Promise.all(Array.from({length:6},(_,i)=>registration.registerParticipant(participantDto(i%2?'Corrida@Example.invalid':'corrida@example.invalid '))));
+ const concurrent=await Promise.all(Array.from({length:6},(_,i)=>registration.registerParticipant(signupDto(i%2?'Corrida@Example.invalid':'corrida@example.invalid ',ref))));
  assert.equal(concurrent.every(r=>r.status==='received'),true);
- assert.deepEqual(await counts(db),{users:2,roles:2,participants:2,mentors:0,jobs:2});
+ assert.deepEqual(await counts(db),{users:2,roles:2,participants:2,mentors:1,jobs:0});
 }));
 
 test('conta existente ativa ou privilegiada não recebe perfil, papel nem credencial por cadastro público',async()=>withDb(async({db})=>{
- const hash=await hashPassword(synthetic());
+ const ref=await crossingRef(db);const hash=await hashPassword(synthetic());
  const admin=randomUUID(),active=randomUUID();
  await db.query("insert into app_user(id,email,status,password_hash) values($1,'dona@example.invalid','active',$3),($2,'ativa@example.invalid','active',$3)",[admin,active,hash]);
  await db.query("insert into user_role(user_id,role) values($1,'admin'),($2,'participant')",[admin,active]);
  const before=await snapshot(db);
  for(const email of ['DONA@example.invalid','dona@example.invalid ','Ativa@Example.invalid']){
-  assert.deepEqual(await registration.registerParticipant(participantDto(email)),{status:'received',next:'check_email'});
+  assert.deepEqual(await registration.registerParticipant(signupDto(email,ref)),{status:'received',next:'login'});
   assert.deepEqual(await registration.registerMentor(mentorDto(email)),{status:'received',next:'check_email'});
  }
  assert.equal(same(await snapshot(db),before),true);
 }));
 
 test('candidato de domínio legado sem user_id é protegido: cadastro público não cria usuário nem perfil paralelo',async()=>withDb(async({db})=>{
+ const ref=await crossingRef(db);
  await db.query(`insert into participant(id,email,goal,moment,interests,skills,token_hash,consent_version) values(7,'Legada@Example.invalid','growth','working','["dados"]','["analise"]','${'a'.repeat(64)}','v0')`);
  await db.query(`insert into mentor(id,email,trajectory,specialties,availability,capacity) values(9,'mentor.legada@example.invalid','t','["produto"]','a',2)`);
  const before=await snapshot(db);
  for(const email of ['legada@example.invalid','  LEGADA@example.invalid','Mentor.Legada@example.invalid']){
-  assert.deepEqual(await registration.registerParticipant(participantDto(email)),{status:'received',next:'check_email'});
+  assert.deepEqual(await registration.registerParticipant(signupDto(email,ref)),{status:'received',next:'login'});
   assert.deepEqual(await registration.registerMentor(mentorDto(email)),{status:'received',next:'check_email'});
  }
  assert.equal(same(await snapshot(db),before),true);

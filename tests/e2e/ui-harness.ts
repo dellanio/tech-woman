@@ -8,6 +8,7 @@ import {Pool} from 'pg';
 import {chromium,type Browser,type BrowserContext,type Page} from 'playwright';
 import {migrate} from '../../scripts/migration/migrate';
 import {closeEmailPool,createMemoryTransport,runEmailWorkerOnce,type EmailMessage} from '../../src/lib/email';
+import {pendingParticipant} from '../pg/pending-participant';
 
 export const PORT=55304;
 export const ORIGIN=`http://127.0.0.1:${PORT}`;
@@ -20,7 +21,7 @@ export type Ui={
  secrets:Set<string>;
  /** Esvazia a fila com transporte em memória; segredos ficam só no retorno. */
  drain():Promise<EmailMessage[]>;
- /** Cadastro público real (202) + worker fake → senha temporária em memória. */
+ /** Conta pendente legada (fixture do cadastro anterior à migration 31) + worker fake → senha temporária em memória. */
  temporaryPassword(email:string):Promise<string>;
  newPage(options?:{viewport?:{width:number;height:number}}):Promise<{context:BrowserContext;page:Page;console:string[]}>;
  /** Nenhum segredo conhecido no log do app nem nas mensagens de console capturadas. */
@@ -69,9 +70,8 @@ export async function startUi(name:string):Promise<Ui>{
   origin:ORIGIN,db,browser,evidence,appLog,secrets,drain,
   async setMentorDeadline(deadline){await stopWeb();if(deadline)env.MENTOR_DEADLINE=deadline;else delete env.MENTOR_DEADLINE;app=launch();await waitReady();},
   async temporaryPassword(email){
-   const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true};
-   const res=await fetch(ORIGIN+'/api/v1/registrations/participants',{method:'POST',headers:{'Content-Type':'application/json',Origin:ORIGIN,'Sec-Fetch-Site':'same-origin','Idempotency-Key':randomUUID()},body:JSON.stringify({email,...profile})});
-   assert.equal(res.status,202);
+   // o cadastro público atual cria a conta já com senha definitiva e não emite temporária: as telas de troca/admin usam a conta legada
+   assert.ok(await pendingParticipant(db,email,{skills:['analise']}),'conta pendente legada criada');
    const mail=(await drain()).filter(m=>m.to.toLowerCase()===email.toLowerCase()&&(m.kind==='registration'||m.kind==='temporary_password'));
    assert.equal(mail.length,1,'uma credencial temporária emitida pelo worker fake');
    return mail[0].secret;

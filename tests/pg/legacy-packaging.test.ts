@@ -8,6 +8,8 @@ import {withDb,roleUrl} from './identity-harness.test';
 import {registerParticipant} from '../../src/lib/registration';
 import {runEmailWorkerOnce,createMemoryTransport} from '../../src/lib/email';
 import {login,changePassword} from '../../src/lib/identity';
+import {previewCrossing} from '../../src/lib/crossing';
+import {pendingParticipant} from './pending-participant';
 
 // Contrato WP-002 substitui cadastro com token público e reserva sem horário.
 // Aplica o MESMO grants-local.sql executado por LOCAL_ROLE_SETUP depois das migrations.
@@ -19,8 +21,15 @@ test('R2: grants locais preservam identidade/worker, sem SELECT de hashes nem DM
   for(const q of ['select password_hash from app_user','select * from auth_session','select * from legacy_snapshot.source_row','select * from migration_identity_link','create table public.forbidden_runtime(id int)'])await assert.rejects(runtime.query(q));
   for(const q of ['select * from email_job','select * from app_user','update email_job set attempts=0','select * from email_delivery_attempt'])await assert.rejects(mailer.query(q));
   await assert.rejects(runtime.query('update email_job set attempts=0'));
-  const registered=await registerParticipant({email:'packaging@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true},{key:randomUUID(),scope:'int002-packaging'});
-  assert.ok(registered);
+  // cadastro atual: crossing + senha definitiva sob os grants locais → login full direto, sem fila
+  await db.query(`insert into mentor(email,trajectory,specialties,availability,capacity,display_name) values('m-pack@example.invalid','t','["dados"]','a',2,'Mentora Pack')`);
+  const profile={goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados'};const [choice]=await previewCrossing(profile);
+  const definitive=randomBytes(18).toString('base64url');
+  assert.deepEqual(await registerParticipant({email:'definitiva@example.invalid',...profile,consent:true,mentor_ref:choice.mentor_ref,password:definitive,passwordConfirmation:definitive},{key:randomUUID(),scope:'int002-packaging'}),{status:'received',next:'login'});
+  assert.equal((await login('definitiva@example.invalid',definitive))?.state,'authenticated');
+  assert.equal((await db.query('select count(*)::int n from email_job')).rows[0].n,0);
+  // conta pendente legada: o worker continua emitindo o temporário sob os grants locais
+  assert.ok(await pendingParticipant(db,'packaging@example.invalid'));
   let temporary='';const delivered=await runEmailWorkerOnce(createMemoryTransport(m=>{temporary=m.secret;}));assert.equal(delivered.claimed,1);assert.ok(temporary);
   const limited=await login('packaging@example.invalid',temporary);assert.equal(limited?.state,'password_change_required');assert.ok(limited);
   const full=await changePassword(limited.token,temporary,randomBytes(24).toString('base64url'));assert.ok(full.token);
