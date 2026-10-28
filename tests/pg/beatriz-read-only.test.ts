@@ -210,8 +210,9 @@ test('D-048 host já revogado à mão e reaplicação: upgrade pela migration ch
  const w=await world({migrations:all=>all.filter(f=>f<READ_ONLY_FIRST)});
  try{
   const all=readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort();
+  // migrations posteriores (ex.: 31, AJUSTE-INSCRICAO) também entram no upgrade; a read-only é a primeira e única do tipo depois do marco
   const added=all.filter(f=>f>=READ_ONLY_FIRST);
-  assert.equal(added.length,1,`uma migration nova com carimbo ≥ ${READ_ONLY_FIRST} (*_beatriz_read_only.sql): ${added.join(',')}`);assert.match(added[0],/^\d{14}_beatriz_read_only\.sql$/);
+  assert.equal(added.filter(f=>/_beatriz_read_only\.sql$/.test(f)).length,1,`uma migration read-only com carimbo ≥ ${READ_ONLY_FIRST}: ${added.join(',')}`);assert.match(added[0],/^\d{14}_beatriz_read_only\.sql$/);
   const before=await rows(w.admin,POLICIES);
   assert.ok((await writeCatalog(w.admin)).length>0,'estado anterior reproduzido: a editora ainda tinha escrita (WP-003)');
   // o que o operador fez no host (D-048): DML revogado em tabelas/views, USAGE das sequences e setting read-only
