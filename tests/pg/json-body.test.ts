@@ -42,7 +42,7 @@ test('readJson: raw byte boundary, split UTF8 and misleading Content-Length', as
   assert.equal(await readJson(req), JSON.parse(new TextDecoder().decode(bytes)));
 });
 
-test('readJson: stops reading and cancels oversized stream before its tail', async () => {
+test('readJson: oversized streamed body is rejected without cancelling the HTTP transport', async () => {
   let pulls = 0, cancelled = false;
   const stream = new ReadableStream<Uint8Array>({pull(controller) {
     pulls++;
@@ -51,6 +51,6 @@ test('readJson: stops reading and cancels oversized stream before its tail', asy
   }, cancel() {cancelled = true;}});
   const req = new Request('http://app.example.invalid', {method:'POST', headers:{'Content-Type':'application/json','Content-Length':'1'}, body:stream, duplex:'half'} as RequestInit & {duplex:'half'});
   await invalid(req);
-  assert.equal(cancelled, true);
-  assert.ok(pulls <= 4, 'does not consume the entire body');
+  assert.equal(cancelled, false, 'preserves the incoming HTTP socket');
+  assert.equal(pulls, 5, 'drains the body as the original helper did');
 });

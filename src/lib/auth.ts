@@ -120,25 +120,11 @@ export class JsonBodyError extends HttpError {
 }
 export async function readJson(request: Request): Promise<unknown> {
   if (!/^application\/json\s*(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new JsonBodyError('content-type');
-  const reader = request.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  if (reader) {
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        bytes += value.byteLength;
-        if (bytes > 65536) {
-          // Não aguardar cancelamento de transporte para responder; não consumir o restante.
-          void reader.cancel().catch(() => undefined);
-          throw new JsonBodyError('too-large');
-        }
-        chunks.push(value);
-      }
-    } finally { reader.releaseLock(); }
-  }
-  const text = new TextDecoder().decode(Buffer.concat(chunks, bytes));
+  // Consumir o corpo como antes: cancelar o stream do Next pode destruir o
+  // socket keep-alive e impedir a entrega do próprio INVALID_JSON.
+  const body = await request.arrayBuffer();
+  if (body.byteLength > 65536) throw new JsonBodyError('too-large');
+  const text = new TextDecoder().decode(body);
   try { return JSON.parse(text); } catch { throw new JsonBodyError('syntax'); }
 }
 export const idempotencyKey = (request: Request) => parseIdempotencyKey(request.headers.get('idempotency-key'));
