@@ -71,6 +71,8 @@ test('login: erro genérico; temporária → sessão limitada → troca obrigat�
 test('sessão limitada sempre volta à troca; destino só local; logout 204 encerra a sessão',{timeout:240_000},async()=>{
  const email=unique('limited');const temp=await ui.temporaryPassword(email);
  const {page,context}=await ui.newPage();
+ const externalRequests:string[]=[];
+ await context.route(/^https?:\/\/evil\.example\//,route=>{externalRequests.push(route.request().url());return route.abort();});
  const signIn=async(pw:string)=>{await page.getByLabel('E-mail').fill(email);await page.getByLabel('Senha',{exact:true}).fill(pw);await page.getByRole('button',{name:'Entrar',exact:true}).click();};
  try{
   await page.goto(ui.origin+'/login?next=%2Finscricao');await signIn(temp);
@@ -82,7 +84,7 @@ test('sessão limitada sempre volta à troca; destino só local; logout 204 ence
   assert.equal(await sessionState(page),'password_change_required');
   // destino externo descartado
   const definitive=strong();ui.secrets.add(definitive);
-  await page.goto(ui.origin+'/troca-senha?next='+encodeURIComponent('//evil.example/roubo'));
+  await page.goto(ui.origin+'/troca-senha?next='+encodeURIComponent('/..//evil.example/roubo'));
   await page.getByLabel('Senha atual ou temporária').fill(temp);await page.getByLabel('Nova senha',{exact:true}).fill(definitive);await page.getByLabel('Confirme a nova senha').fill(definitive);
   await page.getByRole('button',{name:/Salvar nova senha/}).click();
   await page.waitForURL(u=>u.pathname==='/conta');assert.equal(new URL(page.url()).origin,ui.origin);
@@ -95,13 +97,23 @@ test('sessão limitada sempre volta à troca; destino só local; logout 204 ence
   assert.equal(path(page),'/login');
   assert.equal(await sessionState(page),'http-401');
   // login full com destino local permitido; destino externo cai no padrão
-  await page.goto(ui.origin+'/login?next=%2Finscricao');await signIn(definitive);
+  await page.goto(ui.origin+'/login?next='+encodeURIComponent('/%2e%2e//evil.example'));await signIn(definitive);
+  await page.waitForURL(ui.origin+'/conta');
+  await page.goto(ui.origin+'/login?next=%2Finscricao');
   await page.waitForURL(u=>u.pathname==='/inscricao');
-  for(const evil of ['https://evil.example/x','//evil.example','/\\evil.example','/api/v1/auth/session']){
+  // Só login redireciona no mount; troca-senha foi exercitada pelo submit acima.
+  for(const evil of ['https://evil.example/x','//evil.example','/..//evil.example','/%2e%2e//evil.example','/a/..//evil.example','/\\evil.example','/api/v1/auth/session']){
    await page.goto(ui.origin+'/login?next='+encodeURIComponent(evil));
    await page.waitForURL(u=>u.pathname==='/conta');await page.getByRole('heading',{name:/Sua conta/}).waitFor();
    assert.equal(new URL(page.url()).origin,ui.origin);assert.equal(path(page),'/conta');
   }
+  await page.goto(ui.origin+'/login?next='+encodeURIComponent('/conta?aba=reservas#proximas'));
+  await page.waitForURL(ui.origin+'/conta?aba=reservas#proximas');
+  assert.deepEqual(externalRequests,[],'nenhuma navegação para a origem externa interceptada');
+  await page.getByRole('heading',{name:/Sua conta/}).waitFor();
+  await page.screenshot({path:ui.evidence+'/auth-next-desktop.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:ui.evidence+'/auth-next-mobile.png',fullPage:true});
   ui.assertNoLeak();
  }finally{await context.close();}
 });
