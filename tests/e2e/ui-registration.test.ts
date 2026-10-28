@@ -139,6 +139,7 @@ test('inscrição pública: diagnóstico → crossing (só nomes, troca) → e-m
   assert.deepEqual(((await response.json()) as {data:Record<string,unknown>}).data,{status:'received',next:'login'});
   const status=main(page).getByRole('status').filter({hasText:/Cadastro concluído/});await status.waitFor();
   const first=(await status.innerText()).trim();
+  assert.equal(await status.getByText(FINAL,{exact:true}).count(),1,'confirmação de sucesso mantém o texto exato do sponsor');
   assert.equal(first.includes(email),false,'não ecoa o e-mail');assert.doesNotMatch(first,/temporária|verifique sua caixa|enviamos/i);
   assert.equal(await main(page).getByRole('link',{name:/Entrar na conta/}).getAttribute('href'),'/login');
   await page.screenshot({path:shots('inscricao-05-concluido-desktop'),fullPage:true});

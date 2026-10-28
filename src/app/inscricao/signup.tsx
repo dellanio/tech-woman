@@ -171,6 +171,7 @@ export function ParticipantSignup() {
         {step === 5 && user && <ProfileReady label="participante" created/>}
         {step === 5 && !user && <>
           <div className="success-panel" role="status"><span className="success-mark">✓</span><p className="eyebrow">PEDIDO REGISTRADO</p><h3>Cadastro concluído.</h3>
+            <p>{FINAL_CONFIRMATION}</p>
             <p>Se este e-mail puder ser usado, sua conta já está ativa com a senha que você definiu, e o cruzamento escolhido foi registrado. Nenhuma mensagem é enviada nesta etapa.</p>
           </div>
           <p className="field-hint signup-next">Entre com seu e-mail e a senha definida. Se este e-mail já tinha cadastro, use a senha que você já tinha ou “Esqueci minha senha”.</p>

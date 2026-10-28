@@ -31,10 +31,13 @@ Texto final exato: **"O cadastro da participante na plataforma criará o seu cad
 - **Referência opaca**: `mentor` não tem UUID; `mentor_ref = base64url(HMAC-SHA256(chave derivada de SESSION_SECRET, "tw:mentor-ref:v1:" + id))`.
   O banco nunca vê o segredo; o servidor resolve a ref recalculando as candidatas compatíveis do mesmo diagnóstico (ref fora da lista → 422 `mentor_ref`).
 - **Compatível** = mentora `active`, não protegida (`internal.domain_protected`) e score do ranking existente `> 0`. Independe de turma/capacidade.
-  Ordem = `score DESC, id ASC` (a mesma de `api_recommendations`). Nome = `display_name` → (`demo_name` se demo) → `(MENTORA)`.
-- **Finalização**: `internal.register_participant_account` muda de assinatura (DROP explícito + CREATE). Trava a linha da mentora
-  (`FOR SHARE`: bloqueia desativação/troca de especialidades concorrente até o commit) e revalida a compatibilidade **antes** de olhar o
-  e-mail (erro de mentora não depende do e-mail → sem enumeração).
+  Ordem = `score DESC, id ASC` (a mesma de `api_recommendations`). Nome = `display_name`; sem `display_name` → literalmente `(MENTORA)` (decisão do sponsor de 28/10, sem exceção para demo).
+- **Finalização**: `internal.register_participant_account` muda de assinatura (DROP explícito + CREATE). Locks no protocolo R3
+  (app_user → `internal.agenda_guard` → domínio): contas que decidem a proteção da mentora (`internal.domain_lock_users`: dona vinculada +
+  mesma chave de e-mail) `FOR NO KEY UPDATE` em ordem de UUID → guard (`FOR UPDATE`, sem escrita no caminho neutro) → reconferência do
+  conjunto (mudou = 40001 → 409 `RETRY_TRANSACTION`) → `FOR SHARE` da mentora (bloqueia desativação/troca de especialidades até o commit).
+  Revalida proteção/compatibilidade **antes** de olhar o e-mail (erro de mentora não depende do e-mail → sem enumeração).
+  Sem ciclo com `api_admin_domain_update` (guard → mentora); serializado com a elevação offline (`FOR UPDATE` da conta).
   Depois aplica os mesmos predicados anti-enumeração de hoje (legado sem vínculo, chaves privilegiadas, e-mail existente) → `false` sem mutação.
   Cria `app_user(status 'active', password_hash)`, `user_role participant`, `participant` (consent v1) e `match(status 'suggested', origin 'current')`
   com score/razões do ranking, e auditoria `match.create`. **Nenhum `email_job`.** Qualquer falha = exceção = rollback total.
@@ -80,7 +83,8 @@ Playwright Chromium (UI), Python `unittest` (ops/CI). Hash de senha: `hashPasswo
 ## Decisões (registradas também no ledger)
 
 - D1 `mentor_ref` por HMAC (sem coluna nova): evita migration de dados e mantém o id fora do cliente.
-- D2 Nome: `display_name` → `demo_name` (só demo, como a projeção pública existente) → `(MENTORA)` (pedido 28/10).
+- D2 Nome: `display_name`; sem `display_name` → apenas `(MENTORA)`, literal do sponsor (28/10), inclusive mentoras demo (`demo_name` não entra).
+  *Corrigida na passada pós-revisão: a versão anterior usava `demo_name` como fallback sem aval do sponsor.*
 - D3 Match do cadastro = `status 'suggested', origin 'current'`, sem `enrollment_id` (mesma forma do match criado pelo admin;
   `selected` é reservado a match ligado a reserva). A agenda/turma entra depois.
 - D4 Resposta neutra nova `{status:'received', next:'login'}` (conta nova ou e-mail indisponível são indistinguíveis; sem auto-login).
@@ -93,8 +97,8 @@ Playwright Chromium (UI), Python `unittest` (ops/CI). Hash de senha: `hashPasswo
 
 ## Task 0 — Ambiente e linha de base
 
-- [ ] PG16 servidor via apt (sem serviço), cluster `.local-pg/data`, porta 55438, superusuária sintética `twlocal`, só `127.0.0.1`.
-- [ ] `pnpm build` e `TEST_STANDALONE=1 pnpm test:pg` na base, logs em `40-verificacao/t_e5584a38/logs/baseline-*`.
+- [x] PG16 servidor via apt (sem serviço), cluster `.local-pg/data`, porta 55438, superusuária sintética `twlocal`, só `127.0.0.1`.
+- [x] `pnpm build` e `TEST_STANDALONE=1 pnpm test:pg` na base, logs em `40-verificacao/t_e5584a38/logs/baseline-*`.
 
 ## Task 1 — Ranking por valores + preview SQL sem persistência (migration 31, parte 1)
 
@@ -108,10 +112,10 @@ internal.agenda_ranking(p_participant bigint, p_mentor bigint, OUT ...) -- CREAT
 internal.registration_candidates(p_goal text, p_interests jsonb, p_skills jsonb, p_area text) RETURNS TABLE(mentor_id bigint, score integer, reasons jsonb, label text) -- STABLE, owner
 internal.registration_preview(p_goal text, p_moment text, p_interests jsonb, p_skills jsonb, p_area text) RETURNS jsonb -- SECURITY DEFINER STABLE, runtime EXECUTE
 ```
-- [ ] RED: teste PG chama `internal.registration_preview` (função inexistente → falha), espera ordem por ranking, `(MENTORA)`, demo_name,
+- [x] RED: teste PG chama `internal.registration_preview` (função inexistente → falha), espera ordem por ranking, `(MENTORA)` (também para demo sem display_name),
       mentora sem turma incluída, inativa/score 0/protegida excluída, snapshot do banco idêntico, `agenda_ranking_values` = `agenda_ranking`.
-- [ ] GREEN: migration com as funções, owner `techwoman_owner`, `REVOKE ALL FROM PUBLIC`, `GRANT EXECUTE` só do preview ao runtime.
-- [ ] Verificar: `tsx --test tests/pg/registration-crossing.test.ts`. Commit `feat(db): preview de crossing por valores sem persistência`.
+- [x] GREEN: migration com as funções, owner `techwoman_owner`, `REVOKE ALL FROM PUBLIC`, `GRANT EXECUTE` só do preview ao runtime.
+- [x] Verificar: `tsx --test tests/pg/registration-crossing.test.ts`. Commit `feat(db): preview de crossing por valores sem persistência`.
 
 ## Task 2 — Preview HTTP (rota pública)
 
@@ -125,10 +129,10 @@ export const mentorRef: (id: string) => string;            // HMAC base64url 43
 export async function previewCrossing(input: unknown): Promise<CrossingChoice[]>;
 export const previewRules: (request: Request) => RateRule[]; // IP, RATE_PREVIEW_IP_PER_HOUR (60)
 ```
-- [ ] RED: teste HTTP chama a rota (módulo inexistente → falha): 200 só com chaves `mentor_ref,nome_exibicao`; ref ≠ id, estável, 43 chars;
+- [x] RED: teste HTTP chama a rota (módulo inexistente → falha): 200 só com chaves `mentor_ref,nome_exibicao`; ref ≠ id, estável, 43 chars;
       origem ausente/cruzada 403; `text/plain` 400; corpo > 64 KiB 400; email/password/consent no corpo 422; limite por IP 429 com Retry-After;
       nenhuma linha gravada além do balde de rate.
-- [ ] GREEN: implementação. Verificar e commit `feat(api): preview público do crossing`.
+- [x] GREEN: implementação. Verificar e commit `feat(api): preview público do crossing`.
 
 ## Task 3 — Finalização transacional (SQL + serviço + rota)
 
@@ -147,20 +151,20 @@ export type ParticipantSignup = ParticipantRegistration & { password: string; pa
 export type ParticipantSignupReceived = { status: 'received'; next: 'login' };
 export async function registerParticipant(input: unknown, idem?: PublicIdempotency): Promise<ParticipantSignupReceived>;
 ```
-- [ ] RED (cada item é um teste): conta active + hash verificável + sem temporária/must_change + perfil + match suggested/current com score do ranking
+- [x] RED (cada item é um teste): conta active + hash verificável + sem temporária/must_change + perfil + match suggested/current com score do ranking
       + nenhum `email_job` + `identity.login` → `authenticated`; ref inválida/forjada → 422 sem mutação; mentora desativada/especialidade alterada
       entre preview e finalização → 422 sem mutação; falha injetada no INSERT do match (trigger de teste) → nada gravado; e-mail existente
       (ativa/pendente/desativada/admin), legado sem vínculo, chave privilegiada → 202 idêntico sem mutação e hash antigo intacto;
       senha curta / confirmação divergente → 422; idempotência: replay 202 sem duplicar, senha diferente com a mesma chave 409, `request_hash` ≠
       hash do corpo com senha crua e dump de `api_idempotency` sem senha; corpo antigo (sem senha/ref) → 422 (v1) e 400 (adapter antigo).
-- [ ] GREEN: SQL + serviço + rotas. Commit `feat(cadastro): finalização atômica com senha definitiva e crossing`.
+- [x] GREEN: SQL + serviço + rotas. Commit `feat(cadastro): finalização atômica com senha definitiva e crossing`.
 
 ## Task 4 — Grants, matriz e owner
 
 **Arquivos**: `scripts/migration/agenda-grants-matrix.sql` e `ops/sql/agenda-grants-matrix.sql` (byte idênticos), `ops/preflight.py`
 (`MATRIX_EXPECTED`), `tests/ops/test_preflight.py`, `tests/ops/pg/test_preflight_pg.py`, `tests/pg/agenda-grants-matrix.test.ts`.
-- [ ] RED: matriz atual roda contra a 31 e conta diferente / teste de fronteira exige `registration_preview` na lista do runtime.
-- [ ] GREEN: `registration_preview` na lista autorizada do runtime + `matrix_reaches` do preview e do cadastro novo; medir contagens no PG16 e
+- [x] RED: matriz atual roda contra a 31 e conta diferente / teste de fronteira exige `registration_preview` na lista do runtime.
+- [x] GREEN: `registration_preview` na lista autorizada do runtime + `matrix_reaches` do preview e do cadastro novo; medir contagens no PG16 e
       atualizar `MATRIX_EXPECTED` e asserts. `cmp` das duas cópias.
 
 ## Task 5 — Atualizar testes antigos ao contrato novo (sem enfraquecer admin/recovery)
@@ -168,26 +172,40 @@ export async function registerParticipant(input: unknown, idem?: PublicIdempoten
 **Arquivos**: `tests/pg/pending-participant.ts` (novo, fixture do estado legado), `identity-registration`, `identity-http`, `identity-http-flow`,
 `identity-legacy`, `registration-protected-keys`, `legacy-http`, `email-worker`, `email-transport`, `definer-owner-upgrade`, `legacy-packaging`,
 `tests/e2e/ui-harness.ts` (`temporaryPassword` via fixture), `tests/test_e2e_target.py`.
-- [ ] Cada arquivo: rodar, ver falha pelo contrato novo, ajustar fixture/expectativa mantendo o que o teste protege. Commit `test: ...`.
+- [x] Cada arquivo: rodar, ver falha pelo contrato novo, ajustar fixture/expectativa mantendo o que o teste protege. Commit `test: ...`.
 
 ## Task 6 — e2e-v1: cadastro definitivo → login full → restart
 
 **Arquivo**: `tests/pg/e2e-v1.ts`.
-- [ ] RED: novo fluxo (preview → cadastro com senha → login `authenticated` → restart → sessão e senha preservadas, fila vazia, nenhum job do cadastro).
-- [ ] Cobertura do entrypoint real do mailer mantida com job de fixture (conta pendente legada), sem depender do prazo de mentoras.
+- [x] RED: novo fluxo (preview → cadastro com senha → login `authenticated` → restart → sessão e senha preservadas, fila vazia, nenhum job do cadastro).
+- [x] Cobertura do entrypoint real do mailer mantida com job de fixture (conta pendente legada), sem depender do prazo de mentoras.
 
 ## Task 7 — UI `/inscricao`
 
 **Arquivos**: `src/app/inscricao/signup.tsx`, `src/app/inscricao/crossing.tsx` (novo), `src/app/globals.css` (só se faltar estilo, com tokens
 existentes), `tests/e2e/ui-registration.test.ts`.
-- [ ] RED (Playwright, PG real): ordem 01→02→03 crossing→04 credenciais→05; crossing só nomes, `(MENTORA)`, troca de mentora, sem datas;
+- [x] RED (Playwright, PG real): ordem 01→02→03 crossing→04 credenciais→05; crossing só nomes, `(MENTORA)`, troca de mentora, sem datas;
       sem compatíveis → explicação + editar respostas, sem avançar; voltar/editar refaz o preview e descarta escolha incompatível; resposta
       atrasada de preview antigo é ignorada; senha divergente bloqueia; texto final exato; corpo enviado sem senha no preview; 202 neutro;
       duplicata indistinguível; conta autenticada continua anexando perfil sem e-mail/senha.
-- [ ] GREEN + screenshots desktop/mobile (Playwright do clone) em `40-verificacao/t_e5584a38/screenshots`.
+- [x] GREEN + screenshots desktop/mobile (Playwright do clone) em `40-verificacao/t_e5584a38/screenshots`.
 
 ## Task 8 — Verificação final
 
-- [ ] `pnpm exec tsc --noEmit`, `pnpm build` (sem banco), `TEST_STANDALONE=1 pnpm test:pg`, `pnpm test:e2e`, suítes UI afetadas,
+- [x] `pnpm exec tsc --noEmit`, `pnpm build` (sem banco), `TEST_STANDALONE=1 pnpm test:pg`, `pnpm test:e2e`, suítes UI afetadas,
       `python3 -m unittest discover -s tests -v`, `tests/unit/password.test.ts`, suites ops PG (`tests/ops/pg`) com o PG16 local.
-- [ ] Revisar `git diff 59ab4a8..HEAD`, registrar comandos/resultados no ledger e em `40-verificacao/t_e5584a38`.
+- [x] Revisar `git diff 59ab4a8..HEAD`, registrar comandos/resultados no ledger e em `40-verificacao/t_e5584a38`.
+
+## Task 9 — Correções pós-revisão (review.log de 28/10, passe único)
+
+**Arquivos**: migration 31, `tests/pg/registration-concurrency.test.ts` (novo), `tests/pg/registration-crossing*.test.ts`, `tests/pg/crossing-fixtures.ts`,
+`src/app/inscricao/signup.tsx`, `tests/e2e/ui-registration.test.ts`, `tests/ops/pg/test_schema_upgrade_pg.py`, README, manual.
+- [x] F1 (alta) RED: o preview espera `(MENTORA)` para mentora demo com `display_name` vazio. GREEN: rótulo sem `demo_name` (D2 corrigida).
+- [x] F2 (média) RED: T2 com o guard tomado; o cadastro entra; T2 chama `api_admin_domain_update` na mesma mentora. Antes: 40P01 → 409.
+      GREEN: ordem R3, as duas concluem.
+- [x] F3 (média) RED: elevação offline (`privileged-account grant-admin`, gancho `afterLock`) da conta de mesmo e-mail durante o cadastro.
+      Antes: 202 com match em mentora protegida. GREEN: o cadastro espera o lock da conta e responde 422 `mentor_ref`. Conta privilegiada nova
+      criada com o guard tomado → reconferência do conjunto → 409 `RETRY_TRANSACTION`, nada gravado.
+- [x] F4 (baixa) RED Playwright: POST retido por barreira na rota, "Trocar mentora"/"← Voltar" habilitados. GREEN: `disabled={busy}`.
+- [x] F5 cobertura: F2/F3 com duas conexões reais e barreira por `pg_stat_activity` (backend esperando lock), sem sleeps de duração fixa.
+- [x] Ensaio ops 29→30 (`test_schema_upgrade_pg`) filtra as migrations até a read-only (a 31 é outro release).
