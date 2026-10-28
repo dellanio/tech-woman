@@ -10,7 +10,8 @@ const origin = 'http://app.example.invalid';
 const routes = [
   {path:'/api/admin/login',post:admin,status:401,message:'Credenciais inválidas.',body:{email:'missing@example.invalid',password:'wrong-password-123'}},
   {path:'/api/mentor',post:mentor,status:400,message:'Preencha trajetória, especialidades, disponibilidade, capacidade e consentimento.',body:{email:'mentor@example.invalid',trajectory:'Teste',specialties:['dados'],availability:'Quarta',capacity:3,consent:true}},
-  {path:'/api/participant',post:participant,status:400,message:'Confira os campos, área de atuação e consentimento para continuar.',body:{email:'participant@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true}},
+  // D-052: o corpo antigo (sem mentora do crossing nem senha definitiva) é recusado com 400; o guard de JSON vem antes.
+  {path:'/api/participant',post:participant,status:400,message:'Confira os campos, a mentora escolhida, a senha e o consentimento para continuar.',body:{email:'participant@example.invalid',goal:'growth',moment:'working',interests:['dados'],skills:['analise'],area:'dados',consent:true},legacyRefused:true},
 ];
 function req(path:string,body:string,headers:Record<string,string>={}) {
   return new Request(origin+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',...headers},body});
@@ -41,8 +42,13 @@ for (const route of routes) {
       assert.deepEqual(await response.json(),{error:route.message});
     }
     const small = await route.post(req(route.path,JSON.stringify(route.body)));
-    assert.equal(small.status,route.path.includes('login')?401:202);
-    assert.deepEqual(await small.json(),route.path.includes('login')?{error:route.message}:{status:'received',next:'check_email'});
+    if ('legacyRefused' in route) {
+      assert.equal(small.status,400);
+      assert.deepEqual(await small.json(),{error:route.message});
+    } else {
+      assert.equal(small.status,route.path.includes('login')?401:202);
+      assert.deepEqual(await small.json(),route.path.includes('login')?{error:route.message}:{status:'received',next:'check_email'});
+    }
     for (const headers of [{Origin:'https://evil.example.invalid'},{'Sec-Fetch-Site':'cross-site'}] as Record<string,string>[]) {
       const response=await route.post(req(route.path,' '.repeat(70000),headers));
       assert.equal(response.status,403);
